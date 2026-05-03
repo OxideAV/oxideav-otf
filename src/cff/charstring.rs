@@ -366,7 +366,7 @@ impl<'a> Interpreter<'a> {
                     self.hint_count += (self.stack.len() / 2) as u32;
                     self.stack.clear();
                     // Skip the bitmask: ceil(hint_count / 8) bytes.
-                    let mask_bytes = (self.hint_count as usize + 7) / 8;
+                    let mask_bytes = (self.hint_count as usize).div_ceil(8);
                     if i + mask_bytes > bytes.len() {
                         return Err(Error::UnexpectedEof);
                     }
@@ -434,7 +434,7 @@ impl<'a> Interpreter<'a> {
         if self.contour_has_data {
             self.current_contour.segments.push(CubicSegment::ClosePath);
             // Move the finished contour into the outline.
-            let finished = std::mem::replace(&mut self.current_contour, CubicContour::default());
+            let finished = std::mem::take(&mut self.current_contour);
             self.out.contours.push(finished);
             self.contour_has_data = false;
         }

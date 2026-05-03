@@ -10,8 +10,7 @@
 //! - byte b0 = 251..254          → integer  (-((b0-251)*256) - b1 - 108) // 2 bytes
 //! - byte b0 = 28                → integer  i16 from b1..b2       // 3 bytes
 //! - byte b0 = 29                → integer  i32 from b1..b4       // 5 bytes
-//! - byte b0 = 30                → real  (BCD; nibble stream;
-//!                                        terminator 0xf)
+//! - byte b0 = 30                → real  (BCD; nibble stream; terminator 0xf)
 //!
 //! Operators (TN5176 Table 9 / Table 23 / Table 24):
 //! Single-byte 0..21, escape 12 then 0..38 for the two-byte operators.
@@ -58,6 +57,7 @@ impl Operand {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u16)]
+#[allow(clippy::upper_case_acronyms)] // CFF/TN5176 spec names
 pub(crate) enum Operator {
     // --- Top DICT (TN5176 Table 9) ---
     Version = 0,

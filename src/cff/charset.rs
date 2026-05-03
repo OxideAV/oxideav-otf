@@ -50,7 +50,7 @@ impl<'a> Charset<'a> {
     ///
     /// `top_off` is the integer operand for Top DICT operator 15:
     /// 0 = ISOAdobe (predefined), 1/2 = Expert variants (predefined),
-    /// >= 3 = custom offset into `bytes`. `num_glyphs` comes from the
+    /// \>= 3 = custom offset into `bytes`. `num_glyphs` comes from the
     /// CharStrings INDEX count.
     pub(crate) fn parse(bytes: &'a [u8], top_off: i32, num_glyphs: u32) -> Result<Self, Error> {
         match top_off {

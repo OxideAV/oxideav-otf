@@ -46,7 +46,7 @@ impl CffHeader {
         if size < 4 {
             return Err(Error::Cff("hdrSize < 4"));
         }
-        if off_size < 1 || off_size > 4 {
+        if !(1..=4).contains(&off_size) {
             return Err(Error::Cff("offSize out of range"));
         }
         if (size as usize) > bytes.len() {
