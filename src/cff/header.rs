@@ -12,8 +12,8 @@
 //! The header may be larger than 4 bytes — `hdrSize` lets the writer
 //! pad it for alignment. Anything past byte 4 is ignored on parse.
 
-use crate::Error;
 use crate::parser::read_u8;
+use crate::Error;
 
 /// Parsed CFF header. We don't keep `major`/`minor` because nothing
 /// downstream branches on them; the version-1 acceptance check is done
@@ -81,6 +81,9 @@ mod tests {
     fn rejects_short_header() {
         // hdrSize claims 8 but we only supplied 4 bytes.
         let bytes = [1u8, 0, 8, 1];
-        assert!(matches!(CffHeader::parse(&bytes), Err(Error::UnexpectedEof)));
+        assert!(matches!(
+            CffHeader::parse(&bytes),
+            Err(Error::UnexpectedEof)
+        ));
     }
 }

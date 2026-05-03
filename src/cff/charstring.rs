@@ -36,10 +36,10 @@
 //! width even though it isn't currently surfaced — `Font::glyph_advance`
 //! routes through `hmtx`, which is the spec-preferred path.
 
-use crate::Error;
 use crate::cff::index::Index;
 use crate::cff::subrs::bias_for;
 use crate::outline::{CubicContour, CubicOutline, CubicSegment, Point};
+use crate::Error;
 
 /// Maximum subroutine recursion depth (TN5177 §4.5 says "no more
 /// than 10 deep" for type 2; we use 16 to leave headroom for fonts
@@ -164,12 +164,8 @@ impl<'a> Interpreter<'a> {
                 if i + 4 >= bytes.len() {
                     return Err(Error::UnexpectedEof);
                 }
-                let raw = i32::from_be_bytes([
-                    bytes[i + 1],
-                    bytes[i + 2],
-                    bytes[i + 3],
-                    bytes[i + 4],
-                ]);
+                let raw =
+                    i32::from_be_bytes([bytes[i + 1], bytes[i + 2], bytes[i + 3], bytes[i + 4]]);
                 let v = raw as f32 / 65536.0;
                 self.push(v)?;
                 i += 5;
@@ -428,11 +424,9 @@ impl<'a> Interpreter<'a> {
         let c2 = Point::new(c1.x + dxb, c1.y + dyb);
         let end = Point::new(c2.x + dxc, c2.y + dyc);
         self.pen = end;
-        self.current_contour.segments.push(CubicSegment::CurveTo {
-            c1,
-            c2,
-            end,
-        });
+        self.current_contour
+            .segments
+            .push(CubicSegment::CurveTo { c1, c2, end });
         self.contour_has_data = true;
     }
 
@@ -440,8 +434,7 @@ impl<'a> Interpreter<'a> {
         if self.contour_has_data {
             self.current_contour.segments.push(CubicSegment::ClosePath);
             // Move the finished contour into the outline.
-            let finished =
-                std::mem::replace(&mut self.current_contour, CubicContour::default());
+            let finished = std::mem::replace(&mut self.current_contour, CubicContour::default());
             self.out.contours.push(finished);
             self.contour_has_data = false;
         }
@@ -756,10 +749,10 @@ mod tests {
         // rmoveto = 21, hlineto = 6, vlineto = 7.
         let cs = [
             239, 239, 21, // rmoveto 100 100
-            189, 6,   // hlineto 50  (50 = 139+50 = 189)
-            189, 7,   // vlineto 50
-            89, 6,   // hlineto -50
-            14,  // endchar
+            189, 6, // hlineto 50  (50 = 139+50 = 189)
+            189, 7, // vlineto 50
+            89, 6,  // hlineto -50
+            14, // endchar
         ];
         let o = run(&cs);
         assert_eq!(o.contours.len(), 1);
@@ -781,8 +774,7 @@ mod tests {
             239, 239, 21, // rmoveto 100 100
             // rrcurveto 50 0 50 50 0 50 → curve from pen through
             // (150, 100), (200, 150) to (200, 200).
-            189, 139, 189, 189, 139, 189, 8,
-            14,
+            189, 139, 189, 189, 139, 189, 8, 14,
         ];
         let o = run(&cs);
         assert_eq!(o.contours.len(), 1);
@@ -852,10 +844,8 @@ mod tests {
             139, 189, 1, // hstem 0 50
             139, 167, 3, // vstem 0 (28-139=-111? — let's just use 28: 139+28=167)
             // hintmask + 1 mask byte
-            19, 0xFF,
-            // rmoveto 100 100
-            239, 239, 21,
-            14,
+            19, 0xFF, // rmoveto 100 100
+            239, 239, 21, 14,
         ];
         let o = run(&cs);
         // We don't assert on the geometry — just that parsing succeeded

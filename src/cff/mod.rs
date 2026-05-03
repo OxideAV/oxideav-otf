@@ -25,8 +25,8 @@ pub mod private;
 pub mod strings;
 pub mod subrs;
 
-use crate::Error;
 use crate::outline::CubicOutline;
+use crate::Error;
 
 use self::charset::Charset;
 use self::charstring::Interpreter;
@@ -135,7 +135,9 @@ impl<'a> Cff<'a> {
             return Err(Error::Cff("Private operand must be [size, offset]"));
         }
         let priv_size = private_arr[0].as_int().ok_or(Error::Cff("Private size"))?;
-        let priv_off = private_arr[1].as_int().ok_or(Error::Cff("Private offset"))?;
+        let priv_off = private_arr[1]
+            .as_int()
+            .ok_or(Error::Cff("Private offset"))?;
         if priv_size < 0 || priv_off < 0 {
             return Err(Error::Cff("negative Private size/offset"));
         }
@@ -170,7 +172,8 @@ impl<'a> Cff<'a> {
     /// PostScript path — most callers should route through the sfnt
     /// `cmap` table instead).
     pub fn encoding_lookup(&self, codepoint: u8) -> Option<u16> {
-        self.encoding.lookup(codepoint, &self.charset, &self.strings)
+        self.encoding
+            .lookup(codepoint, &self.charset, &self.strings)
     }
 
     /// Decode the Type 2 charstring for `gid` into a cubic-Bezier

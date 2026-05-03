@@ -90,7 +90,10 @@ fn many_glyphs_decode_without_panicking() {
             decoded += 1;
         }
     }
-    assert!(decoded >= 80, "expected >= 80 glyphs decoded, got {decoded}");
+    assert!(
+        decoded >= 80,
+        "expected >= 80 glyphs decoded, got {decoded}"
+    );
 }
 
 #[test]

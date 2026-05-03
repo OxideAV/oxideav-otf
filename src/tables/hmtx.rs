@@ -5,8 +5,8 @@
 //! i16` values. Tail glyphs share the advance of the *last* full
 //! metric pair.
 
-use crate::Error;
 use crate::parser::{read_i16, read_u16};
+use crate::Error;
 
 #[derive(Debug, Clone)]
 pub struct HmtxTable<'a> {
@@ -27,8 +27,8 @@ impl<'a> HmtxTable<'a> {
         if num_long_hor_metrics > num_glyphs {
             return Err(Error::BadStructure("hmtx: numberOfHMetrics > numGlyphs"));
         }
-        let expected = num_long_hor_metrics as usize * 4
-            + (num_glyphs - num_long_hor_metrics) as usize * 2;
+        let expected =
+            num_long_hor_metrics as usize * 4 + (num_glyphs - num_long_hor_metrics) as usize * 2;
         if bytes.len() < expected {
             return Err(Error::UnexpectedEof);
         }

@@ -20,8 +20,8 @@
 //! When `count == 0` the structure is just `Card16(0)` — only 2 bytes
 //! total, no `offSize` / `offsets` / `data` sections at all.
 
-use crate::Error;
 use crate::parser::{read_u16, read_u8};
+use crate::Error;
 
 /// A parsed CFF INDEX. Stores the original byte slice + lazily-parsed
 /// offset metadata; entries are returned by zero-copy `&[u8]` slices.
@@ -115,14 +115,11 @@ impl<'a> Index<'a> {
 }
 
 /// Read offset entry `i` (0-indexed) from an INDEX offset array.
-fn read_offset(
-    bytes: &[u8],
-    offsets_at: usize,
-    off_size: u8,
-    i: usize,
-) -> Result<u32, Error> {
+fn read_offset(bytes: &[u8], offsets_at: usize, off_size: u8, i: usize) -> Result<u32, Error> {
     let off = offsets_at + i * off_size as usize;
-    let s = bytes.get(off..off + off_size as usize).ok_or(Error::UnexpectedEof)?;
+    let s = bytes
+        .get(off..off + off_size as usize)
+        .ok_or(Error::UnexpectedEof)?;
     Ok(match off_size {
         1 => s[0] as u32,
         2 => u16::from_be_bytes([s[0], s[1]]) as u32,

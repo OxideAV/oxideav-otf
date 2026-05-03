@@ -4,8 +4,8 @@
 //! `numGlyphs`). v1.0 (32 bytes) is for TrueType-outline fonts —
 //! we accept it but only consult `numGlyphs`.
 
-use crate::Error;
 use crate::parser::{read_u16, read_u32};
+use crate::Error;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MaxpTable {

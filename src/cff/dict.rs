@@ -232,12 +232,7 @@ fn parse_operand(bytes: &[u8], i: usize) -> Result<(Operand, usize), Error> {
             if i + 4 >= bytes.len() {
                 return Err(Error::UnexpectedEof);
             }
-            let v = i32::from_be_bytes([
-                bytes[i + 1],
-                bytes[i + 2],
-                bytes[i + 3],
-                bytes[i + 4],
-            ]);
+            let v = i32::from_be_bytes([bytes[i + 1], bytes[i + 2], bytes[i + 3], bytes[i + 4]]);
             Ok((Operand::Int(v), 5))
         }
         // BCD real.

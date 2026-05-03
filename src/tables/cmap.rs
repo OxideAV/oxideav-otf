@@ -5,8 +5,8 @@
 //! run all `lookup` calls through it. Round-1 supports formats
 //! 0, 4, 6, 12.
 
-use crate::Error;
 use crate::parser::{read_u16, read_u32};
+use crate::Error;
 
 #[derive(Debug, Clone)]
 pub struct CmapTable<'a> {

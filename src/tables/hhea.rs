@@ -1,7 +1,7 @@
 //! `hhea` — horizontal header.
 
-use crate::Error;
 use crate::parser::{read_i16, read_u16};
+use crate::Error;
 
 #[derive(Debug, Clone, Copy)]
 pub struct HheaTable {

@@ -8,9 +8,9 @@
 //! Round-1 scope: parse `defaultWidthX`, `nominalWidthX`, and the
 //! local Subrs offset. Hint values are accepted-and-ignored.
 
-use crate::Error;
 use crate::cff::dict::{Dict, Operator};
 use crate::cff::index::Index;
+use crate::Error;
 
 /// Parsed Private DICT, with its (optional) Local Subrs INDEX
 /// resolved.
@@ -28,11 +28,7 @@ impl<'a> PrivateDict<'a> {
     /// The Local Subrs offset is *relative to the Private DICT
     /// start*, per TN5176 §15 (operator 19): "The local subrs offset
     /// is from the start of the Private DICT data".
-    pub(crate) fn parse(
-        bytes: &'a [u8],
-        private_off: usize,
-        size: usize,
-    ) -> Result<Self, Error> {
+    pub(crate) fn parse(bytes: &'a [u8], private_off: usize, size: usize) -> Result<Self, Error> {
         let end = private_off
             .checked_add(size)
             .ok_or(Error::Cff("Private DICT size overflow"))?;

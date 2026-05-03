@@ -26,8 +26,8 @@
 //! full predefined-charset tables in the spec appendix to handle
 //! them, which is out of round-1 scope.
 
-use crate::Error;
 use crate::parser::{read_u16, read_u8};
+use crate::Error;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Charset<'a> {

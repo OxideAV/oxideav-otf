@@ -3,8 +3,8 @@
 //! Selection priority: Windows / Unicode BMP English (3,1,0x409),
 //! then Mac Roman English (1,0,0).
 
-use crate::Error;
 use crate::parser::read_u16;
+use crate::Error;
 
 #[derive(Debug, Clone)]
 pub struct NameTable<'a> {
@@ -86,11 +86,7 @@ fn rank_record(platform: u16, encoding: u16, language: u16) -> i32 {
     }
 }
 
-fn decode<'a>(
-    platform: u16,
-    encoding: u16,
-    raw: &'a [u8],
-) -> Option<std::borrow::Cow<'a, str>> {
+fn decode<'a>(platform: u16, encoding: u16, raw: &'a [u8]) -> Option<std::borrow::Cow<'a, str>> {
     match (platform, encoding) {
         (0, _) | (3, 1) | (3, 10) => {
             if raw.len() % 2 != 0 {

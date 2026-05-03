@@ -5,8 +5,8 @@
 //! `indexToLocFormat` exists too but is meaningless for CFF fonts
 //! (no `loca` table); we record it for parity but don't validate.
 
-use crate::Error;
 use crate::parser::{read_i16, read_u16};
+use crate::Error;
 
 #[derive(Debug, Clone, Copy)]
 pub struct HeadTable {

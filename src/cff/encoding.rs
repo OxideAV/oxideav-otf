@@ -24,10 +24,10 @@
 //! return `None` from `lookup`; callers should route through the
 //! sfnt `cmap` table instead.
 
-use crate::Error;
 use crate::cff::charset::Charset;
-use crate::cff::strings::{Strings, glyph_name_to_codepoint};
-use crate::parser::{read_u8, read_u16};
+use crate::cff::strings::{glyph_name_to_codepoint, Strings};
+use crate::parser::{read_u16, read_u8};
+use crate::Error;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Encoding<'a> {
@@ -35,10 +35,14 @@ pub(crate) enum Encoding<'a> {
     Expert,
     /// Format 0 — `code[gid]` style indirection. Stores the raw
     /// payload (byte 1 onward) and the explicit n_codes count.
-    Format0 { codes: &'a [u8] },
+    Format0 {
+        codes: &'a [u8],
+    },
     /// Format 1 — run-length: `(start_code, n_left)*`.
     #[allow(dead_code)]
-    Format1 { runs: &'a [u8] },
+    Format1 {
+        runs: &'a [u8],
+    },
 }
 
 impl<'a> Encoding<'a> {
@@ -134,7 +138,10 @@ impl<'a> Encoding<'a> {
 // available because round-2 / Standard-encoding work will need them).
 #[allow(dead_code)]
 fn _unused() {
-    let _ = (read_u16 as fn(&[u8], usize) -> _, glyph_name_to_codepoint as fn(&str) -> _);
+    let _ = (
+        read_u16 as fn(&[u8], usize) -> _,
+        glyph_name_to_codepoint as fn(&str) -> _,
+    );
 }
 
 #[cfg(test)]

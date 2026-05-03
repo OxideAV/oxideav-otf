@@ -116,9 +116,7 @@ impl core::fmt::Display for Error {
             Self::CharstringTooDeep => {
                 f.write_str("Type 2 charstring: subroutine recursion too deep")
             }
-            Self::CharstringTooLong => {
-                f.write_str("Type 2 charstring: too many bytes processed")
-            }
+            Self::CharstringTooLong => f.write_str("Type 2 charstring: too many bytes processed"),
             Self::CharstringUnsupportedOp(op) => {
                 write!(f, "Type 2 charstring: unsupported operator {op:#06x}")
             }
