@@ -1,0 +1,16 @@
+[package]
+name = "oxideav-otf"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/OxideAV/oxideav-otf"
+homepage = "https://github.com/OxideAV/oxideav-otf"
+authors = ["Mark Karpeles"]
+description = "Pure-Rust OpenType/CFF font parser for the oxideav framework — sfnt + CFF Top/Private DICT + Type 2 charstrings (cubic-Bezier outlines)"
+readme = "README.md"
+keywords = ["opentype", "otf", "cff", "font", "pure-rust"]
+categories = ["graphics", "rendering", "parsing"]
+
+[dependencies]
+oxideav-core = "0.1"
