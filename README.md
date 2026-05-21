@@ -48,11 +48,30 @@ let _ = font.ascent();
 let _ = font.descent();
 let _ = font.line_gap();
 
+// CFF Top DICT metadata.
+let _ = font.font_bbox();           // [xMin, yMin, xMax, yMax] in font units
+let _ = font.italic_angle();        // degrees CCW from vertical (0 for upright)
+let _ = font.underline_position();
+let _ = font.underline_thickness();
+let _ = font.is_fixed_pitch();
+let _ = font.weight_name();         // Some("Regular"), etc.
+let _ = font.notice();
+let _ = font.copyright();
+let _ = font.version_string();
+
+// Table-directory enumeration.
+for (tag, len) in font.table_tags() {
+    println!("{:?}  {} bytes", std::str::from_utf8(&tag).unwrap(), len);
+}
+let _ = font.has_table(b"CFF ");
+let _ = font.table_data(b"head");   // raw &[u8] for the head table
+
 // Glyph lookup.
 let gid = font.glyph_index('A').unwrap();
 let _ = font.glyph_advance(gid);    // i16 advance width in font units
 let _ = font.glyph_lsb(gid);
 let _ = font.glyph_name(gid);       // "A" (via CFF charset → Strings)
+let _ = font.glyph_bbox(gid)?;      // per-glyph bbox derived from charstring
 let outline = font.glyph_outline(gid)?;
 
 for contour in &outline.contours {
@@ -63,7 +82,22 @@ for contour in &outline.contours {
 }
 ```
 
-## Out of scope (round 2+)
+## Round-2 additions (this push)
+
+- CFF Top DICT metadata surfaced on the public `Font` API:
+  `font_bbox` / `italic_angle` / `underline_position` /
+  `underline_thickness` / `is_fixed_pitch` / `weight_name` /
+  `notice` / `copyright` / `version_string` (all from already-parsed
+  Top DICT operators, no extra spec material consumed).
+- `Font::glyph_bbox(gid)` convenience that decodes the charstring
+  and returns just the bounding box.
+- Table-directory enumeration: `Font::table_tags()` /
+  `Font::table_data(tag)` / `Font::has_table(tag)` expose the sfnt
+  directory inventory directly to callers.
+- `cff::TopMetadata` re-exported for callers that want to inspect
+  the full pre-extracted metadata struct in one shot.
+
+## Out of scope (round 3+)
 
 - CFF2 (OpenType 1.8+ variation-aware variant — Adobe TN5174).
   Detected at parse time and reported as `Error::Cff2NotImplemented`.
@@ -72,8 +106,11 @@ for contour in &outline.contours {
 - Predefined Standard / Expert encoding lookup tables (legacy
   PostScript path; modern OpenType callers use the sfnt `cmap`
   table that we already implement).
-- The Adobe Glyph List string → codepoint mapping (round 2 if any
+- The Adobe Glyph List string → codepoint mapping (round 3+ if any
   consumer needs it).
+- `OS/2`, `post`, `GSUB`, `GPOS`, `GDEF`, `kern` tables — blocked
+  on docs gap #871 (OpenType + Adobe CFF specs not yet staged
+  under `docs/text/opentype/`).
 
 ## Test fixture
 

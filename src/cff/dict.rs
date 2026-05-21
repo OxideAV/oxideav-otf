@@ -188,6 +188,20 @@ impl Dict {
         None
     }
 
+    /// Look up a single numeric (int or BCD real) operand for a
+    /// 1-operand operator. Use when the spec calls the value a
+    /// "number" rather than specifically "integer" (e.g. italicAngle,
+    /// underlineThickness — TN5176 §16 says these are "number").
+    pub(crate) fn get_number(&self, op: Operator) -> Option<f64> {
+        let want = op as u16;
+        for (k, v) in &self.entries {
+            if *k == want {
+                return v.last().map(|o| o.as_f64());
+            }
+        }
+        None
+    }
+
     /// Iterate all parsed `(operator_code, operands)` pairs. Used by
     /// the higher-level `Cff::parse` for a subroutine-offset hand-roll.
     #[allow(dead_code)]

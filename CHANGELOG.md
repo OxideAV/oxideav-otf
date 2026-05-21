@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- CFF Top DICT metadata accessors on `Font`: `font_bbox`,
+  `italic_angle`, `underline_position`, `underline_thickness`,
+  `is_fixed_pitch`, `weight_name`, `notice`, `copyright`,
+  `version_string`. All values are pre-extracted into a new
+  `cff::TopMetadata` struct (also re-exported at crate root) during
+  `Font::from_bytes`, so accessors are O(1) with no extra parsing.
+- `Font::glyph_bbox(gid)` — decodes the charstring and returns just
+  the bounding box (convenience over `glyph_outline().bounds`).
+- Sfnt-directory enumeration on `Font`: `table_tags()` iterates
+  `(tag, length)` pairs in directory order, `table_data(tag)` borrows
+  a table's raw bytes, `has_table(tag)` checks presence. Useful for
+  diagnostics / inventory / picking a fallback table.
+- Internal `Dict::get_number` helper for spec-typed "number" operands
+  (italicAngle, underline metrics) that may be either int or BCD real.
+
+### Tests
+
+- 4 new integration tests against the Source Sans 3 fixture
+  exercising the new metadata + table-directory APIs.
+- 2 new unit tests on `extract_top_metadata` covering the spec
+  defaults (italicAngle=0, underline=-100/50, isFixedPitch=false,
+  FontBBox=[0,0,0,0]) and a populated FontBBox / italicAngle /
+  isFixedPitch scenario.
+
+### Notes
+
+- All work surfaces already-parsed CFF Top DICT data and the
+  already-parsed sfnt table directory — no new spec material was
+  consumed. Substantive new tables (OS/2, post, GSUB, GPOS) remain
+  blocked on docs gap #871 (OpenType + Adobe CFF spec PDFs not yet
+  staged under `docs/text/opentype/`); see that directory's
+  README.md for the gap inventory.
+
 ## [0.1.0](https://github.com/OxideAV/oxideav-otf/compare/v0.0.2...v0.1.0) - 2026-05-03
 
 ### Other

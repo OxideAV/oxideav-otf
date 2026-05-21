@@ -113,3 +113,80 @@ fn ps_name_present() {
     let ps = f.ps_name().expect("ps_name");
     assert!(ps.contains("Source") || ps.contains("source"));
 }
+
+#[test]
+fn table_directory_enumerates_required_tables() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let tags: Vec<[u8; 4]> = f.table_tags().map(|(t, _)| t).collect();
+    for required in [b"head", b"hhea", b"maxp", b"hmtx", b"cmap", b"name"] {
+        assert!(
+            tags.contains(required),
+            "missing required table {:?}",
+            std::str::from_utf8(required).unwrap()
+        );
+    }
+    // Source Sans 3 ships with `CFF ` (with the trailing space).
+    assert!(tags.contains(b"CFF "), "missing CFF table");
+    // And lengths are sane — every reported length should let us slice.
+    for (tag, len) in f.table_tags() {
+        let data = f.table_data(&tag).expect("table data");
+        assert_eq!(data.len() as u32, len, "tag {tag:?} length mismatch");
+    }
+    assert!(f.has_table(b"CFF "));
+    assert!(!f.has_table(b"ZZZZ"));
+}
+
+#[test]
+fn cff_top_metadata_surfaced() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let bbox = f.font_bbox();
+    // Source Sans 3 Top DICT carries a real FontBBox covering the
+    // whole repertoire — width and height should both be positive.
+    let width = bbox[2] - bbox[0];
+    let height = bbox[3] - bbox[1];
+    assert!(width > 0.0, "FontBBox width {width}: {bbox:?}");
+    assert!(height > 0.0, "FontBBox height {height}: {bbox:?}");
+
+    // Source Sans 3 Regular is upright, monoline, not fixed pitch.
+    assert_eq!(f.italic_angle(), 0.0);
+    assert!(!f.is_fixed_pitch());
+
+    // Underline metrics are conventionally negative position, small
+    // positive thickness — at minimum, thickness must be positive.
+    assert!(
+        f.underline_thickness() > 0.0,
+        "thickness {}",
+        f.underline_thickness()
+    );
+    assert!(
+        f.underline_position() < 0.0,
+        "position {}",
+        f.underline_position()
+    );
+}
+
+#[test]
+fn glyph_bbox_for_real_glyph_is_non_empty() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    for ch in ['A', 'O', '8', 'g'] {
+        let gid = f.glyph_index(ch).expect("glyph");
+        let bb = f
+            .glyph_bbox(gid)
+            .expect("decode ok")
+            .unwrap_or_else(|| panic!("{ch:?} bbox unexpectedly None"));
+        assert!(bb.width() > 0.0, "{ch:?} width 0: {bb:?}");
+        assert!(bb.height() > 0.0, "{ch:?} height 0: {bb:?}");
+    }
+}
+
+#[test]
+fn cff_metadata_strings_resolve_when_present() {
+    // Source Sans 3 has at least a notice in the CFF Top DICT; even
+    // if specific strings are absent the lookup must not panic.
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    // None / Some both fine — just exercise the path.
+    let _ = f.weight_name();
+    let _ = f.notice();
+    let _ = f.copyright();
+    let _ = f.version_string();
+}

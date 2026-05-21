@@ -27,6 +27,7 @@ pub mod outline;
 pub mod parser;
 pub mod tables;
 
+pub use cff::TopMetadata;
 pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
 
 use crate::cff::Cff;
@@ -136,6 +137,7 @@ impl std::error::Error for Error {}
 #[derive(Debug)]
 pub struct Font<'a> {
     bytes: &'a [u8],
+    dir: TableDirectory,
     head: HeadTable,
     hhea: HheaTable,
     maxp: MaxpTable,
@@ -170,6 +172,7 @@ impl<'a> Font<'a> {
 
         Ok(Self {
             bytes,
+            dir,
             head,
             hhea,
             maxp,
@@ -264,5 +267,124 @@ impl<'a> Font<'a> {
     /// Borrow the CFF table view (mostly for tests / advanced callers).
     pub fn cff(&self) -> &Cff<'a> {
         &self.cff
+    }
+
+    // ---- CFF Top DICT metadata --------------------------------------------
+
+    /// Font-wide bounding box from CFF Top DICT `FontBBox` (TN5176
+    /// §9 op 5), in font-unit coordinates `[xMin, yMin, xMax, yMax]`.
+    /// CFF's default is `[0, 0, 0, 0]` (a sentinel telling the
+    /// consumer to compute the bbox per-glyph by walking the
+    /// charstrings — use [`Font::glyph_bbox`] for the per-glyph
+    /// alternative).
+    pub fn font_bbox(&self) -> [f32; 4] {
+        self.cff.top_metadata().font_bbox
+    }
+
+    /// Italic angle in degrees, counterclockwise from vertical
+    /// (CFF Top DICT `ItalicAngle`, TN5176 §9 op 12 02). `0.0` for
+    /// upright fonts.
+    pub fn italic_angle(&self) -> f64 {
+        self.cff.top_metadata().italic_angle
+    }
+
+    /// Underline position in font units (CFF Top DICT
+    /// `UnderlinePosition`, TN5176 §9 op 12 03). Negative values
+    /// (the typographic convention) place the underline below the
+    /// baseline. Default per spec: -100.
+    pub fn underline_position(&self) -> f64 {
+        self.cff.top_metadata().underline_position
+    }
+
+    /// Underline stroke thickness in font units (CFF Top DICT
+    /// `UnderlineThickness`, TN5176 §9 op 12 04). Default: 50.
+    pub fn underline_thickness(&self) -> f64 {
+        self.cff.top_metadata().underline_thickness
+    }
+
+    /// Whether the font is monospaced (CFF Top DICT `isFixedPitch`,
+    /// TN5176 §9 op 12 01). Default: false.
+    pub fn is_fixed_pitch(&self) -> bool {
+        self.cff.top_metadata().is_fixed_pitch
+    }
+
+    /// Weight name from CFF Top DICT (op 4), e.g. `"Regular"`,
+    /// `"Bold"`, `"Light"`. SID-resolved through the CFF Strings
+    /// table; for SIDs in the standard-strings range these are
+    /// PostScript-style ASCII names from TN5176 Appendix A.
+    pub fn weight_name(&self) -> Option<&str> {
+        self.cff
+            .top_metadata()
+            .weight_sid
+            .and_then(|sid| self.cff.resolve_sid(sid))
+    }
+
+    /// Copyright / trademark notice from CFF Top DICT (op 1).
+    pub fn notice(&self) -> Option<&str> {
+        self.cff
+            .top_metadata()
+            .notice_sid
+            .and_then(|sid| self.cff.resolve_sid(sid))
+    }
+
+    /// Extended copyright field from CFF Top DICT (op 12 00).
+    pub fn copyright(&self) -> Option<&str> {
+        self.cff
+            .top_metadata()
+            .copyright_sid
+            .and_then(|sid| self.cff.resolve_sid(sid))
+    }
+
+    /// Version string from CFF Top DICT (op 0), typically dotted-decimal.
+    pub fn version_string(&self) -> Option<&str> {
+        self.cff
+            .top_metadata()
+            .version_sid
+            .and_then(|sid| self.cff.resolve_sid(sid))
+    }
+
+    // ---- per-glyph derived metrics ---------------------------------------
+
+    /// Per-glyph bounding box in font units, derived by decoding the
+    /// glyph's charstring and walking every emitted point + control
+    /// point. Returns `None` if the glyph has no outline (e.g.
+    /// `.notdef` in some fonts, or any glyph whose `endchar` is
+    /// reached without emitting a path).
+    ///
+    /// This is a convenience over [`Font::glyph_outline`] for callers
+    /// that only want the metrics — but note it still does the full
+    /// charstring decode, so callers that need both should prefer
+    /// `glyph_outline().bounds` directly to avoid duplicating work.
+    pub fn glyph_bbox(&self, glyph_id: u16) -> Result<Option<BBox>, Error> {
+        let outline = self.glyph_outline(glyph_id)?;
+        if outline.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(outline.bounds))
+        }
+    }
+
+    // ---- table-directory enumeration -------------------------------------
+
+    /// Iterate all `(tag, length)` pairs present in the sfnt table
+    /// directory, in on-disk order (which the spec requires to be
+    /// ascending by tag). Useful for diagnostics, dumping a font's
+    /// table inventory, or deciding whether to fall back to an
+    /// alternative table.
+    pub fn table_tags(&self) -> impl Iterator<Item = ([u8; 4], u32)> + '_ {
+        self.dir.tag_list()
+    }
+
+    /// Raw byte slice for the sfnt table with `tag`, or `None` if the
+    /// table is absent. The slice is borrowed from the original font
+    /// bytes; the layout is exactly what the OpenType spec specifies
+    /// for that table.
+    pub fn table_data(&self, tag: &[u8; 4]) -> Option<&'a [u8]> {
+        self.dir.find(tag, self.bytes)
+    }
+
+    /// `true` if the font carries a table with `tag`.
+    pub fn has_table(&self, tag: &[u8; 4]) -> bool {
+        self.dir.find(tag, self.bytes).is_some()
     }
 }

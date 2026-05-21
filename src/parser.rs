@@ -119,6 +119,14 @@ impl TableDirectory {
             Error::MissingTable(std::str::from_utf8(tag).unwrap_or("???"))
         })
     }
+
+    /// All `(tag, length)` pairs from the table directory in directory
+    /// order. The directory is required by the sfnt spec to be sorted
+    /// ascending by tag; we don't re-sort, so iteration follows the
+    /// on-disk order.
+    pub(crate) fn tag_list(&self) -> impl Iterator<Item = ([u8; 4], u32)> + '_ {
+        self.entries.iter().map(|r| (r.tag, r.length))
+    }
 }
 
 // --- big-endian primitive readers ------------------------------------------
