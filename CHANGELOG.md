@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Type 2 charstring `endchar` deprecated four-operand `seac` form
+  (Adobe TN5177 Appendix C / Type 1 `seac`): a charstring may now
+  end with `[width?] adx ady bchar achar endchar` to compose a
+  legacy accented glyph from two component glyphs. `bchar` and
+  `achar` are CFF Standard Encoding codes (TN5176 Appendix B §1)
+  that resolve through the per-font charset to component GIDs; the
+  `achar` component is rendered with its pen translated by
+  `(adx, ady)` and merged into the composite's contour list. The
+  spec's nesting prohibition is enforced (`CharstringSeacNested`).
+- CFF Standard Encoding lookup table (`STANDARD_ENCODING`,
+  TN5176 Appendix B §1) — 256-entry `code → SID` map. Also wired
+  into `Encoding::Standard::lookup` so legacy Standard-encoded
+  fonts now resolve codepoint → GID without needing the sfnt
+  `cmap`.
+- `Charset::gid_of_sid(sid)` — reverse-direction sibling of
+  `sid_of(gid)` for the seac and Standard-Encoding paths above.
+
 ### Fixed
 
 - Type 2 charstring flex-operator dispatch was shuffled: every flex
@@ -38,6 +57,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
+- 5 new unit tests in `cff::charstring` covering the seac path:
+  two-component composition with a hand-derived offset
+  (synthetic 3-glyph font fixture), seac-with-leading-width
+  decoding, unresolved-`bchar` error, missing-resolver error, and
+  nested-seac rejection. The composite outline's combined bounds
+  + per-component MoveTo points are asserted bit-exact against the
+  TN5177 Appendix C expansion.
+- 2 new unit tests in `cff::encoding` covering the
+  `STANDARD_ENCODING` landmark codes (space/A/Z/a/z/DEL/emdash/AE
+  /ae/germandbls) and the Standard-encoding → charset GID round-trip.
+- 3 new unit tests in `cff::charset` covering `gid_of_sid` for
+  ISOAdobe + Format-0 + Format-1 charsets.
 - 10 new unit tests in `cff::charstring` covering each flex
   operator's expanded cubic-segment output (hand-derived from the
   TN5177 §4.6 operand expansion), arity-rejection for each

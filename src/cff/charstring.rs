@@ -36,6 +36,8 @@
 //! width even though it isn't currently surfaced — `Font::glyph_advance`
 //! routes through `hmtx`, which is the spec-preferred path.
 
+use crate::cff::charset::Charset;
+use crate::cff::encoding::STANDARD_ENCODING;
 use crate::cff::index::Index;
 use crate::cff::subrs::bias_for;
 use crate::outline::{CubicContour, CubicOutline, CubicSegment, Point};
@@ -102,6 +104,16 @@ pub(crate) struct Interpreter<'a> {
     /// first operator's optional leading width operand.
     nominal_width_x: f32,
     default_width_x: f32,
+
+    /// CharStrings INDEX + Charset for the legacy `seac` (4-operand
+    /// `endchar`) component lookup (TN5177 Appendix C). Both are
+    /// required to resolve a `bchar` / `achar` byte via the Standard
+    /// Encoding table; absent, a 4-operand `endchar` errors out.
+    charstrings: Option<&'a Index<'a>>,
+    charset: Option<&'a Charset<'a>>,
+    /// True when this interpreter is itself a seac component — used
+    /// to enforce TN5177 Appendix C's "may not be nested" rule.
+    is_seac_component: bool,
 }
 
 impl<'a> Interpreter<'a> {
@@ -127,7 +139,25 @@ impl<'a> Interpreter<'a> {
             bytes_processed: 0,
             nominal_width_x,
             default_width_x,
+            charstrings: None,
+            charset: None,
+            is_seac_component: false,
         }
+    }
+
+    /// Equip the interpreter with the CharStrings INDEX + charset
+    /// references needed to handle the deprecated four-operand
+    /// `endchar` (Type 1 `seac`) form (TN5177 Appendix C). When both
+    /// are absent, a 4-operand `endchar` returns
+    /// [`Error::CharstringSeacBadComponent`] instead of resolving.
+    pub(crate) fn with_seac_resolver(
+        mut self,
+        charstrings: &'a Index<'a>,
+        charset: &'a Charset<'a>,
+    ) -> Self {
+        self.charstrings = Some(charstrings);
+        self.charset = Some(charset);
+        self
     }
 
     /// Run the top-level charstring `bytes` to completion (`endchar`).
@@ -345,6 +375,22 @@ impl<'a> Interpreter<'a> {
                     return Ok(());
                 }
                 14 /* endchar */ => {
+                    // Two stack shapes per TN5177:
+                    //   §4.2:        [width?] endchar             — 0 or 1 operand.
+                    //   App. C seac: [width?] adx ady bchar achar endchar
+                    //                                            — 4 or 5 operands.
+                    // We tolerate the spec by routing on the stack-count
+                    // BEFORE consulting handle_initial_width, because the
+                    // seac form's leading "width" works just like every
+                    // other width-bearing operator (extra operand =
+                    // delta-from-nominal, otherwise default).
+                    let n = self.stack.len();
+                    if n == 4 || n == 5 {
+                        self.op_seac()?;
+                        // op_seac handles width + component composition;
+                        // it always ends the charstring.
+                        return Err(Error::CharstringEnd);
+                    }
                     self.handle_initial_width(0);
                     self.close_subpath_if_open();
                     return Err(Error::CharstringEnd);
@@ -700,6 +746,117 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
+    // ----------------------------------------------------------------
+    //   Deprecated four-operand `endchar` (Type 1 `seac` legacy
+    //   accented-character composite, TN5177 Appendix C).
+    //
+    //   Operand layout on entry to endchar:
+    //     [width_delta?] adx ady bchar achar
+    //
+    //   `bchar` and `achar` are *codes* in the CFF Standard Encoding
+    //   (TN5176 Appendix B §1): we resolve each code → SID via that
+    //   table, then SID → GID via this font's charset. The `bchar`
+    //   component is drawn at (0, 0); the `achar` component is drawn
+    //   at (adx, ady). The composite's sidebearing is implicitly 0
+    //   (TN5177 Appendix C: "all sidebearings are considered to be
+    //   zero and hence unencoded in Type 2 charstrings").
+    //
+    //   The spec also forbids nesting — a component charstring may
+    //   not itself end in 4-operand seac form.
+    // ----------------------------------------------------------------
+    fn op_seac(&mut self) -> Result<(), Error> {
+        if self.is_seac_component {
+            return Err(Error::CharstringSeacNested);
+        }
+        // First, handle the optional width: 5-operand form has a
+        // leading width-delta, 4-operand form does not. We call
+        // handle_initial_width(4) so the width logic stays in one place.
+        self.handle_initial_width(4);
+        // After width handling, the stack must be exactly 4.
+        if self.stack.len() != 4 {
+            return Err(Error::CharstringStackUnderflow);
+        }
+        let achar = self.stack[3] as i32;
+        let bchar = self.stack[2] as i32;
+        let ady = self.stack[1];
+        let adx = self.stack[0];
+        self.stack.clear();
+
+        let charstrings = self
+            .charstrings
+            .ok_or(Error::CharstringSeacBadComponent(0))?;
+        let charset = self.charset.ok_or(Error::CharstringSeacBadComponent(0))?;
+
+        // Resolve bchar / achar codes (Standard Encoding → SID → GID).
+        let b_gid = resolve_seac_component(bchar, charset)?;
+        let a_gid = resolve_seac_component(achar, charset)?;
+
+        // Close any open subpath in *this* (composite) glyph first so
+        // the component contours sit alongside, not appended to, any
+        // partial subpath. Practically the composite has no path of
+        // its own, but the spec doesn't forbid one and a defensive
+        // close keeps the geometry well-defined.
+        self.close_subpath_if_open();
+
+        // Sub-interpreters for bchar and achar. We carry forward the
+        // same global / local subrs + Private DICT widths because
+        // component charstrings are normal glyphs in the same font.
+        self.render_seac_component(b_gid, 0.0, 0.0, charstrings, charset)?;
+        self.render_seac_component(a_gid, adx, ady, charstrings, charset)?;
+        Ok(())
+    }
+
+    /// Decode `gid`'s charstring as a seac component, translate every
+    /// emitted point by `(off_x, off_y)`, and append the resulting
+    /// contours to `self.out`. The sub-interpreter's own state is
+    /// discarded after `into_outline()`.
+    fn render_seac_component(
+        &mut self,
+        gid: u16,
+        off_x: f32,
+        off_y: f32,
+        charstrings: &'a Index<'a>,
+        charset: &'a Charset<'a>,
+    ) -> Result<(), Error> {
+        let body = charstrings
+            .entry(gid as u32)
+            .map_err(|_| Error::CharstringSeacBadComponent(0))?;
+        let mut sub = Interpreter::new(
+            self.global_subrs,
+            self.local_subrs,
+            self.nominal_width_x,
+            self.default_width_x,
+        )
+        .with_seac_resolver(charstrings, charset);
+        sub.is_seac_component = true;
+        sub.run(body)?;
+        let component_outline = sub.into_outline();
+        for contour in component_outline.contours.into_iter() {
+            let mut shifted = CubicContour::default();
+            for seg in contour.segments.into_iter() {
+                let shifted_seg = match seg {
+                    CubicSegment::MoveTo(p) => {
+                        CubicSegment::MoveTo(Point::new(p.x + off_x, p.y + off_y))
+                    }
+                    CubicSegment::LineTo(p) => {
+                        CubicSegment::LineTo(Point::new(p.x + off_x, p.y + off_y))
+                    }
+                    CubicSegment::CurveTo { c1, c2, end } => CubicSegment::CurveTo {
+                        c1: Point::new(c1.x + off_x, c1.y + off_y),
+                        c2: Point::new(c2.x + off_x, c2.y + off_y),
+                        end: Point::new(end.x + off_x, end.y + off_y),
+                    },
+                    CubicSegment::ClosePath => CubicSegment::ClosePath,
+                };
+                shifted.segments.push(shifted_seg);
+            }
+            if !shifted.segments.is_empty() {
+                self.out.contours.push(shifted);
+            }
+        }
+        Ok(())
+    }
+
     fn op_flex1(&mut self) -> Result<(), Error> {
         // `flex1` operands (TN5177 §4.6):
         //   dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 d6   (11 operands)
@@ -727,6 +884,29 @@ impl<'a> Interpreter<'a> {
         self.r_curve_to(s[6], s[7], s[8], s[9], dx6, dy6);
         Ok(())
     }
+}
+
+/// Resolve a seac component byte (Type 1 `bchar` / `achar`) to a GID
+/// via the CFF Standard Encoding (TN5176 Appendix B §1) followed by
+/// the font's per-glyph charset.
+///
+/// Returns [`Error::CharstringSeacBadComponent`] for any byte outside
+/// `0..=255` (the operand technically lives in i32 because it came
+/// off the Type 2 number stack), for codes that Standard Encoding
+/// leaves unassigned (SID 0 .notdef), or for codes whose SID has no
+/// matching glyph in this font.
+fn resolve_seac_component(code: i32, charset: &Charset<'_>) -> Result<u16, Error> {
+    if !(0..=255).contains(&code) {
+        return Err(Error::CharstringSeacBadComponent(0));
+    }
+    let code_u = code as u8;
+    let sid = STANDARD_ENCODING[code_u as usize];
+    if sid == 0 {
+        return Err(Error::CharstringSeacBadComponent(code_u));
+    }
+    charset
+        .gid_of_sid(sid)
+        .ok_or(Error::CharstringSeacBadComponent(code_u))
 }
 
 /// Decode a single integer operand from `bytes` starting at `i`.
@@ -1211,6 +1391,225 @@ mod tests {
         let mut interp = Interpreter::new(&global, None, 0.0, 500.0);
         let r = interp.run(&cs);
         assert!(matches!(r, Err(Error::CharstringStackUnderflow)));
+    }
+
+    // ----------------------------------------------------------------
+    //   seac (deprecated 4-operand endchar) — TN5177 Appendix C
+    //
+    //   These tests construct a tiny synthetic font fragment: a
+    //   CharStrings INDEX with three glyphs (.notdef, 'A', 'grave')
+    //   and a Format-0 charset that maps gid 1 → SID 34 ('A',
+    //   Standard Encoding code 65) and gid 2 → SID 124 ('grave',
+    //   Standard Encoding code 193). The top-level charstring then
+    //   issues a 4-operand endchar to compose 'Agrave' from its
+    //   pieces; the resulting outline should contain the contours of
+    //   both components, with the 'grave' translated by (adx, ady).
+    // ----------------------------------------------------------------
+
+    fn build_seac_fixture() -> (Vec<u8>, Vec<u8>) {
+        // Per-glyph charstrings:
+        //   gid 0 (.notdef): endchar (14)
+        //   gid 1 ('A'):     rmoveto 10 10 (lineto +20 0 +0 +20 -20 0), endchar
+        //                   → square at (10,10) size 20.
+        //   gid 2 ('grave'): rmoveto 5 5 (lineto +10 0 +0 +10 -10 0), endchar
+        //                   → square at (5,5) size 10.
+        // Operand encoding shortcut: value V = byte (V + 139) for the
+        // single-byte form (V in -107..=+107). 10=149, 20=159, 5=144,
+        // -20=119, -10=129.
+        let notdef: Vec<u8> = vec![14];
+        // rmoveto 10 10, hlineto 20, vlineto 20, hlineto -20, endchar
+        let a: Vec<u8> = vec![
+            149, 149, 21, // rmoveto 10 10
+            159, 6, // hlineto 20
+            159, 7, // vlineto 20
+            119, 6,  // hlineto -20
+            14, // endchar
+        ];
+        // rmoveto 5 5, hlineto 10, vlineto 10, hlineto -10, endchar
+        let grave: Vec<u8> = vec![
+            144, 144, 21, // rmoveto 5 5
+            149, 6, // hlineto 10
+            149, 7, // vlineto 10
+            129, 6,  // hlineto -10
+            14, // endchar
+        ];
+        // Build an INDEX with three entries.
+        let mut data = Vec::new();
+        data.extend_from_slice(&notdef);
+        data.extend_from_slice(&a);
+        data.extend_from_slice(&grave);
+        // Offsets are 1-based: [1, 1+|notdef|, 1+|notdef|+|a|, total+1].
+        let off1 = 1u8;
+        let off2 = (1 + notdef.len()) as u8;
+        let off3 = (1 + notdef.len() + a.len()) as u8;
+        let off4 = (1 + notdef.len() + a.len() + grave.len()) as u8;
+        let mut bytes = vec![
+            0x00, 0x03, // count = 3
+            0x01, // offSize = 1
+            off1, off2, off3, off4,
+        ];
+        bytes.extend_from_slice(&data);
+        // Charset Format 0 inline payload — 2 u16 SIDs for gids 1, 2.
+        // SID 34 = 'A', SID 124 = 'grave' (per TN5176 Appendix A).
+        let charset_payload = vec![0x00, 0x22, 0x00, 0x7C];
+        (bytes, charset_payload)
+    }
+
+    #[test]
+    fn seac_composes_two_components_with_offset() {
+        let (cs_bytes, charset_payload) = build_seac_fixture();
+        let charstrings = Index::parse(&cs_bytes, 0).unwrap();
+        assert_eq!(charstrings.count, 3);
+        let charset = Charset::Format0 {
+            bytes: &charset_payload,
+            num_glyphs: 3,
+        };
+        let g = empty_index();
+        let global = Index::parse(&g, 0).unwrap();
+
+        // Composite charstring: adx ady bchar achar endchar.
+        //   adx = 100 (= byte 239)
+        //   ady = 50  (= byte 189)
+        //   bchar = 65  ('A')      → byte 65+139=204
+        //   achar = 193 ('grave')  → 193 > 107, use two-byte +108..+1131 form:
+        //     193 = (b0-247)*256 + b1 + 108, pick b0=247 → 193 = 0 + b1 + 108 → b1=85.
+        let top_cs = [
+            239, // adx = 100
+            189, // ady = 50
+            204, // bchar = 65 ('A')
+            247, 85, // achar = 193 ('grave')
+            14, // endchar (4-arg seac form)
+        ];
+        let mut interp =
+            Interpreter::new(&global, None, 0.0, 500.0).with_seac_resolver(&charstrings, &charset);
+        interp.run(&top_cs).unwrap();
+        let mut outline = interp.into_outline();
+        outline.recompute_bounds();
+
+        // Expect two contours: 'A' (square at 10,10 size 20) and
+        // 'grave' (square at 5,5 size 10) shifted by (100, 50).
+        // bchar 'A' bounds: x [10, 30], y [10, 30].
+        // achar 'grave' is at (5,5) size 10, shifted by (100,50) →
+        //   bounds x [105, 115], y [55, 65].
+        // Combined bounds: x_min=10, y_min=10, x_max=115, y_max=65.
+        assert_eq!(outline.contours.len(), 2);
+        assert_eq!(outline.bounds.x_min, 10.0);
+        assert_eq!(outline.bounds.y_min, 10.0);
+        assert_eq!(outline.bounds.x_max, 115.0);
+        assert_eq!(outline.bounds.y_max, 65.0);
+
+        // First contour (bchar 'A') starts unshifted at (10, 10).
+        if let CubicSegment::MoveTo(p) = outline.contours[0].segments[0] {
+            assert_eq!(p, Point::new(10.0, 10.0));
+        } else {
+            panic!("bchar should open with MoveTo");
+        }
+        // Second contour (achar 'grave') is shifted by (100, 50) →
+        // start point becomes (5+100, 5+50) = (105, 55).
+        if let CubicSegment::MoveTo(p) = outline.contours[1].segments[0] {
+            assert_eq!(p, Point::new(105.0, 55.0));
+        } else {
+            panic!("achar should open with MoveTo");
+        }
+    }
+
+    #[test]
+    fn seac_with_width_extra_operand_records_glyph_width() {
+        // 5-operand endchar: width_delta + adx + ady + bchar + achar.
+        // nominalWidthX = 100, width-delta = 50 → resolved width = 150.
+        let (cs_bytes, charset_payload) = build_seac_fixture();
+        let charstrings = Index::parse(&cs_bytes, 0).unwrap();
+        let charset = Charset::Format0 {
+            bytes: &charset_payload,
+            num_glyphs: 3,
+        };
+        let g = empty_index();
+        let global = Index::parse(&g, 0).unwrap();
+        let top_cs = [
+            189, // width_delta = 50
+            239, // adx = 100
+            189, // ady = 50
+            204, // bchar = 65 ('A')
+            247, 85, // achar = 193 ('grave')
+            14, // endchar
+        ];
+        let mut interp = Interpreter::new(&global, None, 100.0, 500.0)
+            .with_seac_resolver(&charstrings, &charset);
+        interp.run(&top_cs).unwrap();
+        assert_eq!(interp.glyph_width, 150.0);
+    }
+
+    #[test]
+    fn seac_bchar_not_in_charset_is_an_error() {
+        // 'Z' (Standard Encoding code 90, SID 59) is not in the
+        // synthetic charset → CharstringSeacBadComponent.
+        let (cs_bytes, charset_payload) = build_seac_fixture();
+        let charstrings = Index::parse(&cs_bytes, 0).unwrap();
+        let charset = Charset::Format0 {
+            bytes: &charset_payload,
+            num_glyphs: 3,
+        };
+        let g = empty_index();
+        let global = Index::parse(&g, 0).unwrap();
+        let top_cs = [
+            139, 139, // adx = 0, ady = 0
+            229, // bchar = 90 ('Z')
+            204, // achar = 65 ('A')
+            14,  // endchar
+        ];
+        let mut interp =
+            Interpreter::new(&global, None, 0.0, 500.0).with_seac_resolver(&charstrings, &charset);
+        let r = interp.run(&top_cs);
+        assert!(matches!(r, Err(Error::CharstringSeacBadComponent(90))));
+    }
+
+    #[test]
+    fn seac_without_resolver_errors_out() {
+        // Same 4-operand endchar, but the interpreter never received
+        // a charstrings/charset pair. The handler should refuse to
+        // guess and surface CharstringSeacBadComponent.
+        let g = empty_index();
+        let global = Index::parse(&g, 0).unwrap();
+        let top_cs = [139, 139, 204, 247, 85, 14];
+        let mut interp = Interpreter::new(&global, None, 0.0, 500.0);
+        let r = interp.run(&top_cs);
+        assert!(matches!(r, Err(Error::CharstringSeacBadComponent(_))));
+    }
+
+    #[test]
+    fn seac_nested_is_rejected() {
+        // Build a fixture where gid 1's body is itself a 4-operand
+        // endchar referring back to 'A'/'grave' — the spec forbids
+        // nesting.
+        // bchar = 65 ('A'), achar = 65 ('A') with adx = ady = 0.
+        let nested_a: Vec<u8> = vec![139, 139, 204, 204, 14];
+        let grave: Vec<u8> = vec![144, 144, 21, 149, 6, 149, 7, 129, 6, 14];
+        let notdef: Vec<u8> = vec![14];
+        let mut data = Vec::new();
+        data.extend_from_slice(&notdef);
+        data.extend_from_slice(&nested_a);
+        data.extend_from_slice(&grave);
+        let off1 = 1u8;
+        let off2 = (1 + notdef.len()) as u8;
+        let off3 = (1 + notdef.len() + nested_a.len()) as u8;
+        let off4 = (1 + notdef.len() + nested_a.len() + grave.len()) as u8;
+        let mut bytes = vec![0x00, 0x03, 0x01, off1, off2, off3, off4];
+        bytes.extend_from_slice(&data);
+        let charstrings = Index::parse(&bytes, 0).unwrap();
+        let charset_payload = vec![0x00, 0x22, 0x00, 0x7C];
+        let charset = Charset::Format0 {
+            bytes: &charset_payload,
+            num_glyphs: 3,
+        };
+        let g = empty_index();
+        let global = Index::parse(&g, 0).unwrap();
+        // Outer composite calls gid 1, which itself wants to seac →
+        // nested-seac error bubbles up.
+        let top_cs = [139, 139, 204, 247, 85, 14];
+        let mut interp =
+            Interpreter::new(&global, None, 0.0, 500.0).with_seac_resolver(&charstrings, &charset);
+        let r = interp.run(&top_cs);
+        assert!(matches!(r, Err(Error::CharstringSeacNested)));
     }
 
     #[test]

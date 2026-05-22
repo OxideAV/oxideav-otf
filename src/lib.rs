@@ -84,6 +84,15 @@ pub enum Error {
     /// never escapes the public API.
     #[doc(hidden)]
     CharstringEnd,
+    /// `endchar` was used in its deprecated four-operand `seac` form
+    /// (TN5177 Appendix C / Type 1 `seac`) but a referenced
+    /// component glyph could not be resolved through the Standard
+    /// Encoding table + the font's charset. The contained byte is
+    /// the unresolved Standard-Encoding code (bchar or achar).
+    CharstringSeacBadComponent(u8),
+    /// Nested `seac` was attempted. The spec forbids it (TN5177
+    /// Appendix C: "This construct may not be nested.").
+    CharstringSeacNested,
 }
 
 impl core::fmt::Display for Error {
@@ -122,6 +131,14 @@ impl core::fmt::Display for Error {
                 write!(f, "Type 2 charstring: unsupported operator {op:#06x}")
             }
             Self::CharstringEnd => f.write_str("Type 2 charstring: end (internal)"),
+            Self::CharstringSeacBadComponent(code) => write!(
+                f,
+                "Type 2 charstring: seac component (Standard Encoding code {code}) \
+                 has no matching glyph in this font's charset"
+            ),
+            Self::CharstringSeacNested => {
+                f.write_str("Type 2 charstring: nested seac is forbidden (TN5177 Appendix C)")
+            }
         }
     }
 }

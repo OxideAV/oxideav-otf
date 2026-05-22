@@ -11,9 +11,12 @@ TrueType outlines (quadratic Beziers); OTF handles CFF outlines
 - sfnt + table directory walker (recognises `OTTO`, `0x00010000`, `true`).
 - CFF (Adobe TN5176, version 1):
   - Header + Name INDEX + Top DICT + String INDEX + Global Subrs INDEX.
-  - Charset formats 0 / 1 / 2 (predefined ISOAdobe also recognised).
-  - Encoding formats 0 / 1 (predefined Standard / Expert noted but not
-    used — real lookup goes through the sfnt `cmap` table).
+  - Charset formats 0 / 1 / 2 (predefined ISOAdobe also recognised),
+    with `sid_of(gid)` *and* the reverse `gid_of_sid(sid)` lookup.
+  - Encoding formats 0 / 1 plus predefined Standard Encoding
+    (TN5176 Appendix B §1, full 256-entry `code → SID` table
+    transcribed). Expert Encoding remains noted but not yet
+    transcribed.
   - Private DICT including `defaultWidthX` / `nominalWidthX` and the
     Local Subrs INDEX offset.
 - Type 2 charstring interpreter (Adobe TN5177):
@@ -23,10 +26,15 @@ TrueType outlines (quadratic Beziers); OTF handles CFF outlines
   - Flex: `flex`, `hflex`, `hflex1`, `flex1`.
   - Subroutines: `callsubr`, `callgsubr`, `return`, `endchar` with
     correct 107 / 1131 / 32768 bias formula.
+  - Deprecated `endchar` four-operand form (TN5177 Appendix C / Type 1
+    `seac`) — composes `bchar` + `achar` (resolved via Standard
+    Encoding + the font's charset) with `(adx, ady)` translation of
+    the accent component. Spec's nesting prohibition enforced.
   - Hints: `hstem`, `vstem`, `hstemhm`, `vstemhm`, `hintmask`,
     `cntrmask` — recorded for stack accounting; not enforced.
   - Width handling per TN5177 §4.7 (optional first-operand width
-    delta vs `nominalWidthX` / `defaultWidthX`).
+    delta vs `nominalWidthX` / `defaultWidthX`), including the
+    5-operand seac form `[width?] adx ady bchar achar endchar`.
 - Selected sfnt tables for metadata: `head`, `hhea`, `maxp`, `hmtx`,
   `cmap` (formats 0/4/6/12), `name`.
 
@@ -97,6 +105,32 @@ for contour in &outline.contours {
 - `cff::TopMetadata` re-exported for callers that want to inspect
   the full pre-extracted metadata struct in one shot.
 
+## Round-4 additions (this push)
+
+CFF Type 2 charstring `seac` legacy composite + CFF Standard
+Encoding lookup table (Adobe TN5176 Appendix B §1 + TN5177
+Appendix C):
+
+- A 256-entry Standard Encoding `code → SID` table is transcribed
+  verbatim from TN5176 Appendix B §1 (the same table the Type 1
+  `seac` and the deprecated 4-operand `endchar` form both
+  reference for `bchar` / `achar` resolution). It is exposed as
+  `cff::encoding::STANDARD_ENCODING` and also wired into
+  `Encoding::Standard::lookup` so legacy Standard-encoded
+  PostScript fonts now resolve `code → GID` directly through the
+  charset, no sfnt-`cmap` round-trip needed.
+- `Charset::gid_of_sid` reverse-lookup landed for ISOAdobe +
+  Format 0 / 1 / 2 — the inverse of the existing `sid_of(gid)`.
+- The Type 2 charstring interpreter detects an `endchar` whose
+  stack carries 4 or 5 operands and runs the TN5177-Appendix-C
+  seac path: resolve `bchar` and `achar` through Standard
+  Encoding + the charset, recursively decode each component's
+  charstring, translate the `achar` component by `(adx, ady)`, and
+  merge both contour lists into the composite outline. Nested
+  seac is rejected per spec; missing component glyphs surface as
+  the new `Error::CharstringSeacBadComponent(u8)`; nested attempts
+  surface as `Error::CharstringSeacNested`.
+
 ## Round-3 fixes (this push)
 
 Type 2 charstring flex-operator opcode-dispatch correction (Adobe
@@ -125,9 +159,12 @@ TN5177 §4.6):
   Detected at parse time and reported as `Error::Cff2NotImplemented`.
 - CIDFonts (FDArray / FDSelect / ROS) — detected and rejected.
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
-- Predefined Standard / Expert encoding lookup tables (legacy
-  PostScript path; modern OpenType callers use the sfnt `cmap`
-  table that we already implement).
+- Predefined Expert / ExpertSubset encoding lookup tables (TN5176
+  Appendix B §2 + Appendix C §Expert) — Standard Encoding is
+  transcribed as of round 4; Expert / ExpertSubset remain pending
+  (they only matter for a vanishingly small set of legacy
+  PostScript Expert fonts and modern OpenType callers route
+  through the sfnt `cmap`).
 - The Adobe Glyph List string → codepoint mapping (round 3+ if any
   consumer needs it).
 - `OS/2`, `post`, `GSUB`, `GPOS`, `GDEF`, `kern` tables — blocked

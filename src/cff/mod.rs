@@ -248,7 +248,8 @@ impl<'a> Cff<'a> {
             self.private.local_subrs.as_ref(),
             self.private.nominal_width_x,
             self.private.default_width_x,
-        );
+        )
+        .with_seac_resolver(&self.charstrings, &self.charset);
         interp.run(cs)?;
         let mut outline = interp.into_outline();
         outline.recompute_bounds();

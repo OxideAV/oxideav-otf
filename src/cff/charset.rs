@@ -85,6 +85,48 @@ impl<'a> Charset<'a> {
         }
     }
 
+    /// Reverse-map a SID to its glyph id, scanning the charset's
+    /// records. Returns `None` if no glyph in this charset has the
+    /// requested SID.
+    ///
+    /// Used by the Type 2 charstring interpreter's `seac` handler
+    /// (TN5177 Appendix C, the deprecated four-operand `endchar`
+    /// form): once `bchar` / `achar` are resolved through the
+    /// Standard Encoding table to SIDs, the actual component glyph
+    /// IDs come from the per-font charset.
+    pub(crate) fn gid_of_sid(&self, sid: u16) -> Option<u16> {
+        if sid == 0 {
+            return Some(0); // .notdef is always GID 0
+        }
+        match self {
+            Self::IsoAdobe => {
+                // ISOAdobe is the identity for SIDs 1..=228.
+                if (sid as usize) < 229 {
+                    Some(sid)
+                } else {
+                    None
+                }
+            }
+            Self::Format0 { bytes, num_glyphs } => {
+                // Linear scan of the format-0 SID array.
+                let n = (*num_glyphs).saturating_sub(1) as usize;
+                for i in 0..n {
+                    let off = i * 2;
+                    if let Ok(entry) = read_u16(bytes, off) {
+                        if entry == sid {
+                            return Some((i + 1) as u16);
+                        }
+                    } else {
+                        return None;
+                    }
+                }
+                None
+            }
+            Self::Format1 { bytes, num_glyphs } => walk_runs_for_sid(bytes, *num_glyphs, sid, 1),
+            Self::Format2 { bytes, num_glyphs } => walk_runs_for_sid(bytes, *num_glyphs, sid, 2),
+        }
+    }
+
     /// Resolve gid → SID. Returns `None` for out-of-range gid.
     pub(crate) fn sid_of(&self, gid: u16) -> Option<u16> {
         if gid == 0 {
@@ -109,6 +151,39 @@ impl<'a> Charset<'a> {
             Self::Format2 { bytes, num_glyphs } => walk_runs(bytes, *num_glyphs, gid, 2),
         }
     }
+}
+
+/// Reverse-direction sibling of [`walk_runs`]: scans the run table to
+/// find the gid that holds `target_sid`.
+fn walk_runs_for_sid(
+    bytes: &[u8],
+    num_glyphs: u32,
+    target_sid: u16,
+    n_left_size: usize,
+) -> Option<u16> {
+    let mut gid: u32 = 1;
+    let mut off: usize = 0;
+    while gid < num_glyphs {
+        let first = read_u16(bytes, off).ok()?;
+        off += 2;
+        let n_left: u32 = match n_left_size {
+            1 => read_u8(bytes, off).ok()? as u32,
+            2 => read_u16(bytes, off).ok()? as u32,
+            _ => unreachable!(),
+        };
+        off += n_left_size;
+        let run_last_sid = (first as u32) + n_left;
+        if (target_sid as u32) >= (first as u32) && (target_sid as u32) <= run_last_sid {
+            let in_run = (target_sid as u32) - (first as u32);
+            let resolved = gid + in_run;
+            if resolved > u16::MAX as u32 {
+                return None;
+            }
+            return Some(resolved as u16);
+        }
+        gid = gid + n_left + 1;
+    }
+    None
 }
 
 /// Shared run-walker for format 1 (`n_left_size = 1`) and format 2
@@ -185,6 +260,49 @@ mod tests {
         assert_eq!(cs.sid_of(3), Some(52));
         assert_eq!(cs.sid_of(4), Some(70));
         assert_eq!(cs.sid_of(5), Some(71));
+    }
+
+    #[test]
+    fn gid_of_sid_iso_adobe() {
+        let cs = Charset::IsoAdobe;
+        assert_eq!(cs.gid_of_sid(0), Some(0));
+        assert_eq!(cs.gid_of_sid(1), Some(1));
+        assert_eq!(cs.gid_of_sid(228), Some(228));
+        assert_eq!(cs.gid_of_sid(229), None);
+    }
+
+    #[test]
+    fn gid_of_sid_format0() {
+        // num_glyphs = 4 → 3 SIDs after .notdef.
+        let payload = vec![0x00, 100, 0x00, 200, 0x01, 0x2C]; // 100, 200, 300
+        let cs = Charset::Format0 {
+            bytes: &payload,
+            num_glyphs: 4,
+        };
+        assert_eq!(cs.gid_of_sid(100), Some(1));
+        assert_eq!(cs.gid_of_sid(200), Some(2));
+        assert_eq!(cs.gid_of_sid(300), Some(3));
+        assert_eq!(cs.gid_of_sid(999), None);
+        // .notdef forwarding.
+        assert_eq!(cs.gid_of_sid(0), Some(0));
+    }
+
+    #[test]
+    fn gid_of_sid_format1_within_run() {
+        // Run 1: first SID 50, nLeft 2 → covers gid 1..=3 (sids 50, 51, 52).
+        // Run 2: first SID 70, nLeft 1 → covers gid 4..=5 (sids 70, 71).
+        let payload = vec![0x00, 50, 0x02, 0x00, 70, 0x01];
+        let cs = Charset::Format1 {
+            bytes: &payload,
+            num_glyphs: 6,
+        };
+        assert_eq!(cs.gid_of_sid(50), Some(1));
+        assert_eq!(cs.gid_of_sid(51), Some(2));
+        assert_eq!(cs.gid_of_sid(52), Some(3));
+        assert_eq!(cs.gid_of_sid(70), Some(4));
+        assert_eq!(cs.gid_of_sid(71), Some(5));
+        // SID in a hole between runs → None.
+        assert_eq!(cs.gid_of_sid(60), None);
     }
 
     #[test]
