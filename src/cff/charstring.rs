@@ -374,10 +374,15 @@ impl<'a> Interpreter<'a> {
                 }
 
                 // --- Flex (two-byte) -----------------------------------
-                0x0C22 /* flex */ => self.op_flex()?,
-                0x0C23 /* flex1 */ => self.op_flex1()?,
-                0x0C24 /* hflex */ => self.op_hflex()?,
-                0x0C25 /* hflex1 */ => self.op_hflex1()?,
+                // Adobe TN5177 §4.6 opcode assignments:
+                //   12 34 → hflex   (0x0C22)
+                //   12 35 → flex    (0x0C23)
+                //   12 36 → hflex1  (0x0C24)
+                //   12 37 → flex1   (0x0C25)
+                0x0C22 /* hflex */ => self.op_hflex()?,
+                0x0C23 /* flex */ => self.op_flex()?,
+                0x0C24 /* hflex1 */ => self.op_hflex1()?,
+                0x0C25 /* flex1 */ => self.op_flex1()?,
 
                 _ => {
                     return Err(Error::CharstringUnsupportedOp(op));
@@ -610,18 +615,34 @@ impl<'a> Interpreter<'a> {
     }
 
     // ----------------------------------------------------------------
-    //   Flex (TN5177 §4.6, two-byte ops)
+    //   Flex (Adobe TN5177 §4.6, two-byte ops)
     //
-    //   Flex represents a six-curve sequence (two cubic Beziers)
-    //   that approximates a near-flat hump. Most callers (us
-    //   included) treat each flex operator as two consecutive
-    //   curveto's — ignoring the flex-depth operand because we don't
-    //   need scan-conversion specialization at the AA threshold.
+    //   The flex family encodes a pair of cubic Beziers that together
+    //   approximate a shallow hump (typically a serif or a soft
+    //   curve below the hinting threshold). We decode each operator
+    //   into two `rrcurveto`-equivalent emissions and let the
+    //   downstream rasterizer collapse the hump if it wants — Type 2
+    //   leaves the flex-depth hint advisory.
+    //
+    //   Opcodes:
+    //     12 34 (0x0C22) — hflex
+    //     12 35 (0x0C23) — flex
+    //     12 36 (0x0C24) — hflex1
+    //     12 37 (0x0C25) — flex1
     // ----------------------------------------------------------------
 
     fn op_flex(&mut self) -> Result<(), Error> {
-        // Operands: dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 dx6 dy6 fd
-        // We accept either 12 (no flex depth) or 13 operands.
+        // `flex` operands (TN5177 §4.6):
+        //   dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 dx6 dy6 fd
+        //
+        // 13 operands. `fd` is the "flex depth" in hundredths of a
+        // pixel: at small sizes the rasterizer is permitted to draw a
+        // straight line instead of the two curves. We always emit
+        // the two curves; the AA threshold downstream picks the
+        // straight-line collapse if it cares.
+        //
+        // We accept 12 operands as a permissive shortcut for fonts
+        // that omit the depth — the geometry is identical.
         let n = self.stack.len();
         if n != 12 && n != 13 {
             return Err(Error::CharstringStackUnderflow);
@@ -634,43 +655,62 @@ impl<'a> Interpreter<'a> {
     }
 
     fn op_hflex(&mut self) -> Result<(), Error> {
-        // Operands: dx1 dx2 dy2 dx3 dx4 dx5 dx6  (7 operands)
-        // Implicit y components for the start / end on the baseline.
+        // `hflex` operands (TN5177 §4.6):
+        //   dx1 dx2 dy2 dx3 dx4 dx5 dx6                  (7 operands)
+        //
+        // The flex starts and ends on the same y as the pen. Only
+        // dy2 carries an explicit y delta; the other five dy values
+        // are implicit. We expand to two rrcurveto-equivalent curves:
+        //   curve 1: (dx1, 0)    (dx2, dy2)   (dx3, 0)
+        //   curve 2: (dx4, 0)    (dx5, -dy2)  (dx6, 0)
+        // so the pen ends back at its original y (sum of all dy
+        // deltas across both curves is 0).
         if self.stack.len() != 7 {
             return Err(Error::CharstringStackUnderflow);
         }
         let s = self.stack.clone();
         self.stack.clear();
-        self.r_curve_to(s[0], 0.0, s[1], s[2], s[3], 0.0);
-        self.r_curve_to(s[4], 0.0, s[5], -s[2], s[6], 0.0);
+        let (dx1, dx2, dy2, dx3, dx4, dx5, dx6) = (s[0], s[1], s[2], s[3], s[4], s[5], s[6]);
+        self.r_curve_to(dx1, 0.0, dx2, dy2, dx3, 0.0);
+        self.r_curve_to(dx4, 0.0, dx5, -dy2, dx6, 0.0);
         Ok(())
     }
 
     fn op_hflex1(&mut self) -> Result<(), Error> {
-        // dx1 dy1 dx2 dy2 dx3 dx4 dx5 dy5 dx6  (9 operands)
+        // `hflex1` operands (TN5177 §4.6):
+        //   dx1 dy1 dx2 dy2 dx3 dx4 dx5 dy5 dx6          (9 operands)
+        //
+        // Like hflex but the flex's start and end y must be equal —
+        // the pen does NOT need to be on the baseline (so dy1 is
+        // free), but the final dy6 is constrained by the closure
+        // requirement. dy3 = 0 and dy4 = 0 (implicit), so:
+        //   curve 1: (dx1, dy1) (dx2, dy2) (dx3, 0)
+        //   curve 2: (dx4, 0)   (dx5, dy5) (dx6, dy6)
+        // with dy6 = -(dy1 + dy2 + dy5) to close back to start-y.
         if self.stack.len() != 9 {
             return Err(Error::CharstringStackUnderflow);
         }
         let s = self.stack.clone();
         self.stack.clear();
-        self.r_curve_to(s[0], s[1], s[2], s[3], s[4], 0.0);
-        // The last segment must land on the original y (start of flex)
-        // — TN5177 §4.6: "flex1 ends with the y-coordinate at which
-        // it started"; the missing dy6 is computed to bring the pen
-        // back to the start y of the flex's first curve.
-        let dy_total = s[1] + s[3] + 0.0 + s[7];
-        let dy6 = -dy_total;
-        self.r_curve_to(s[5], 0.0, s[6], -s[3] - 0.0, s[8], dy6);
+        let (dx1, dy1, dx2, dy2, dx3) = (s[0], s[1], s[2], s[3], s[4]);
+        let (dx4, dx5, dy5, dx6) = (s[5], s[6], s[7], s[8]);
+        let dy6 = -(dy1 + dy2 + dy5);
+        self.r_curve_to(dx1, dy1, dx2, dy2, dx3, 0.0);
+        self.r_curve_to(dx4, 0.0, dx5, dy5, dx6, dy6);
         Ok(())
     }
 
     fn op_flex1(&mut self) -> Result<(), Error> {
-        // dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 d6  (11 operands)
-        // The dominant axis of the cumulative motion of the first 5
-        // off-curve deltas determines whether d6 is dx6 (motion is
-        // mostly vertical) or dy6 (mostly horizontal); the OTHER
-        // axis closes back to the start coordinate of the first
-        // curve.
+        // `flex1` operands (TN5177 §4.6):
+        //   dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 d6   (11 operands)
+        //
+        // The dominant axis of the cumulative motion across the first
+        // five (dx,dy) pairs picks whether d6 names the x or y delta
+        // of the closing endpoint; the OTHER axis is computed to
+        // bring the pen back to the start coordinate on that axis.
+        // Specifically (TN5177): "if abs(sum_dx) > abs(sum_dy), d6
+        // is dx6 and dy6 = -sum_dy; otherwise d6 is dy6 and
+        // dx6 = -sum_dx".
         if self.stack.len() != 11 {
             return Err(Error::CharstringStackUnderflow);
         }
@@ -877,5 +917,345 @@ mod tests {
         let mut interp = Interpreter::new(&global, None, 100.0, 500.0);
         interp.run(&cs).unwrap();
         assert_eq!(interp.glyph_width, 500.0);
+    }
+
+    // ----------------------------------------------------------------
+    //   Flex-family hand-derived fixtures
+    //
+    //   Each test constructs a charstring whose only path operators
+    //   are an rmoveto followed by one of the four flex operators
+    //   plus endchar. The expected CubicSegment output is computed
+    //   by hand from the operand expansion documented in TN5177
+    //   §4.6 and re-checked against the implementation.
+    //
+    //   Operand encoding shortcut (TN5177 §3.2 single-byte form):
+    //     value = byte - 139, i.e. byte = value + 139.
+    //     0 = 139, +10 = 149, +20 = 159, +50 = 189,
+    //     -5 = 134, -10 = 129, +100 = 239.
+    //   Two-byte operators are emitted as bytes (12, sub) where
+    //   sub = opcode_lo. flex = 35, hflex = 34, hflex1 = 36,
+    //   flex1 = 37.
+    // ----------------------------------------------------------------
+
+    fn cubic_endpoint(seg: &CubicSegment) -> Point {
+        match *seg {
+            CubicSegment::MoveTo(p) | CubicSegment::LineTo(p) => p,
+            CubicSegment::CurveTo { end, .. } => end,
+            CubicSegment::ClosePath => Point::new(f32::NAN, f32::NAN),
+        }
+    }
+
+    #[test]
+    fn flex_op_expands_to_two_cubics() {
+        // rmoveto 100 100, then flex with 13 operands. We pick a
+        // symmetric hump: rising for curve 1, mirror-falling for
+        // curve 2, with fd = 50 (flex depth — we don't act on it).
+        //
+        // Operands: dx1=10 dy1=5 dx2=10 dy2=10 dx3=10 dy3=5
+        //           dx4=10 dy4=-5 dx5=10 dy5=-10 dx6=10 dy6=-5 fd=50
+        // Expected:
+        //   curve 1 control 1: (110, 105)
+        //   curve 1 control 2: (120, 115)
+        //   curve 1 end:        (130, 120)   ← join (peak of hump)
+        //   curve 2 control 1: (140, 115)
+        //   curve 2 control 2: (150, 105)
+        //   curve 2 end:        (160, 100)   ← back to baseline y
+        let cs = [
+            239, 239, 21, // rmoveto 100 100
+            149, 144, 149, 149, 149, 144, // 10 5 10 10 10 5
+            149, 134, 149, 129, 149, 134, // 10 -5 10 -10 10 -5
+            189, // fd = 50
+            12, 35, // flex (0x0C23)
+            14, // endchar
+        ];
+        let o = run(&cs);
+        assert_eq!(o.contours.len(), 1);
+        let segs = &o.contours[0].segments;
+        // MoveTo + 2 CurveTo + ClosePath = 4 segments.
+        assert_eq!(segs.len(), 4);
+        if let CubicSegment::CurveTo { c1, c2, end } = segs[1] {
+            assert_eq!(c1, Point::new(110.0, 105.0));
+            assert_eq!(c2, Point::new(120.0, 115.0));
+            assert_eq!(end, Point::new(130.0, 120.0));
+        } else {
+            panic!("expected first CurveTo, got {:?}", segs[1]);
+        }
+        if let CubicSegment::CurveTo { c1, c2, end } = segs[2] {
+            assert_eq!(c1, Point::new(140.0, 115.0));
+            assert_eq!(c2, Point::new(150.0, 105.0));
+            assert_eq!(end, Point::new(160.0, 100.0));
+        } else {
+            panic!("expected second CurveTo, got {:?}", segs[2]);
+        }
+    }
+
+    #[test]
+    fn hflex_op_returns_to_baseline_y() {
+        // rmoveto 100 100, hflex with 7 operands.
+        //   dx1=10 dx2=10 dy2=20 dx3=10 dx4=10 dx5=10 dx6=10
+        // Expansion:
+        //   curve 1: (dx1, 0) (dx2, dy2) (dx3, 0)
+        //   curve 2: (dx4, 0) (dx5, -dy2) (dx6, 0)
+        // Expected control points (pen starts at (100,100)):
+        //   c1.c1 = (110, 100); c1.c2 = (120, 120); c1.end = (130, 120)
+        //   c2.c1 = (140, 120); c2.c2 = (150, 100); c2.end = (160, 100)
+        let cs = [
+            239, 239, 21, // rmoveto 100 100
+            149, 149, 159, 149, 149, 149, 149, // 10 10 20 10 10 10 10
+            12, 34, // hflex (0x0C22)
+            14, // endchar
+        ];
+        let o = run(&cs);
+        assert_eq!(o.contours.len(), 1);
+        let segs = &o.contours[0].segments;
+        assert_eq!(segs.len(), 4);
+        if let CubicSegment::CurveTo { c1, c2, end } = segs[1] {
+            assert_eq!(c1, Point::new(110.0, 100.0));
+            assert_eq!(c2, Point::new(120.0, 120.0));
+            assert_eq!(end, Point::new(130.0, 120.0));
+        } else {
+            panic!("expected hflex curve 1, got {:?}", segs[1]);
+        }
+        if let CubicSegment::CurveTo { c1, c2, end } = segs[2] {
+            assert_eq!(c1, Point::new(140.0, 120.0));
+            assert_eq!(c2, Point::new(150.0, 100.0));
+            assert_eq!(end, Point::new(160.0, 100.0));
+        } else {
+            panic!("expected hflex curve 2, got {:?}", segs[2]);
+        }
+        // The flex must return the pen to start-y (100).
+        assert_eq!(cubic_endpoint(&segs[2]).y, 100.0);
+    }
+
+    #[test]
+    fn hflex1_op_closes_to_start_y() {
+        // rmoveto 100 100, hflex1 with 9 operands.
+        //   dx1=10 dy1=5 dx2=10 dy2=10 dx3=10
+        //   dx4=10 dx5=10 dy5=-5 dx6=10
+        // Expansion:
+        //   curve 1: (dx1, dy1) (dx2, dy2) (dx3, 0)
+        //   curve 2: (dx4, 0)   (dx5, dy5) (dx6, dy6)
+        // with dy6 = -(dy1 + dy2 + dy5) = -(5 + 10 + -5) = -10
+        // Expected segments:
+        //   c1.c1 = (110, 105); c1.c2 = (120, 115); c1.end = (130, 115)
+        //   c2.c1 = (140, 115); c2.c2 = (150, 110); c2.end = (160, 100)
+        let cs = [
+            239, 239, 21, // rmoveto 100 100
+            149, 144, 149, 149, 149, // 10 5 10 10 10
+            149, 149, 134, 149, // 10 10 -5 10
+            12, 36, // hflex1 (0x0C24)
+            14, // endchar
+        ];
+        let o = run(&cs);
+        assert_eq!(o.contours.len(), 1);
+        let segs = &o.contours[0].segments;
+        assert_eq!(segs.len(), 4);
+        if let CubicSegment::CurveTo { c1, c2, end } = segs[1] {
+            assert_eq!(c1, Point::new(110.0, 105.0));
+            assert_eq!(c2, Point::new(120.0, 115.0));
+            assert_eq!(end, Point::new(130.0, 115.0));
+        } else {
+            panic!("expected hflex1 curve 1, got {:?}", segs[1]);
+        }
+        if let CubicSegment::CurveTo { c1, c2, end } = segs[2] {
+            assert_eq!(c1, Point::new(140.0, 115.0));
+            assert_eq!(c2, Point::new(150.0, 110.0));
+            assert_eq!(end, Point::new(160.0, 100.0));
+        } else {
+            panic!("expected hflex1 curve 2, got {:?}", segs[2]);
+        }
+        // hflex1: end y must equal start y.
+        assert_eq!(cubic_endpoint(&segs[2]).y, 100.0);
+    }
+
+    #[test]
+    fn flex1_op_picks_dominant_x_axis() {
+        // rmoveto 100 100, flex1 with 11 operands. Choose x-dominant
+        // motion so d6 names dx6 and dy6 closes back to start y.
+        //   dx1=10 dy1=5 dx2=10 dy2=5 dx3=10 dy3=5
+        //   dx4=10 dy4=-5 dx5=10 dy5=-5 d6=50
+        // sum_dx = 50, sum_dy = 5 → |sum_dx| > |sum_dy| → dx6 = 50,
+        // dy6 = -5 (closes y back to 100).
+        // Expected:
+        //   c1.c1 = (110, 105); c1.c2 = (120, 110); c1.end = (130, 115)
+        //   c2.c1 = (140, 110); c2.c2 = (150, 105); c2.end = (200, 100)
+        let cs = [
+            239, 239, 21, // rmoveto 100 100
+            149, 144, 149, 144, 149, 144, // 10 5 10 5 10 5
+            149, 134, 149, 134, // 10 -5 10 -5
+            189, // d6 = 50
+            12, 37, // flex1 (0x0C25)
+            14, // endchar
+        ];
+        let o = run(&cs);
+        assert_eq!(o.contours.len(), 1);
+        let segs = &o.contours[0].segments;
+        assert_eq!(segs.len(), 4);
+        if let CubicSegment::CurveTo { c1, c2, end } = segs[1] {
+            assert_eq!(c1, Point::new(110.0, 105.0));
+            assert_eq!(c2, Point::new(120.0, 110.0));
+            assert_eq!(end, Point::new(130.0, 115.0));
+        } else {
+            panic!("expected flex1 curve 1, got {:?}", segs[1]);
+        }
+        if let CubicSegment::CurveTo { c1, c2, end } = segs[2] {
+            assert_eq!(c1, Point::new(140.0, 110.0));
+            assert_eq!(c2, Point::new(150.0, 105.0));
+            assert_eq!(end, Point::new(200.0, 100.0));
+        } else {
+            panic!("expected flex1 curve 2, got {:?}", segs[2]);
+        }
+        // dx-dominant flex1: y closes back to start.
+        assert_eq!(cubic_endpoint(&segs[2]).y, 100.0);
+    }
+
+    #[test]
+    fn flex1_op_picks_dominant_y_axis() {
+        // y-dominant variant: swap roles so sum_dy > sum_dx.
+        //   dx1=5 dy1=10 dx2=5 dy2=10 dx3=5 dy3=10
+        //   dx4=-5 dy4=10 dx5=-5 dy5=10 d6=50
+        // sum_dx = 5, sum_dy = 50 → |sum_dy| > |sum_dx| → dy6 = 50,
+        // dx6 = -5 (closes x back to start x = 100).
+        //
+        // Pen starts at (100, 100).
+        // Curve 1 absolute control / endpoint:
+        //   c1.c1 = (105, 110); c1.c2 = (110, 120); c1.end = (115, 130)
+        // Curve 2 absolute:
+        //   c2.c1 = (110, 140); c2.c2 = (105, 150); c2.end = (100, 200)
+        let cs = [
+            239, 239, 21, // rmoveto 100 100
+            144, 149, 144, 149, 144, 149, // 5 10 5 10 5 10
+            134, 149, 134, 149, // -5 10 -5 10
+            189, // d6 = 50
+            12, 37, // flex1
+            14, // endchar
+        ];
+        let o = run(&cs);
+        let segs = &o.contours[0].segments;
+        assert_eq!(segs.len(), 4);
+        if let CubicSegment::CurveTo { c1, c2, end } = segs[1] {
+            assert_eq!(c1, Point::new(105.0, 110.0));
+            assert_eq!(c2, Point::new(110.0, 120.0));
+            assert_eq!(end, Point::new(115.0, 130.0));
+        } else {
+            panic!("expected flex1-y curve 1, got {:?}", segs[1]);
+        }
+        if let CubicSegment::CurveTo { c1, c2, end } = segs[2] {
+            assert_eq!(c1, Point::new(110.0, 140.0));
+            assert_eq!(c2, Point::new(105.0, 150.0));
+            assert_eq!(end, Point::new(100.0, 200.0));
+        } else {
+            panic!("expected flex1-y curve 2, got {:?}", segs[2]);
+        }
+        // dy-dominant flex1: x closes back to start.
+        assert_eq!(cubic_endpoint(&segs[2]).x, 100.0);
+    }
+
+    #[test]
+    fn flex_op_rejects_wrong_arity() {
+        // flex requires 12 or 13 operands. 11 is too few.
+        let cs = [
+            239, 239, 21, // rmoveto 100 100
+            149, 149, 149, 149, 149, 149, 149, 149, 149, 149, 149, // 11x 10
+            12, 35, // flex
+            14,
+        ];
+        let g = empty_index();
+        let global = Index::parse(&g, 0).unwrap();
+        let mut interp = Interpreter::new(&global, None, 0.0, 500.0);
+        let r = interp.run(&cs);
+        assert!(matches!(r, Err(Error::CharstringStackUnderflow)));
+    }
+
+    #[test]
+    fn hflex_op_rejects_wrong_arity() {
+        // hflex requires exactly 7 operands.
+        let cs = [
+            239, 239, 21, // rmoveto 100 100
+            149, 149, 149, 149, 149, 149, // 6 operands
+            12, 34, // hflex
+            14,
+        ];
+        let g = empty_index();
+        let global = Index::parse(&g, 0).unwrap();
+        let mut interp = Interpreter::new(&global, None, 0.0, 500.0);
+        let r = interp.run(&cs);
+        assert!(matches!(r, Err(Error::CharstringStackUnderflow)));
+    }
+
+    #[test]
+    fn hflex1_op_rejects_wrong_arity() {
+        let cs = [
+            239, 239, 21, // rmoveto 100 100
+            149, 149, 149, 149, 149, 149, 149, 149, // 8 operands
+            12, 36, // hflex1
+            14,
+        ];
+        let g = empty_index();
+        let global = Index::parse(&g, 0).unwrap();
+        let mut interp = Interpreter::new(&global, None, 0.0, 500.0);
+        let r = interp.run(&cs);
+        assert!(matches!(r, Err(Error::CharstringStackUnderflow)));
+    }
+
+    #[test]
+    fn flex1_op_rejects_wrong_arity() {
+        let cs = [
+            239, 239, 21, // rmoveto 100 100
+            149, 149, 149, 149, 149, 149, 149, 149, 149, 149, // 10 operands
+            12, 37, // flex1
+            14,
+        ];
+        let g = empty_index();
+        let global = Index::parse(&g, 0).unwrap();
+        let mut interp = Interpreter::new(&global, None, 0.0, 500.0);
+        let r = interp.run(&cs);
+        assert!(matches!(r, Err(Error::CharstringStackUnderflow)));
+    }
+
+    #[test]
+    fn flex_family_opcodes_routed_per_tn5177() {
+        // Sanity check: each flex two-byte opcode must trigger its
+        // namesake handler. We feed each operator a stack count that
+        // ONLY its handler accepts; any other handler would error.
+        // This catches the opcode-shuffle bug we landed against in
+        // round 91.
+        let g = empty_index();
+        let global = Index::parse(&g, 0).unwrap();
+
+        // hflex (12 34) accepts exactly 7 operands.
+        let cs = [239, 239, 21, 149, 149, 149, 149, 149, 149, 149, 12, 34, 14];
+        let mut interp = Interpreter::new(&global, None, 0.0, 500.0);
+        interp
+            .run(&cs)
+            .expect("hflex (12 34) should accept 7 operands");
+
+        // flex (12 35) accepts 12 or 13. 13 here.
+        let cs = [
+            239, 239, 21, 149, 149, 149, 149, 149, 149, 149, 149, 149, 149, 149, 149, 149, 12, 35,
+            14,
+        ];
+        let mut interp = Interpreter::new(&global, None, 0.0, 500.0);
+        interp
+            .run(&cs)
+            .expect("flex (12 35) should accept 13 operands");
+
+        // hflex1 (12 36) accepts exactly 9 operands.
+        let cs = [
+            239, 239, 21, 149, 149, 149, 149, 149, 149, 149, 149, 149, 12, 36, 14,
+        ];
+        let mut interp = Interpreter::new(&global, None, 0.0, 500.0);
+        interp
+            .run(&cs)
+            .expect("hflex1 (12 36) should accept 9 operands");
+
+        // flex1 (12 37) accepts exactly 11 operands.
+        let cs = [
+            239, 239, 21, 149, 149, 149, 149, 149, 149, 149, 149, 149, 149, 149, 12, 37, 14,
+        ];
+        let mut interp = Interpreter::new(&global, None, 0.0, 500.0);
+        interp
+            .run(&cs)
+            .expect("flex1 (12 37) should accept 11 operands");
     }
 }

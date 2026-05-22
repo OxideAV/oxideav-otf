@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Type 2 charstring flex-operator dispatch was shuffled: every flex
+  two-byte opcode (`hflex` 12 34, `flex` 12 35, `hflex1` 12 36,
+  `flex1` 12 37 — Adobe TN5177 §4.6) routed to the wrong handler,
+  producing incorrect arity checks and incorrect cubic-segment
+  output for any glyph that used flex.
+- `hflex1`'s second-curve mid-control y-delta used `-dy2` instead
+  of the spec-mandated `dy5` (the operand on the stack at position
+  s[7]). The closing dy6 was already correctly computed as
+  `-(dy1 + dy2 + dy5)`.
+
 ### Added
 
 - CFF Top DICT metadata accessors on `Font`: `font_bbox`,
@@ -26,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
+- 10 new unit tests in `cff::charstring` covering each flex
+  operator's expanded cubic-segment output (hand-derived from the
+  TN5177 §4.6 operand expansion), arity-rejection for each
+  operator, and a routing sanity check that exercises every flex
+  opcode against a stack count only its handler accepts. These
+  tests fail against the pre-fix dispatch table.
 - 4 new integration tests against the Source Sans 3 fixture
   exercising the new metadata + table-directory APIs.
 - 2 new unit tests on `extract_top_metadata` covering the spec

@@ -97,6 +97,28 @@ for contour in &outline.contours {
 - `cff::TopMetadata` re-exported for callers that want to inspect
   the full pre-extracted metadata struct in one shot.
 
+## Round-3 fixes (this push)
+
+Type 2 charstring flex-operator opcode-dispatch correction (Adobe
+TN5177 §4.6):
+
+- `hflex` (12 34, 0x0C22), `flex` (12 35, 0x0C23), `hflex1` (12 36,
+  0x0C24), `flex1` (12 37, 0x0C25) were previously routed to the
+  wrong handlers — the dispatch table had every flex opcode
+  shuffled by one slot. Real fonts using any of the four flex
+  operators would have decoded with wrong arity expectations and
+  produced incorrect outlines for affected glyphs. Source Sans 3
+  Regular happens not to exercise the buggy path in any of our
+  smoke-test glyphs, which is why the regression slipped through.
+- `hflex1`'s second-curve `dyb` argument was `-dy2` (a copy-paste
+  carry-over from `hflex`); spec says `dy5` (the operand actually
+  on the stack). The closing `dy6 = -(dy1+dy2+dy5)` was correct.
+- Added 10 hand-derived charstring fixtures (one per flex
+  operator + arity-rejection tests + a routing sanity check) that
+  re-derive the expected `CubicSegment` output from TN5177's
+  operand expansion. These tests fail before the fix and pass
+  after.
+
 ## Out of scope (round 3+)
 
 - CFF2 (OpenType 1.8+ variation-aware variant — Adobe TN5174).
