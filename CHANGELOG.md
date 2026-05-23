@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Type 2 charstring arithmetic, stack, storage, and conditional
+  operators (Adobe TN5177 §§4.4–4.6). The escape operators `abs`
+  (12 9), `add` (12 10), `sub` (12 11), `div` (12 12), `neg` (12 14),
+  `random` (12 23), `mul` (12 24), `sqrt` (12 26); the stack operators
+  `drop` (12 18), `dup` (12 27), `exch` (12 28), `index` (12 29),
+  `roll` (12 30); the storage operators `put` (12 20) / `get` (12 21)
+  over a 32-element transient array (size per TN5177 Appendix B); and
+  the conditional operators `and` (12 3), `or` (12 4), `not` (12 5),
+  `eq` (12 15), `ifelse` (12 22) are now interpreted. Previously any
+  of these surfaced as `Error::CharstringUnsupportedOp`. These
+  operators pop their inputs from the top of the argument stack and
+  push their result back without clearing it. `div`-by-zero and
+  `sqrt` of a negative both yield a finite 0 (the spec leaves them
+  "undefined") so a malformed font cannot inject NaN/Inf into pen
+  coordinates; `random` is a deterministic LCG in (0, 1] for
+  reproducible decoding.
+- `Error::CharstringTransientIndex(i32)` for a `put` / `get` index
+  outside the 0..32 transient-array range.
 - CID-keyed CFF support (Adobe TN5176 §§18, 19). A CFF Top DICT that
   begins with the `ROS` operator (op 12 30) is now recognised as a
   CID-keyed font: instead of a single top-level Private DICT, each

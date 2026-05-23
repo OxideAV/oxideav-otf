@@ -22,10 +22,16 @@
 //! - Hint: hstem, vstem, hstemhm, vstemhm, hintmask, cntrmask
 //!   (recorded but not enforced — we'll antialias at >= 16 px)
 //! - Flex: flex, hflex, hflex1, flex1
-//! - Arithmetic (rare but spec-listed): not implemented for round 1;
-//!   the rare fonts that need them will surface as
-//!   `Error::CharstringUnsupportedOp` and we can fold them in
-//!   round 2 if any production fixture hits the path.
+//! - Arithmetic (TN5177 §4.4): abs, add, sub, div, neg, mul, sqrt,
+//!   random; stack: drop, dup, exch, index, roll
+//! - Storage (TN5177 §4.5): put, get over a 32-element transient array
+//!   (Appendix B)
+//! - Conditional (TN5177 §4.6): and, or, not, eq, ifelse
+//!
+//! Arithmetic / storage / conditional operators differ from path
+//! operators: they pop their inputs from the TOP of the argument stack
+//! and push their result back, leaving the rest of the stack intact
+//! (they never clear it).
 //!
 //! Width handling (TN5177 §4.7): the FIRST operand on the stack at
 //! the time of the FIRST hstem / hstemhm / vstem / vstemhm /
@@ -57,6 +63,10 @@ const MAX_BYTES_PROCESSED: usize = 1 << 20;
 /// numbers, but the OpenType profile bumps that to 96 (and we add
 /// slack to keep panics out of unusual but valid fonts).
 const STACK_CAP: usize = 192;
+
+/// Transient-array element count for the `put` / `get` storage
+/// operators (TN5177 Appendix B: "TransientArray elements 32").
+const TRANSIENT_LEN: usize = 32;
 
 /// A small helper for the interpreter's state.
 pub(crate) struct Interpreter<'a> {
@@ -114,6 +124,20 @@ pub(crate) struct Interpreter<'a> {
     /// True when this interpreter is itself a seac component — used
     /// to enforce TN5177 Appendix C's "may not be nested" rule.
     is_seac_component: bool,
+
+    /// Transient array used by the `put` / `get` storage operators
+    /// (TN5177 §4.5). Appendix B fixes its size at 32 elements. The
+    /// spec offers "no provision to initialize this array, except
+    /// explicitly using the `put` operator"; we zero-fill so that a
+    /// `get` of an unwritten slot returns a defined 0 rather than
+    /// erroring, matching the spec's "value returned is undefined"
+    /// (a defined-but-arbitrary value is a conforming choice).
+    transient: [f32; TRANSIENT_LEN],
+    /// State for the `random` operator's pseudo-random generator
+    /// (TN5177 §4.4). The spec only requires a value in (0, 1]; the
+    /// sequence is deliberately deterministic so outline decoding is
+    /// reproducible.
+    rng_state: u32,
 }
 
 impl<'a> Interpreter<'a> {
@@ -142,6 +166,11 @@ impl<'a> Interpreter<'a> {
             charstrings: None,
             charset: None,
             is_seac_component: false,
+            transient: [0.0; TRANSIENT_LEN],
+            // Non-zero seed so the very first `random` is in (0, 1];
+            // an LCG never reaches 0 from a non-zero odd seed under
+            // the modulus we use below.
+            rng_state: 0x2545_F491,
         }
     }
 
@@ -430,6 +459,98 @@ impl<'a> Interpreter<'a> {
                 0x0C24 /* hflex1 */ => self.op_hflex1()?,
                 0x0C25 /* flex1 */ => self.op_flex1()?,
 
+                // --- Arithmetic operators (TN5177 §4.4) ----------------
+                // These pop their inputs from the TOP of the argument
+                // stack and push the result back; unlike path operators
+                // they do NOT clear the stack.
+                0x0C09 /* abs    (12 9)  */ => { let a = self.arith_pop1()?; self.push(a.abs())?; }
+                0x0C0A /* add    (12 10) */ => { let (a, b) = self.arith_pop2()?; self.push(a + b)?; }
+                0x0C0B /* sub    (12 11) */ => { let (a, b) = self.arith_pop2()?; self.push(a - b)?; }
+                0x0C0C /* div    (12 12) */ => {
+                    // "result is undefined if overflow occurs and is
+                    // zero for underflow." We map division by zero to
+                    // 0.0 so a malformed font cannot inject a NaN/Inf
+                    // into pen coordinates.
+                    let (a, b) = self.arith_pop2()?;
+                    self.push(if b == 0.0 { 0.0 } else { a / b })?;
+                }
+                0x0C0E /* neg    (12 14) */ => { let a = self.arith_pop1()?; self.push(-a)?; }
+                0x0C18 /* mul    (12 24) */ => { let (a, b) = self.arith_pop2()?; self.push(a * b)?; }
+                0x0C1A /* sqrt   (12 26) */ => {
+                    // "If num is negative, the result is undefined."
+                    let a = self.arith_pop1()?;
+                    self.push(if a < 0.0 { 0.0 } else { a.sqrt() })?;
+                }
+                0x0C17 /* random (12 23) */ => { let r = self.next_random(); self.push(r)?; }
+
+                // --- Stack-manipulation operators (TN5177 §4.4) --------
+                0x0C12 /* drop   (12 18) */ => { self.arith_pop1()?; }
+                0x0C1B /* dup    (12 27) */ => {
+                    let a = self.arith_pop1()?;
+                    self.push(a)?;
+                    self.push(a)?;
+                }
+                0x0C1C /* exch   (12 28) */ => {
+                    let n = self.stack.len();
+                    if n < 2 {
+                        return Err(Error::CharstringStackUnderflow);
+                    }
+                    self.stack.swap(n - 1, n - 2);
+                }
+                0x0C1D /* index  (12 29) */ => self.op_index()?,
+                0x0C1E /* roll   (12 30) */ => self.op_roll()?,
+
+                // --- Storage operators (TN5177 §4.5) -------------------
+                0x0C14 /* put    (12 20) */ => {
+                    // val i put — stores val at transient[i].
+                    let (val, idx) = self.arith_pop2()?;
+                    let i = idx as i32;
+                    if i < 0 || i as usize >= TRANSIENT_LEN {
+                        return Err(Error::CharstringTransientIndex(i));
+                    }
+                    self.transient[i as usize] = val;
+                }
+                0x0C15 /* get    (12 21) */ => {
+                    // i get — pushes transient[i].
+                    let idx = self.arith_pop1()?;
+                    let i = idx as i32;
+                    if i < 0 || i as usize >= TRANSIENT_LEN {
+                        return Err(Error::CharstringTransientIndex(i));
+                    }
+                    let v = self.transient[i as usize];
+                    self.push(v)?;
+                }
+
+                // --- Conditional operators (TN5177 §4.6) ---------------
+                0x0C03 /* and    (12 3)  */ => {
+                    let (a, b) = self.arith_pop2()?;
+                    self.push(bool01(a != 0.0 && b != 0.0))?;
+                }
+                0x0C04 /* or     (12 4)  */ => {
+                    let (a, b) = self.arith_pop2()?;
+                    self.push(bool01(a != 0.0 || b != 0.0))?;
+                }
+                0x0C05 /* not    (12 5)  */ => {
+                    let a = self.arith_pop1()?;
+                    self.push(bool01(a == 0.0))?;
+                }
+                0x0C0F /* eq     (12 15) */ => {
+                    let (a, b) = self.arith_pop2()?;
+                    self.push(bool01(a == b))?;
+                }
+                0x0C16 /* ifelse (12 22) */ => {
+                    // s1 s2 v1 v2 ifelse → s1 if v1 <= v2 else s2.
+                    let n = self.stack.len();
+                    if n < 4 {
+                        return Err(Error::CharstringStackUnderflow);
+                    }
+                    let v2 = self.stack.pop().unwrap();
+                    let v1 = self.stack.pop().unwrap();
+                    let s2 = self.stack.pop().unwrap();
+                    let s1 = self.stack.pop().unwrap();
+                    self.push(if v1 <= v2 { s1 } else { s2 })?;
+                }
+
                 _ => {
                     return Err(Error::CharstringUnsupportedOp(op));
                 }
@@ -447,6 +568,86 @@ impl<'a> Interpreter<'a> {
         }
         self.stack.push(v);
         Ok(())
+    }
+
+    /// Pop a single operand from the top of the argument stack for an
+    /// arithmetic / storage / conditional operator (TN5177 §4.4-4.6).
+    fn arith_pop1(&mut self) -> Result<f32, Error> {
+        self.stack.pop().ok_or(Error::CharstringStackUnderflow)
+    }
+
+    /// Pop two operands from the top of the argument stack, returning
+    /// them in pushed order `(num1, num2)` (num2 was on top).
+    fn arith_pop2(&mut self) -> Result<(f32, f32), Error> {
+        let b = self.stack.pop().ok_or(Error::CharstringStackUnderflow)?;
+        let a = self.stack.pop().ok_or(Error::CharstringStackUnderflow)?;
+        Ok((a, b))
+    }
+
+    /// `index` (12 29): `numX … num0 i index → numX … num0 numi`.
+    /// Copies the element `i` deep from the top back onto the top. A
+    /// negative `i` copies the top element (TN5177 §4.4). `i` greater
+    /// than the available depth is "undefined"; we reject it.
+    fn op_index(&mut self) -> Result<(), Error> {
+        let i = self.arith_pop1()? as i32;
+        let n = self.stack.len();
+        if n == 0 {
+            return Err(Error::CharstringStackUnderflow);
+        }
+        // i counts from the (new) top: i=0 → top element.
+        let depth = if i < 0 { 0usize } else { i as usize };
+        if depth >= n {
+            return Err(Error::CharstringStackUnderflow);
+        }
+        let v = self.stack[n - 1 - depth];
+        self.push(v)
+    }
+
+    /// `roll` (12 30): `num(N-1) … num0 N J roll` performs a circular
+    /// shift of the top `N` elements by `J` (positive = upward, i.e.
+    /// toward the top of the stack), per TN5177 §4.4.
+    fn op_roll(&mut self) -> Result<(), Error> {
+        let j = self.arith_pop1()? as i32;
+        let nf = self.arith_pop1()?;
+        let n = nf as i32;
+        // "The value N must be a non-negative integer."
+        if n < 0 {
+            return Err(Error::CharstringStackUnderflow);
+        }
+        let n = n as usize;
+        if n == 0 {
+            return Ok(());
+        }
+        let len = self.stack.len();
+        if n > len {
+            return Err(Error::CharstringStackUnderflow);
+        }
+        let base = len - n;
+        // Reduce J into [0, n) with positive = rotate-right within the
+        // window (top element wraps to the bottom of the window for a
+        // single upward step).
+        let shift = j.rem_euclid(n as i32) as usize;
+        if shift != 0 {
+            self.stack[base..].rotate_right(shift);
+        }
+        Ok(())
+    }
+
+    /// `random` (12 23): returns a pseudo-random number in (0, 1].
+    /// TN5177 §4.4 only constrains the range, so a deterministic LCG
+    /// keeps outline decoding reproducible (no system entropy, which
+    /// would also be a clean-room dependency surface).
+    fn next_random(&mut self) -> f32 {
+        // Numerical Recipes "minstd"-style 32-bit LCG. The next state
+        // is never 0 for a non-zero seed under this multiplier, so the
+        // mapped value stays strictly above 0; we map onto (0, 1].
+        self.rng_state = self
+            .rng_state
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
+        // Take 24 high bits → [0, 2^24); shift to [1, 2^24] → (0, 1].
+        let bits = (self.rng_state >> 8) & 0x00FF_FFFF;
+        (bits as f32 + 1.0) / 16_777_216.0
     }
 
     fn move_to(&mut self, dx: f32, dy: f32) {
@@ -929,6 +1130,17 @@ fn parse_int_operand(bytes: &[u8], i: usize, b0: u8) -> Result<(i32, usize), Err
             Ok((v, 2))
         }
         _ => Err(Error::Cff("invalid charstring integer operand byte")),
+    }
+}
+
+/// Maps a Rust bool to the Type 2 conditional-operator result encoding
+/// (`1_or_0`): the spec's `and` / `or` / `not` / `eq` push 1 for true
+/// and 0 for false (TN5177 §4.6).
+fn bool01(b: bool) -> f32 {
+    if b {
+        1.0
+    } else {
+        0.0
     }
 }
 
@@ -1656,5 +1868,250 @@ mod tests {
         interp
             .run(&cs)
             .expect("flex1 (12 37) should accept 11 operands");
+    }
+
+    // ---- Arithmetic / storage / conditional operators (TN5177 §4.4-4.6) ----
+
+    /// Run a charstring and return the point of its first `MoveTo`.
+    /// Used by the arithmetic-operator tests below: each computes an
+    /// (x, y) on the stack via the operators under test, then a single
+    /// `rmoveto` (op 21) consumes exactly the two computed operands, so
+    /// the resulting pen position proves what the operators left.
+    fn first_move(cs: &[u8]) -> Point {
+        let o = run(cs);
+        match o.contours[0].segments[0] {
+            CubicSegment::MoveTo(p) => p,
+            ref other => panic!("expected MoveTo, got {other:?}"),
+        }
+    }
+
+    /// Run a charstring expected to fail, returning the error.
+    fn run_err(cs: &[u8]) -> Error {
+        let g = empty_index();
+        let global = Index::parse(&g, 0).unwrap();
+        let mut interp = Interpreter::new(&global, None, 0.0, 500.0);
+        interp.run(cs).expect_err("charstring should have errored")
+    }
+
+    // Number encodings used below (single-byte ints, v in [-107,107]
+    // encode as v + 139): 0→139, 5→144, 10→149, 50→189, 100→239,
+    // -5→134, -50→89, 1→140, 2→141, 3→142, 4→143, 7→146.
+
+    #[test]
+    fn arith_add_sub() {
+        // 50 50 add → 100 ; 200 100 sub → 100 ; rmoveto → (100, 100).
+        let p = first_move(&[
+            189, 189, 12, 10, // 50 50 add  → 100
+            247, 92, 239, 12, 11, // 200 100 sub → 100  (200 = (247-247)*256+92+108)
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(100.0, 100.0));
+    }
+
+    #[test]
+    fn arith_neg_abs() {
+        // -50 neg → 50 ; -50 abs → 50 ; rmoveto → (50, 50).
+        let p = first_move(&[
+            89, 12, 14, // -50 neg → 50
+            89, 12, 9, // -50 abs → 50
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(50.0, 50.0));
+    }
+
+    #[test]
+    fn arith_mul_div() {
+        // 10 10 mul → 100 ; 100 2 div → 50 ; rmoveto → (100, 50).
+        let p = first_move(&[
+            149, 149, 12, 24, // 10 10 mul → 100
+            239, 141, 12, 12, // 100 2 div → 50
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(100.0, 50.0));
+    }
+
+    #[test]
+    fn arith_div_by_zero_is_zero() {
+        // 100 0 div → 0 (spec: undefined on overflow; we choose 0).
+        // 50 push, rmoveto → (0, 50).
+        let p = first_move(&[
+            239, 139, 12, 12,  // 100 0 div → 0
+            189, // 50
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(0.0, 50.0));
+        assert!(p.x.is_finite());
+    }
+
+    #[test]
+    fn arith_sqrt() {
+        // 100 sqrt → 10 ; 4 sqrt → 2 ; rmoveto → (10, 2).
+        let p = first_move(&[
+            239, 12, 26, // 100 sqrt → 10
+            143, 12, 26, // 4 sqrt → 2
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(10.0, 2.0));
+    }
+
+    #[test]
+    fn stack_dup_drop_exch() {
+        // 50 dup → 50 50 ; drop → 50 ; (one operand) ; 100 exch then
+        // rmoveto. Build: 50 dup drop → 50 ; 100 exch → 100 50 ;
+        // rmoveto → (100, 50)? exch swaps top two: stack [50,100] →
+        // exch → [100,50]; rmoveto reads bottom-two → (100, 50).
+        let p = first_move(&[
+            189, 12, 27, 12, 18, // 50 dup drop → 50
+            239, 12, 28, // 100 exch → stack now [100, 50]
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(100.0, 50.0));
+    }
+
+    #[test]
+    fn stack_index() {
+        // 10 50 1 index → 10 50 10  (copies element 1 deep). Then drop
+        // the original duplicate context: stack is [10, 50, 10]. We
+        // want rmoveto to read two operands, so drop one: stack
+        // [10,50,10] → drop → [10,50] → rmoveto (10,50).
+        let p = first_move(&[
+            149, 189, 140, 12, 29, // 10 50 1 index → 10 50 10
+            12, 18, // drop → 10 50
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(10.0, 50.0));
+    }
+
+    #[test]
+    fn stack_index_negative_copies_top() {
+        // 10 50 -1 index → 10 50 50 (negative i copies top). Drop one
+        // → 10 50; rmoveto → (10, 50).
+        let p = first_move(&[
+            149, 189, 138, 12, 29, // 10 50 -1 index → 10 50 50
+            12, 18, // drop → 10 50
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(10.0, 50.0));
+    }
+
+    #[test]
+    fn stack_roll_upward() {
+        // 10 50 100 3 1 roll → rotate top 3 up by 1.
+        // Window [10,50,100] rolled up by 1 → [100,10,50]
+        // (top element 100 wraps to the bottom of the window).
+        // Drop one → [100,10]; rmoveto → (100, 10).
+        let p = first_move(&[
+            149, 189, 239, // 10 50 100
+            142, 140, 12, 30, // 3 1 roll
+            12, 18, // drop
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(100.0, 10.0));
+    }
+
+    #[test]
+    fn storage_put_get_roundtrip() {
+        // 100 0 put — store 100 at slot 0. Then 50 (x), 0 get (→100)
+        // gives stack [50, 100]; rmoveto → (50, 100).
+        let p = first_move(&[
+            239, 139, 12, 20,  // 100 0 put
+            189, // 50
+            139, 12, 21, // 0 get → 100
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(50.0, 100.0));
+    }
+
+    #[test]
+    fn storage_get_unwritten_is_zero() {
+        // 5 get on an unwritten slot → 0 (we zero-fill). 50 push,
+        // rmoveto → (50, 0).
+        let p = first_move(&[
+            189, // 50
+            144, 12, 21, // 5 get → 0
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(50.0, 0.0));
+    }
+
+    #[test]
+    fn storage_put_out_of_range_errors() {
+        // 100 50 put — index 50 >= 32 → error.
+        let e = run_err(&[239, 189, 12, 20, 14]);
+        assert!(matches!(e, Error::CharstringTransientIndex(50)));
+    }
+
+    #[test]
+    fn cond_and_or_not() {
+        // and: 1 0 and → 0 ; or: 0 1 or → 1 → so far stack [0,1].
+        // not: top (1) not → 0 → stack [0,0]; rmoveto → (0,0).
+        let p = first_move(&[
+            140, 139, 12, 3, // 1 0 and → 0
+            139, 140, 12, 4, // 0 1 or  → 1
+            12, 5, // not (of the 1) → 0
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(0.0, 0.0));
+    }
+
+    #[test]
+    fn cond_eq() {
+        // 50 50 eq → 1 ; 50 100 eq → 0 ; rmoveto → (1, 0).
+        let p = first_move(&[
+            189, 189, 12, 15, // 50 50 eq → 1
+            189, 239, 12, 15, // 50 100 eq → 0
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(1.0, 0.0));
+    }
+
+    #[test]
+    fn cond_ifelse_picks_s1_when_v1_le_v2() {
+        // s1 s2 v1 v2 ifelse → s1 if v1 <= v2. Use 10 50 1 2 ifelse →
+        // 10 (since 1 <= 2). Push 50, rmoveto → (10, 50).
+        let p = first_move(&[
+            149, 189, 140, 141, 12, 22,  // 10 50 1 2 ifelse → 10
+            189, // 50
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(10.0, 50.0));
+    }
+
+    #[test]
+    fn cond_ifelse_picks_s2_when_v1_gt_v2() {
+        // 10 50 2 1 ifelse → 50 (since 2 > 1). Push 10, rmoveto →
+        // (50, 10).
+        let p = first_move(&[
+            149, 189, 141, 140, 12, 22,  // 10 50 2 1 ifelse → 50
+            149, // 10
+            21, 14,
+        ]);
+        assert_eq!(p, Point::new(50.0, 10.0));
+    }
+
+    #[test]
+    fn random_is_in_unit_interval() {
+        // random twice then drop both — confirm the operator both
+        // accepts no operands and produces a finite (0,1] value, by
+        // routing the value into a coordinate and asserting the range.
+        let g = empty_index();
+        let global = Index::parse(&g, 0).unwrap();
+        let mut interp = Interpreter::new(&global, None, 0.0, 500.0);
+        // random → r ; 0 → stack [r, 0] ; rmoveto → MoveTo(r, 0).
+        let cs = [12, 23, 139, 21, 14];
+        interp.run(&cs).unwrap();
+        let o = interp.into_outline();
+        if let CubicSegment::MoveTo(p) = o.contours[0].segments[0] {
+            assert!(p.x > 0.0 && p.x <= 1.0, "random {} not in (0,1]", p.x);
+        } else {
+            panic!("expected MoveTo");
+        }
+    }
+
+    #[test]
+    fn arith_underflow_errors() {
+        // add with only one operand → underflow.
+        let e = run_err(&[189, 12, 10, 14]);
+        assert!(matches!(e, Error::CharstringStackUnderflow));
     }
 }

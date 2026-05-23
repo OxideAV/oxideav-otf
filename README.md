@@ -100,6 +100,39 @@ for contour in &outline.contours {
 }
 ```
 
+## Round-6 additions (this push)
+
+Type 2 charstring arithmetic / storage / conditional operators (Adobe
+TN5177 §§4.4–4.6). Before this push the interpreter rejected any of
+these escape operators with `Error::CharstringUnsupportedOp`; fonts
+that compute coordinates with them (or call subroutines whose return
+value is selected via `ifelse`) now decode:
+
+- **Arithmetic (§4.4):** `abs` (12 9), `add` (12 10), `sub` (12 11),
+  `div` (12 12), `neg` (12 14), `mul` (12 24), `sqrt` (12 26),
+  `random` (12 23). `div` by zero and `sqrt` of a negative both yield
+  0 (the spec leaves them "undefined"; we pick a finite value so a
+  malformed font can't inject NaN/Inf into pen coordinates). `random`
+  is a deterministic LCG returning a value in (0, 1] — the spec only
+  constrains the range, and determinism keeps outline decoding
+  reproducible without a system-entropy dependency.
+- **Stack (§4.4):** `drop` (12 18), `dup` (12 27), `exch` (12 28),
+  `index` (12 29, negative `i` copies the top), `roll` (12 30,
+  circular shift of the top N by J, positive = upward).
+- **Storage (§4.5):** `put` (12 20) / `get` (12 21) over a 32-element
+  transient array (the size fixed by TN5177 Appendix B). An
+  out-of-range index surfaces as the new
+  `Error::CharstringTransientIndex(i32)`; a `get` of an unwritten slot
+  returns a defined 0.
+- **Conditional (§4.6):** `and` (12 3), `or` (12 4), `not` (12 5),
+  `eq` (12 15), `ifelse` (12 22, leaves `s1` if `v1 <= v2` else `s2`).
+
+Unlike the path operators, these pop their inputs from the **top** of
+the argument stack and push their result back, leaving the rest of the
+stack intact (they never clear it). 18 new unit tests drive every
+operator through a `rmoveto` so the resulting pen position proves the
+computed value, plus underflow / out-of-range rejection paths.
+
 ## Round-5 additions (this push)
 
 CID-keyed CFF support (Adobe TN5176 §§18, 19):

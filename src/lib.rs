@@ -94,6 +94,11 @@ pub enum Error {
     /// Nested `seac` was attempted. The spec forbids it (TN5177
     /// Appendix C: "This construct may not be nested.").
     CharstringSeacNested,
+    /// A `put` / `get` storage operator (TN5177 §4.5) referenced a
+    /// transient-array index outside `0..32` (Appendix B fixes the
+    /// array at 32 elements). The contained value is the offending
+    /// index.
+    CharstringTransientIndex(i32),
 }
 
 impl core::fmt::Display for Error {
@@ -140,6 +145,10 @@ impl core::fmt::Display for Error {
             Self::CharstringSeacNested => {
                 f.write_str("Type 2 charstring: nested seac is forbidden (TN5177 Appendix C)")
             }
+            Self::CharstringTransientIndex(i) => write!(
+                f,
+                "Type 2 charstring: transient-array index {i} out of range (0..32)"
+            ),
         }
     }
 }
