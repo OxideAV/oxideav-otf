@@ -100,7 +100,47 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-6 additions (this push)
+## Round-7 additions (this push)
+
+The remaining four CFF Top DICT operators in TN5176 §9 Table 9 that
+were already being parsed (the Dict layer kept them in its operand
+table) but never surfaced are now exposed on the public `Font` API
+and pre-extracted into `cff::TopMetadata`:
+
+- **`FontMatrix`** (Top DICT op 12 07) — 6-element affine matrix
+  `[a, b, c, d, tx, ty]` mapping glyph-space coordinates into
+  PostScript user space. CFF's spec default is
+  `[0.001, 0, 0, 0.001, 0, 0]` (the 1000-unit-em convention), and
+  font-author overrides — common in CID fonts and high-resolution
+  Type 1-derived fonts — are now visible to callers. Application:
+  `x_user = a*x + c*y + tx`, `y_user = b*x + d*y + ty`. A
+  non-conforming font emitting fewer than 6 operands is zero-filled
+  rather than rejected (mirroring the existing FontBBox tolerance).
+- **`PaintType`** (op 12 05) — 0 for filled outlines (every modern
+  OpenType-CFF font), 2 for stroked outlines whose pen width is
+  `StrokeWidth`. Default: 0.
+- **`CharstringType`** (op 12 06) — the charstring format embedded
+  in this font. Always 2 for OpenType-CFF; surfaced so callers can
+  detect a malformed font carrying a legacy Type 1 charstring stream
+  before the interpreter trips. Default: 2.
+- **`StrokeWidth`** (op 12 08) — pen width applied when `PaintType
+  == 2`, in font units. Default: 0.
+
+`Font::font_matrix` / `paint_type` / `charstring_type` /
+`stroke_width` are the new accessors. The numeric fields are also
+added to the public `TopMetadata` struct (already re-exported at the
+crate root). No new bytes are read from the font — all four
+operators were being collected by the Dict parser since round 1 and
+are now reached through the same `get_array` / `get_int` /
+`get_number` calls the metadata-extraction routine already uses.
+Three new unit tests cover defaults, populated values (FontMatrix
+via two BCD-real entries + one i16, PaintType / CharstringType via
+the 1-byte int form, StrokeWidth via the 1-byte int form), and the
+zero-fill tolerance for an undersized FontMatrix; one new integration
+test against the Source Sans 3 fixture asserts the surfaced matrix
+scales to `1 / upem` along both axes.
+
+## Round-6 additions (previous push)
 
 Type 2 charstring arithmetic / storage / conditional operators (Adobe
 TN5177 §§4.4–4.6). Before this push the interpreter rejected any of

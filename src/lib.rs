@@ -372,6 +372,39 @@ impl<'a> Font<'a> {
         self.cff.top_metadata().is_fixed_pitch
     }
 
+    /// 2x3 affine glyph → PostScript-user-space matrix from CFF Top
+    /// DICT `FontMatrix` (TN5176 §9 op 12 07), returned in spec order
+    /// `[a, b, c, d, tx, ty]`. Apply as
+    /// `x_user = a*x + c*y + tx`, `y_user = b*x + d*y + ty`.
+    /// CFF's default is `[0.001, 0, 0, 0.001, 0, 0]` — the
+    /// 1000-unit-em convention.
+    pub fn font_matrix(&self) -> [f64; 6] {
+        self.cff.top_metadata().font_matrix
+    }
+
+    /// Paint type from CFF Top DICT `PaintType` (TN5176 §9 op 12 05).
+    /// `0` = filled outline (the OpenType-CFF normal case), `2` =
+    /// stroked outline whose pen width is [`Font::stroke_width`].
+    /// Default: 0.
+    pub fn paint_type(&self) -> i32 {
+        self.cff.top_metadata().paint_type
+    }
+
+    /// Charstring format from CFF Top DICT `CharstringType` (TN5176
+    /// §9 op 12 06). `2` is the only value embedded in an OpenType
+    /// CFF table; other values correspond to legacy PostScript
+    /// packaging. Default: 2.
+    pub fn charstring_type(&self) -> i32 {
+        self.cff.top_metadata().charstring_type
+    }
+
+    /// Stroke width applied when [`Font::paint_type`] is `2`, in font
+    /// units (CFF Top DICT `StrokeWidth`, TN5176 §9 op 12 08).
+    /// Ignored for filled outlines (`paint_type == 0`). Default: 0.
+    pub fn stroke_width(&self) -> f64 {
+        self.cff.top_metadata().stroke_width
+    }
+
     /// Weight name from CFF Top DICT (op 4), e.g. `"Regular"`,
     /// `"Bold"`, `"Light"`. SID-resolved through the CFF Strings
     /// table; for SIDs in the standard-strings range these are

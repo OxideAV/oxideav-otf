@@ -64,6 +64,28 @@ pub struct TopMetadata {
     /// `isFixedPitch` (Top DICT op 12 01): true if the font is
     /// monospaced. Default: false.
     pub is_fixed_pitch: bool,
+    /// `FontMatrix` (Top DICT op 12 07) — six-element affine matrix
+    /// `[a, b, c, d, tx, ty]` mapping glyph-space coordinates into
+    /// PostScript user space. Per TN5176 §9 Table 9 the spec default
+    /// is `[0.001 0 0 0.001 0 0]` (i.e. the upem == 1000 convention
+    /// that maps a 1000-unit em into a 1.0-unit user-space em).
+    /// Application: `x_user = a*x + c*y + tx`,
+    /// `y_user = b*x + d*y + ty` — the standard PostScript /
+    /// PDF convention.
+    pub font_matrix: [f64; 6],
+    /// `PaintType` (Top DICT op 12 05) — 0 for a filled outline (the
+    /// usual case), 2 for a stroked outline whose pen width is
+    /// `StrokeWidth`. Default: 0. (Type 1 also defines 1 = outlined
+    /// fill, deprecated; the CFF spec only lists 0 and 2.)
+    pub paint_type: i32,
+    /// `CharstringType` (Top DICT op 12 06) — 2 for Type 2
+    /// charstrings (the only kind embedded in OpenType CFF tables),
+    /// other values for legacy PostScript packaging. Default: 2.
+    pub charstring_type: i32,
+    /// `StrokeWidth` (Top DICT op 12 08) — pen width applied when
+    /// `PaintType == 2`, in font units. Default: 0. Ignored when the
+    /// font is filled (`PaintType == 0`).
+    pub stroke_width: f64,
 
     // --- SID-valued string operators -----------------------------------
     /// `Notice` (Top DICT op 1) — copyright / trademark notice. SID.
@@ -489,6 +511,25 @@ fn extract_top_metadata(dict: &Dict) -> TopMetadata {
         .unwrap_or(50.0);
     let is_fixed_pitch = dict.get_int(Operator::IsFixedPitch).unwrap_or(0) != 0;
 
+    // FontMatrix is a 6-number array [a b c d tx ty]. Default per
+    // TN5176 §9 Table 9: [0.001 0 0 0.001 0 0]. Non-conforming fonts
+    // that emit a wrong-length array get zero-filled / truncated rather
+    // than rejected — same tolerance as FontBBox above.
+    let font_matrix = dict
+        .get_array(Operator::FontMatrix)
+        .map(|operands| {
+            let mut out = [0.0f64; 6];
+            for (i, o) in operands.iter().take(6).enumerate() {
+                out[i] = o.as_f64();
+            }
+            out
+        })
+        .unwrap_or([0.001, 0.0, 0.0, 0.001, 0.0, 0.0]);
+
+    let paint_type = dict.get_int(Operator::PaintType).unwrap_or(0);
+    let charstring_type = dict.get_int(Operator::CharstringType).unwrap_or(2);
+    let stroke_width = dict.get_number(Operator::StrokeWidth).unwrap_or(0.0);
+
     // SID-valued operators — these are simple integer SIDs.
     let to_sid = |op| dict.get_int(op).and_then(|i| u16::try_from(i).ok());
     let notice_sid = to_sid(Operator::Notice);
@@ -504,6 +545,10 @@ fn extract_top_metadata(dict: &Dict) -> TopMetadata {
         underline_position,
         underline_thickness,
         is_fixed_pitch,
+        font_matrix,
+        paint_type,
+        charstring_type,
+        stroke_width,
         notice_sid,
         copyright_sid,
         version_sid,
@@ -526,10 +571,87 @@ mod tests {
         assert_eq!(m.underline_position, -100.0);
         assert_eq!(m.underline_thickness, 50.0);
         assert!(!m.is_fixed_pitch);
+        // TN5176 §9 Table 9 defaults: FontMatrix = [0.001 0 0 0.001 0 0],
+        // PaintType = 0, CharstringType = 2, StrokeWidth = 0.
+        assert_eq!(m.font_matrix, [0.001, 0.0, 0.0, 0.001, 0.0, 0.0]);
+        assert_eq!(m.paint_type, 0);
+        assert_eq!(m.charstring_type, 2);
+        assert_eq!(m.stroke_width, 0.0);
         assert_eq!(m.notice_sid, None);
         assert_eq!(m.copyright_sid, None);
         assert_eq!(m.version_sid, None);
         assert_eq!(m.family_name_sid, None);
+    }
+
+    #[test]
+    fn top_metadata_picks_up_font_matrix_paint_stroke() {
+        // FontMatrix = [0.0005, 0, 0, 0.0005, 100, 200] under op 12 07.
+        // The first four are BCD reals; the last two are integers.
+        //
+        // BCD layout for 0.0005:
+        //   nibbles: 0, ., 0, 0, 0, 5, end
+        //   bytes:   0x0a, 0x00, 0x05, 0xf?  → pad final nibble with f.
+        //   Concretely: 0a 00 05 ff -> nibbles 0 a 0 0 0 5 f f (second f
+        //   ignored after first f, but we keep parsing simple). Our
+        //   parser stops at the first 0xf so trailing nibble is dropped.
+        let bcd_5em4: [u8; 5] = [30, 0x0a, 0x00, 0x05, 0xff];
+
+        let mut buf = Vec::new();
+        // a = 0.0005
+        buf.extend_from_slice(&bcd_5em4);
+        // b = 0 → 139
+        buf.push(139);
+        // c = 0 → 139
+        buf.push(139);
+        // d = 0.0005
+        buf.extend_from_slice(&bcd_5em4);
+        // tx = 100 → opcode 32..246: 139 + 100 = 239
+        buf.push(239);
+        // ty = 200 via opcode 28 (i16) for unambiguous encoding
+        buf.push(28);
+        buf.extend_from_slice(&200i16.to_be_bytes());
+        // FontMatrix operator (12 07)
+        buf.push(12);
+        buf.push(7);
+
+        // PaintType = 2 → 139 + 2 = 141; op 12 05.
+        buf.push(141);
+        buf.extend_from_slice(&[12, 5]);
+
+        // CharstringType = 2 (the OpenType-CFF expected value).
+        buf.push(141);
+        buf.extend_from_slice(&[12, 6]);
+
+        // StrokeWidth = 10 → 139 + 10 = 149; op 12 08.
+        buf.push(149);
+        buf.extend_from_slice(&[12, 8]);
+
+        let dict = Dict::parse(&buf).unwrap();
+        let m = extract_top_metadata(&dict);
+
+        // Floating-point: the BCD parse goes through f64::parse on
+        // "0.0005" which is bit-exact at f64.
+        assert_eq!(m.font_matrix[0], 0.0005);
+        assert_eq!(m.font_matrix[1], 0.0);
+        assert_eq!(m.font_matrix[2], 0.0);
+        assert_eq!(m.font_matrix[3], 0.0005);
+        assert_eq!(m.font_matrix[4], 100.0);
+        assert_eq!(m.font_matrix[5], 200.0);
+
+        assert_eq!(m.paint_type, 2);
+        assert_eq!(m.charstring_type, 2);
+        assert_eq!(m.stroke_width, 10.0);
+    }
+
+    #[test]
+    fn top_metadata_short_font_matrix_zero_filled() {
+        // Non-conforming font emits only 3 operands instead of 6 —
+        // mirror the FontBBox tolerance and zero-fill the rest.
+        // Operands: 1, 2, 3 (all in 1-byte form). Op 12 07.
+        let buf = vec![140, 141, 142, 12, 7];
+        let dict = Dict::parse(&buf).unwrap();
+        let m = extract_top_metadata(&dict);
+        assert_eq!(m.font_matrix, [1.0, 2.0, 3.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]

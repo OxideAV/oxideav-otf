@@ -180,6 +180,47 @@ fn glyph_bbox_for_real_glyph_is_non_empty() {
 }
 
 #[test]
+fn cff_font_matrix_and_paint_metadata_surfaced() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+
+    // Source Sans 3 is a regular filled OpenType-CFF font (PaintType
+    // 0, CharstringType 2). StrokeWidth is only meaningful when
+    // PaintType is 2, but the operator may still be present or absent
+    // — either way it must surface as a finite f64.
+    assert_eq!(f.paint_type(), 0, "Source Sans is a filled font");
+    assert_eq!(
+        f.charstring_type(),
+        2,
+        "OpenType CFF always carries Type 2 charstrings"
+    );
+    assert!(f.stroke_width().is_finite(), "StrokeWidth must be finite");
+
+    // The FontMatrix is conventionally the 1/upem identity. Source
+    // Sans 3 has upem == 1000, so the spec-default matrix
+    // [0.001, 0, 0, 0.001, 0, 0] applies if no override is present.
+    // Whether the font emits an explicit FontMatrix is a font-author
+    // choice; either way the surfaced matrix's scale must be
+    // approximately 1/upem so that glyph-unit coordinates scale to a
+    // 1.0-em user-space square.
+    let m = f.font_matrix();
+    let upem = f.units_per_em() as f64;
+    let scale_x = m[0].abs();
+    let scale_y = m[3].abs();
+    let expected = 1.0 / upem;
+    assert!(
+        (scale_x - expected).abs() < 1e-6,
+        "FontMatrix[0]={scale_x} should be ~1/upem={expected}"
+    );
+    assert!(
+        (scale_y - expected).abs() < 1e-6,
+        "FontMatrix[3]={scale_y} should be ~1/upem={expected}"
+    );
+    // Off-diagonal shear is conventionally 0 for non-oblique fonts.
+    assert!(m[1].abs() < 1e-9, "FontMatrix b shear: {}", m[1]);
+    assert!(m[2].abs() < 1e-9, "FontMatrix c shear: {}", m[2]);
+}
+
+#[test]
 fn cff_metadata_strings_resolve_when_present() {
     // Source Sans 3 has at least a notice in the CFF Top DICT; even
     // if specific strings are absent the lookup must not panic.

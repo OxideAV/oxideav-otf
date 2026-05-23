@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- CFF Top DICT `FontMatrix` / `PaintType` / `CharstringType` /
+  `StrokeWidth` operators (Adobe TN5176 §9 Table 9, ops 12 07 / 12 05
+  / 12 06 / 12 08) surfaced on the public `Font` API. New accessors:
+  `Font::font_matrix() -> [f64; 6]` (default
+  `[0.001, 0, 0, 0.001, 0, 0]` per spec) returning the glyph→user-space
+  affine matrix in spec order `[a, b, c, d, tx, ty]`;
+  `Font::paint_type() -> i32` (default 0 = filled outline; 2 = stroked
+  with `StrokeWidth` pen); `Font::charstring_type() -> i32` (default 2
+  = Type 2 charstrings, the only value embedded in OpenType-CFF);
+  `Font::stroke_width() -> f64` (default 0). The same four fields are
+  added to the public `cff::TopMetadata` struct. A non-conforming font
+  emitting fewer than 6 operands for FontMatrix is zero-filled rather
+  than rejected, mirroring the existing FontBBox tolerance. No new
+  bytes are read from the font — all four operators were being
+  collected by the existing Dict parser since round 1 and are now
+  reached through the same `get_array` / `get_int` / `get_number`
+  calls the metadata-extraction routine already uses.
 - Type 2 charstring arithmetic, stack, storage, and conditional
   operators (Adobe TN5177 §§4.4–4.6). The escape operators `abs`
   (12 9), `add` (12 10), `sub` (12 11), `div` (12 12), `neg` (12 14),
