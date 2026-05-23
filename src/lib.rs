@@ -3,19 +3,20 @@
 //! Round-1 scope:
 //! - sfnt header + table directory walker (`parser`).
 //! - CFF (Adobe TN5176) Top DICT / Name / String INDEX / Charset /
-//!   Encoding / Private DICT / Local + Global Subrs.
+//!   Encoding / Private DICT / Local + Global Subrs, plus CID-keyed
+//!   fonts (ROS + FDArray Font DICTs + FDSelect GID→FD routing,
+//!   TN5176 §§18, 19).
 //! - Type 2 charstring interpreter (Adobe TN5177): every common path
-//!   construction operator, the four flex variants, hint-recording
-//!   stubs (no enforcement; we anti-alias at >= 16 px), and
-//!   subroutine resolution with the well-known 107 / 1131 / 32768
-//!   bias formula.
+//!   construction operator, the four flex variants, the deprecated
+//!   four-operand `seac` `endchar`, hint-recording stubs (no
+//!   enforcement; we anti-alias at >= 16 px), and subroutine
+//!   resolution with the well-known 107 / 1131 / 32768 bias formula.
 //! - Selected sfnt tables for metadata (`head`, `hhea`, `maxp`,
 //!   `hmtx`, `cmap` formats 0/4/6/12, `name`).
 //!
 //! The crate is read-only (parsing-only) and dependency-light: only
 //! `oxideav-core` for shared types. CFF2 (variable-aware), per-glyph
-//! hinting interpretation, CIDFonts (FDSelect / FDArray), advanced
-//! GSUB/GPOS, and Bidi are deferred.
+//! hinting interpretation, advanced GSUB/GPOS, and Bidi are deferred.
 //!
 //! See `README.md` for a tour of the public API.
 
@@ -27,7 +28,7 @@ pub mod outline;
 pub mod parser;
 pub mod tables;
 
-pub use cff::TopMetadata;
+pub use cff::{RegistryOrdering, TopMetadata};
 pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
 
 use crate::cff::Cff;
@@ -284,6 +285,43 @@ impl<'a> Font<'a> {
     /// Borrow the CFF table view (mostly for tests / advanced callers).
     pub fn cff(&self) -> &Cff<'a> {
         &self.cff
+    }
+
+    // ---- CID-keyed font metadata ------------------------------------------
+
+    /// `true` if the embedded CFF is a CID-keyed font (carries the
+    /// `ROS` operator + an FDArray / FDSelect, Adobe TN5176 §18).
+    /// CID-keyed fonts route each glyph to one of several Font DICTs;
+    /// the public glyph-outline / metrics API is identical either way.
+    pub fn is_cid(&self) -> bool {
+        self.cff.is_cid()
+    }
+
+    /// Registry string of a CID-keyed font's `ROS` operator (e.g.
+    /// `"Adobe"`), resolved through the CFF Strings table. `None` for
+    /// non-CID fonts.
+    pub fn cid_registry(&self) -> Option<&str> {
+        let ros = self.cff.registry_ordering()?;
+        self.cff.resolve_sid(ros.registry_sid)
+    }
+
+    /// Ordering string of a CID-keyed font's `ROS` operator (e.g.
+    /// `"Japan1"`, `"GB1"`, `"Identity"`). `None` for non-CID fonts.
+    pub fn cid_ordering(&self) -> Option<&str> {
+        let ros = self.cff.registry_ordering()?;
+        self.cff.resolve_sid(ros.ordering_sid)
+    }
+
+    /// Supplement number of a CID-keyed font's `ROS` operator (the
+    /// character-collection revision). `None` for non-CID fonts.
+    pub fn cid_supplement(&self) -> Option<i32> {
+        Some(self.cff.registry_ordering()?.supplement)
+    }
+
+    /// Number of Font DICTs in a CID-keyed font's FDArray (TN5176
+    /// §18). `0` for non-CID fonts.
+    pub fn cff_fd_count(&self) -> usize {
+        self.cff.fd_count()
     }
 
     // ---- CFF Top DICT metadata --------------------------------------------

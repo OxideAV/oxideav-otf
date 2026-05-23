@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- CID-keyed CFF support (Adobe TN5176 §§18, 19). A CFF Top DICT that
+  begins with the `ROS` operator (op 12 30) is now recognised as a
+  CID-keyed font: instead of a single top-level Private DICT, each
+  glyph selects its Font DICT through the `FDSelect` GID→FD-index map
+  (formats 0 and 3, op 12 37) and the corresponding entry in the
+  `FDArray` Font DICT INDEX (op 12 36), each of which carries its own
+  Private DICT (Local Subrs + `defaultWidthX` / `nominalWidthX`).
+  `Cff::glyph_outline` now routes through the per-glyph Private DICT,
+  so glyphs in different FD groups decode with their own subroutines
+  and width defaults. Previously any CID font was rejected at parse
+  time with `Cff("Top DICT missing Private")`.
+- New `cff::fdselect` module implementing FDSelect format 0
+  (`Card8 fds[nGlyphs]`) and format 3 (range-encoded
+  `(first, fd)*` + sentinel) per TN5176 Tables 27-29.
+- `RegistryOrdering` (the `ROS` registry/ordering SIDs + supplement)
+  is now a public type, re-exported from the crate root.
+- Public CID accessors on `Font`: `is_cid()`, `cid_registry()`,
+  `cid_ordering()`, `cid_supplement()`, `cff_fd_count()`; plus
+  `Cff::is_cid()`, `Cff::registry_ordering()`, `Cff::fd_count()`.
 - Type 2 charstring `endchar` deprecated four-operand `seac` form
   (Adobe TN5177 Appendix C / Type 1 `seac`): a charstring may now
   end with `[width?] adx ady bchar achar endchar` to compose a

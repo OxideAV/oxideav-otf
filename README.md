@@ -19,6 +19,9 @@ TrueType outlines (quadratic Beziers); OTF handles CFF outlines
     transcribed.
   - Private DICT including `defaultWidthX` / `nominalWidthX` and the
     Local Subrs INDEX offset.
+  - CID-keyed fonts (TN5176 §§18, 19): `ROS` detection, the `FDArray`
+    Font DICT INDEX, and `FDSelect` formats 0 / 3 routing each glyph
+    to its own Private DICT / Local Subrs / width defaults.
 - Type 2 charstring interpreter (Adobe TN5177):
   - Path: `rmoveto`, `hmoveto`, `vmoveto`, `rlineto`, `hlineto`,
     `vlineto`, `rrcurveto`, `hhcurveto`, `hvcurveto`, `vvcurveto`,
@@ -82,6 +85,13 @@ let _ = font.glyph_name(gid);       // "A" (via CFF charset → Strings)
 let _ = font.glyph_bbox(gid)?;      // per-glyph bbox derived from charstring
 let outline = font.glyph_outline(gid)?;
 
+// CID-keyed fonts (TN5176 §18) — None / 0 on a plain CFF font.
+let _ = font.is_cid();
+let _ = font.cid_registry();        // Some("Adobe")
+let _ = font.cid_ordering();        // Some("Japan1") / Some("Identity")
+let _ = font.cid_supplement();      // Some(7)
+let _ = font.cff_fd_count();        // number of FDArray Font DICTs
+
 for contour in &outline.contours {
     for seg in &contour.segments {
         // CubicSegment::MoveTo / LineTo / CurveTo / ClosePath
@@ -89,6 +99,32 @@ for contour in &outline.contours {
     }
 }
 ```
+
+## Round-5 additions (this push)
+
+CID-keyed CFF support (Adobe TN5176 §§18, 19):
+
+- A Top DICT beginning with `ROS` (op 12 30) is now recognised as a
+  CID-keyed font. Such fonts have no top-level Private DICT; instead
+  every glyph is routed through `FDSelect` (op 12 37) to one of the
+  Font DICTs in the `FDArray` (op 12 36), and each Font DICT carries
+  its own Private DICT (Local Subrs + width defaults). Before this
+  push, any CID font was rejected at parse time with
+  `Cff("Top DICT missing Private")`.
+- `FDSelect` is implemented for both on-disk formats — format 0
+  (a flat `Card8 fds[nGlyphs]` array) and format 3 (range-encoded
+  `(first, fd)*` records + a sentinel GID), per TN5176 Tables 27-29.
+- `Cff::glyph_outline` selects the per-glyph Private DICT, so glyphs
+  in different FD groups decode with the correct subroutines and
+  `defaultWidthX` / `nominalWidthX`.
+- New public surface: `Font::is_cid` / `cid_registry` / `cid_ordering`
+  / `cid_supplement` / `cff_fd_count`, plus `Cff::is_cid` /
+  `registry_ordering` / `fd_count` and the re-exported
+  `RegistryOrdering` type.
+- A complete CID-keyed CFF (2 FDs, 3 glyphs, FDSelect format 3) is
+  assembled byte-by-byte from the spec layout in the unit tests and
+  parsed back, asserting ROS resolution, per-FD width routing, and
+  outline decode for every glyph.
 
 ## Round-2 additions (this push)
 
@@ -157,7 +193,6 @@ TN5177 §4.6):
 
 - CFF2 (OpenType 1.8+ variation-aware variant — Adobe TN5174).
   Detected at parse time and reported as `Error::Cff2NotImplemented`.
-- CIDFonts (FDArray / FDSelect / ROS) — detected and rejected.
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
 - Predefined Expert / ExpertSubset encoding lookup tables (TN5176
   Appendix B §2 + Appendix C §Expert) — Standard Encoding is
@@ -167,9 +202,11 @@ TN5177 §4.6):
   through the sfnt `cmap`).
 - The Adobe Glyph List string → codepoint mapping (round 3+ if any
   consumer needs it).
-- `OS/2`, `post`, `GSUB`, `GPOS`, `GDEF`, `kern` tables — blocked
-  on docs gap #871 (OpenType + Adobe CFF specs not yet staged
-  under `docs/text/opentype/`).
+- `OS/2`, `post`, `GSUB`, `GPOS`, `GDEF`, `kern` tables — the Adobe
+  CFF / Type 2 / sfnt PDFs are now staged under
+  `docs/text/opentype/spec/`, but the layout-table (GSUB/GPOS/GDEF)
+  and `OS/2` / `post` definitions live in the Microsoft OpenType
+  spec; only the HTML snapshot is staged so far.
 
 ## Test fixture
 
