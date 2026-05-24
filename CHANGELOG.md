@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/OxideAV/oxideav-otf/compare/v0.1.0...v0.1.1) - 2026-05-24
+
+### Other
+
+- resolve predefined Expert / ExpertSubset charsets (TN5176 App. C)
+- surface FontMatrix / PaintType / CharstringType / StrokeWidth (TN5176 §9 Table 9)
+- Type 2 arithmetic / storage / conditional operators (TN5177 §§4.4-4.6)
+- round 98: CFF CID-keyed fonts (ROS + FDArray + FDSelect)
+- round 95: seac (deprecated 4-op endchar) + CFF Standard Encoding
+- round 91: fix flex-family opcode dispatch + hflex1 dyb (TN5177 §4.6)
+- round 83: surface CFF Top DICT metadata + sfnt directory enumeration
+- release v0.1.0
+
 ### Added
 
 - Predefined CFF **Expert** and **ExpertSubset** charsets (Adobe
