@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Predefined CFF **Expert** and **ExpertSubset** charsets (Adobe
+  TN5176 Appendix C, Top DICT charset operands 1 and 2). A font
+  selecting either is now resolved instead of being rejected with
+  `Cff("predefined Expert charset not implemented in round 1")`.
+  Both are fixed `GID → SID` lists transcribed from the appendix in
+  GID order (the appendix's column-major three-column layout
+  linearised back into GID order): `EXPERT_SIDS` (165 entries → 166
+  glyphs) and `EXPERT_SUBSET_SIDS` (86 entries → 87 glyphs). Every
+  SID in both tables is `<= 390` (a predefined standard string), so
+  `Font::glyph_name` resolves through the existing Appendix A
+  standard-strings table without a per-font String INDEX. The new
+  `Charset::Expert` / `Charset::ExpertSubset` variants implement the
+  same `sid_of(gid)` / `gid_of_sid(sid)` pair as the custom formats,
+  so the `seac` component resolver and legacy-encoding reverse
+  lookup work unchanged on expert-charset fonts. ISOAdobe (operand
+  0) was previously the only predefined charset handled.
 - CFF Top DICT `FontMatrix` / `PaintType` / `CharstringType` /
   `StrokeWidth` operators (Adobe TN5176 §9 Table 9, ops 12 07 / 12 05
   / 12 06 / 12 08) surfaced on the public `Font` API. New accessors:

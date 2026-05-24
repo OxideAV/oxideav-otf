@@ -11,8 +11,10 @@ TrueType outlines (quadratic Beziers); OTF handles CFF outlines
 - sfnt + table directory walker (recognises `OTTO`, `0x00010000`, `true`).
 - CFF (Adobe TN5176, version 1):
   - Header + Name INDEX + Top DICT + String INDEX + Global Subrs INDEX.
-  - Charset formats 0 / 1 / 2 (predefined ISOAdobe also recognised),
-    with `sid_of(gid)` *and* the reverse `gid_of_sid(sid)` lookup.
+  - Charset formats 0 / 1 / 2 plus all three predefined charsets
+    (ISOAdobe, Expert, ExpertSubset — the Expert / ExpertSubset
+    `GID → SID` lists transcribed from TN5176 Appendix C), with
+    `sid_of(gid)` *and* the reverse `gid_of_sid(sid)` lookup.
   - Encoding formats 0 / 1 plus predefined Standard Encoding
     (TN5176 Appendix B §1, full 256-entry `code → SID` table
     transcribed). Expert Encoding remains noted but not yet
@@ -99,6 +101,33 @@ for contour in &outline.contours {
     }
 }
 ```
+
+## Round-115 additions (this push)
+
+The two remaining predefined CFF charsets — **Expert** (Top DICT
+charset operand 1) and **ExpertSubset** (operand 2) — are now
+resolved instead of rejected. Before this push a font selecting
+either was rejected at parse time with
+`Cff("predefined Expert charset not implemented in round 1")`;
+ISOAdobe (operand 0) was the only predefined charset handled.
+
+Both are fixed `GID → SID` lists transcribed from Adobe TN5176
+Appendix C in GID order beginning with GID 1 (`.notdef` is the
+implicit GID 0). The appendix lays the entries out column-major
+across three columns per page block; the new `EXPERT_SIDS` (165
+entries → 166 glyphs) and `EXPERT_SUBSET_SIDS` (86 entries → 87
+glyphs) arrays linearise them back into GID order. Every SID in
+both tables is `<= 390`, i.e. a predefined standard string, so
+`Font::glyph_name` resolves through the existing Appendix A
+standard-strings table with no per-font String INDEX. Both
+charsets implement the same `sid_of(gid)` / `gid_of_sid(sid)`
+pair as the custom formats, so the `seac` component resolver and
+the legacy-encoding `gid_of_sid` path work unchanged on
+expert-charset fonts. Seven new unit tests cover the table
+lengths, landmark GID↔SID mappings, a full GID round-trip for
+every glyph in each charset, the standard-strings-resolvability
+invariant, and the parse-time operand dispatch (1 → Expert, 2 →
+ExpertSubset).
 
 ## Round-7 additions (this push)
 
@@ -267,12 +296,14 @@ TN5177 §4.6):
 - CFF2 (OpenType 1.8+ variation-aware variant — Adobe TN5174).
   Detected at parse time and reported as `Error::Cff2NotImplemented`.
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
-- Predefined Expert / ExpertSubset encoding lookup tables (TN5176
-  Appendix B §2 + Appendix C §Expert) — Standard Encoding is
-  transcribed as of round 4; Expert / ExpertSubset remain pending
-  (they only matter for a vanishingly small set of legacy
-  PostScript Expert fonts and modern OpenType callers route
-  through the sfnt `cmap`).
+- Predefined Expert *encoding* lookup table (TN5176 Appendix B §2).
+  Standard Encoding is transcribed as of round 4 and the Expert /
+  ExpertSubset predefined *charsets* (TN5176 Appendix C) land in
+  round 115, but the Expert predefined *encoding* (`code → SID`,
+  Appendix B §2) is still a `None`-returning stub. It only matters
+  for a vanishingly small set of legacy PostScript Expert fonts;
+  modern OpenType callers route codepoint → GID through the sfnt
+  `cmap` table.
 - The Adobe Glyph List string → codepoint mapping (round 3+ if any
   consumer needs it).
 - `OS/2`, `post`, `GSUB`, `GPOS`, `GDEF`, `kern` tables — the Adobe
