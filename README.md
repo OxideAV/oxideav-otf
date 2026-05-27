@@ -16,9 +16,9 @@ TrueType outlines (quadratic Beziers); OTF handles CFF outlines
     `GID → SID` lists transcribed from TN5176 Appendix C), with
     `sid_of(gid)` *and* the reverse `gid_of_sid(sid)` lookup.
   - Encoding formats 0 / 1 plus predefined Standard Encoding
-    (TN5176 Appendix B §1, full 256-entry `code → SID` table
-    transcribed). Expert Encoding remains noted but not yet
-    transcribed.
+    (TN5176 Appendix B §1) and predefined Expert Encoding
+    (Appendix B §2) — both 256-entry `code → SID` tables
+    transcribed in full.
   - Private DICT including `defaultWidthX` / `nominalWidthX` and the
     Local Subrs INDEX offset.
   - CID-keyed fonts (TN5176 §§18, 19): `ROS` detection, the `FDArray`
@@ -102,7 +102,35 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-115 additions (this push)
+## Round-171 additions (this push)
+
+The remaining CFF predefined encoding — **Expert Encoding** (TN5176
+Appendix B §2, Top DICT Encoding operand `1`) — is now resolved
+instead of falling through to `None`. Before this push, a font
+selecting predefined operand `1` parsed as `Encoding::Expert` but
+`Encoding::lookup` returned `None` for every code, forcing callers to
+detour through the sfnt `cmap` table.
+
+The new 256-entry `EXPERT_ENCODING` table is transcribed verbatim from
+Appendix B §2 (pages 40-43 of TN5176 4 Dec 03). 165 codes are
+assigned, 91 are `.notdef` (matching the appendix's explicit gaps in
+codes 0-31, 35, 64, 70-72, 74-75, 80-81, 85, 92, 127-160, 164-165,
+171, 173-174, 176-177, 180-181, 185-187, 198-199). Every assigned SID
+falls inside the predefined-strings range (max 378 = Ydieresissmall),
+so `Font::glyph_index` resolves Expert-encoded codes through the same
+Appendix A standard-strings table the rest of the CFF code uses,
+without consulting the per-font String INDEX. Six new unit tests cover
+the landmark codes, the standard-strings-only invariant, the
+assigned-vs-unassigned count from the appendix, custom-charset
+routing, the canonical Expert + Expert charset pair (where code 32 =
+GID 1, code 255 = GID 165 = Ydieresissmall), and the
+`Encoding::parse(_, 1)` dispatch.
+
+This closes the last "noted but not transcribed" item on the round-115
+add list and was the only remaining `Encoding::lookup` arm that
+returned `None` unconditionally.
+
+## Round-115 additions (previous push)
 
 The two remaining predefined CFF charsets — **Expert** (Top DICT
 charset operand 1) and **ExpertSubset** (operand 2) — are now
@@ -296,14 +324,6 @@ TN5177 §4.6):
 - CFF2 (OpenType 1.8+ variation-aware variant — Adobe TN5174).
   Detected at parse time and reported as `Error::Cff2NotImplemented`.
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
-- Predefined Expert *encoding* lookup table (TN5176 Appendix B §2).
-  Standard Encoding is transcribed as of round 4 and the Expert /
-  ExpertSubset predefined *charsets* (TN5176 Appendix C) land in
-  round 115, but the Expert predefined *encoding* (`code → SID`,
-  Appendix B §2) is still a `None`-returning stub. It only matters
-  for a vanishingly small set of legacy PostScript Expert fonts;
-  modern OpenType callers route codepoint → GID through the sfnt
-  `cmap` table.
 - The Adobe Glyph List string → codepoint mapping (round 3+ if any
   consumer needs it).
 - `OS/2`, `post`, `GSUB`, `GPOS`, `GDEF`, `kern` tables — the Adobe

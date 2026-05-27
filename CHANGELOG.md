@@ -22,6 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Predefined CFF **Expert Encoding** lookup table (Adobe TN5176
+  Appendix B §2, Top DICT Encoding operand `1`). The new 256-entry
+  `EXPERT_ENCODING` array maps `code: u8` → `SID: u16` and is wired
+  into `Encoding::Expert::lookup`, so fonts that select predefined
+  Encoding operand `1` now resolve `code → GID` directly through the
+  per-font charset instead of returning `None` for every code. 165
+  codes are assigned (matching the appendix's glyph count); 91 are
+  `.notdef` (the spec's explicit gaps). Every assigned SID is `<= 378`,
+  i.e. inside the predefined standard-strings range, so glyph-name
+  resolution goes through the existing Appendix A standard-strings
+  table without consulting the per-font String INDEX. This closes the
+  last "noted but not transcribed" item on the round-115 add list —
+  the only remaining `Encoding::lookup` arm that returned `None`
+  unconditionally.
+
 - Predefined CFF **Expert** and **ExpertSubset** charsets (Adobe
   TN5176 Appendix C, Top DICT charset operands 1 and 2). A font
   selecting either is now resolved instead of being rejected with
