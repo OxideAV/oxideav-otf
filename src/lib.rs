@@ -440,6 +440,64 @@ impl<'a> Font<'a> {
             .and_then(|sid| self.cff.resolve_sid(sid))
     }
 
+    /// Embedded PostScript language code from CFF Top DICT
+    /// `PostScript` (TN5176 §9 op 12 21). Almost always `None` on
+    /// shipping OpenType-CFF fonts; non-`None` means the font contains
+    /// an arbitrary block of PostScript that the spec says is "added to
+    /// the font dictionary." Resolved through the CFF Strings table.
+    pub fn postscript(&self) -> Option<&str> {
+        self.cff
+            .top_metadata()
+            .postscript_sid
+            .and_then(|sid| self.cff.resolve_sid(sid))
+    }
+
+    /// `BaseFontName` from CFF Top DICT (TN5176 §9 op 12 22). For
+    /// synthetic fonts derived from a multiple-master master, this is
+    /// the FontName of the underlying master font. Resolved through the
+    /// CFF Strings table.
+    pub fn base_font_name(&self) -> Option<&str> {
+        self.cff
+            .top_metadata()
+            .base_font_name_sid
+            .and_then(|sid| self.cff.resolve_sid(sid))
+    }
+
+    /// Legacy PostScript `UniqueID` (CFF Top DICT op 13, TN5176 §9
+    /// Table 9). Adobe-assigned 32-bit identifier; modern fonts prefer
+    /// [`Font::xuid`]. `None` if the operator is absent from the font.
+    pub fn unique_id(&self) -> Option<i32> {
+        self.cff.top_metadata().unique_id
+    }
+
+    /// Extended unique identifier from CFF Top DICT `XUID` (op 14,
+    /// TN5176 §9 Table 9). Array of 32-bit numbers (the spec leaves
+    /// the length unconstrained beyond "array"). Deprecated in
+    /// OpenType-CFF per TN5176 4 Dec 03 Appendix H but still emitted by
+    /// older Type 1 / OpenType-CFF tooling. Empty slice if the operator
+    /// is absent.
+    pub fn xuid(&self) -> &[i32] {
+        &self.cff.top_metadata().xuid
+    }
+
+    /// Synthetic-font base index from CFF Top DICT `SyntheticBase`
+    /// (TN5176 §9 op 12 20). When present, the value is the index into
+    /// the Name INDEX of the base font that this synthetic font derives
+    /// its glyph shapes from. `None` for non-synthetic fonts (the
+    /// overwhelming common case).
+    pub fn synthetic_base(&self) -> Option<i32> {
+        self.cff.top_metadata().synthetic_base
+    }
+
+    /// Multiple-master `BaseFontBlend` user-design vector from CFF Top
+    /// DICT (TN5176 §9 op 12 23). The values are undeltified to
+    /// absolute floats per TN5176 §4 Table 4 "delta" semantics —
+    /// successive entries are running sums of the raw operands.
+    /// Empty slice if the operator is absent.
+    pub fn base_font_blend(&self) -> &[f64] {
+        &self.cff.top_metadata().base_font_blend
+    }
+
     // ---- per-glyph derived metrics ---------------------------------------
 
     /// Per-glyph bounding box in font units, derived by decoding the

@@ -231,3 +231,39 @@ fn cff_metadata_strings_resolve_when_present() {
     let _ = f.copyright();
     let _ = f.version_string();
 }
+
+#[test]
+fn cff_r176_identity_and_synthetic_operators_do_not_panic() {
+    // Source Sans 3 is a modern OpenType-CFF font shipped with a
+    // single-font CFF (not a synthetic, not multiple-master), so the
+    // synthetic-font operators (SyntheticBase / BaseFontName /
+    // BaseFontBlend) are expected to be absent. UniqueID / XUID are
+    // legacy PostScript identifiers and are also expected to be
+    // omitted in Source Sans 3 per Adobe TN5176 4 Dec 03 Appendix H
+    // (XUID deprecated in OpenType-CFF). The point of this test is
+    // simply to exercise the accessors against a real font and confirm
+    // the parser doesn't panic on either presence or absence.
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    // None / Some both fine.
+    let _ = f.unique_id();
+    let xuid = f.xuid();
+    // Whatever XUID surfaces (empty or populated), each entry must be
+    // a valid i32 (the type guarantee — but exercise the slice to make
+    // sure the borrow path is sound).
+    for &v in xuid {
+        let _ = v;
+    }
+    assert!(
+        f.synthetic_base().is_none(),
+        "Source Sans 3 is not a synthetic font, SyntheticBase should be absent"
+    );
+    let _ = f.postscript();
+    assert!(
+        f.base_font_name().is_none(),
+        "Source Sans 3 has no multiple-master base, BaseFontName should be absent"
+    );
+    assert!(
+        f.base_font_blend().is_empty(),
+        "Source Sans 3 has no multiple-master base, BaseFontBlend should be empty"
+    );
+}

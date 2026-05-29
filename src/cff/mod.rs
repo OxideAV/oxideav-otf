@@ -100,6 +100,46 @@ pub struct TopMetadata {
     pub family_name_sid: Option<u16>,
     /// `Weight` (Top DICT op 4) — e.g. "Regular", "Bold". SID.
     pub weight_sid: Option<u16>,
+    /// `PostScript` (Top DICT op 12 21) — embedded PostScript language
+    /// code (TN5176 §9 Table 10). Per spec the value is "a SID whose
+    /// referenced string contains arbitrary PostScript code that is
+    /// added to the font dictionary"; almost never present in shipping
+    /// OpenType-CFF fonts but spec-defined and surfaced here so callers
+    /// inspecting unusual fonts don't have to detour through the raw
+    /// Top DICT. SID.
+    pub postscript_sid: Option<u16>,
+    /// `BaseFontName` (Top DICT op 12 22) — for synthetic fonts derived
+    /// from a multiple-master master, the FontName of the underlying
+    /// master font (TN5176 §9 Table 10). SID.
+    pub base_font_name_sid: Option<u16>,
+
+    // --- Identity operators ---------------------------------------------
+    /// `UniqueID` (Top DICT op 13) — legacy PostScript Type 1 unique
+    /// identifier number assigned by Adobe (TN5176 §9 Table 9). Modern
+    /// CFF fonts prefer `XUID`; many recent OpenType-CFF fonts omit
+    /// `UniqueID` entirely.
+    pub unique_id: Option<i32>,
+    /// `XUID` (Top DICT op 14) — extended unique identifier, an array
+    /// of 32-bit numbers (TN5176 §9 Table 9). Deprecated in OpenType
+    /// CFF per Adobe TN5176 4 Dec 03 Appendix H but still emitted by
+    /// older Type 1 / OpenType-CFF font tooling. Returned in spec
+    /// (parse) order; an empty vector indicates the operator was
+    /// absent.
+    pub xuid: Vec<i32>,
+    /// `SyntheticBase` (Top DICT op 12 20) — for synthetic fonts (i.e.
+    /// fonts that derive their glyph shapes from another font by some
+    /// transformation), the index in the Name INDEX of the base font
+    /// (TN5176 §9 Table 10). Almost never present in shipping
+    /// OpenType-CFF fonts because OpenType packaging is one-font-per-CFF.
+    pub synthetic_base: Option<i32>,
+    /// `BaseFontBlend` (Top DICT op 12 23) — for synthetic fonts
+    /// derived from a multiple-master font, the User Design Vector
+    /// (a delta-encoded list of numbers, TN5176 §9 Table 10). Returned
+    /// undeltified into absolute values per TN5176 §15 / Table 4 "delta"
+    /// type semantics — each successive entry is the running sum of all
+    /// raw operands up to and including itself. An empty vector
+    /// indicates the operator was absent.
+    pub base_font_blend: Vec<f64>,
 }
 
 /// CID-keyed font registry/ordering/supplement, from the Top DICT
@@ -538,6 +578,33 @@ fn extract_top_metadata(dict: &Dict) -> TopMetadata {
     let full_name_sid = to_sid(Operator::FullName);
     let family_name_sid = to_sid(Operator::FamilyName);
     let weight_sid = to_sid(Operator::Weight);
+    let postscript_sid = to_sid(Operator::PostScript);
+    let base_font_name_sid = to_sid(Operator::BaseFontName);
+
+    let unique_id = dict.get_int(Operator::UniqueID);
+    let synthetic_base = dict.get_int(Operator::SyntheticBase);
+    // XUID is an array of integers (TN5176 §9 Table 9 — "array" type).
+    let xuid = dict
+        .get_array(Operator::XUID)
+        .map(|ops| ops.iter().filter_map(|o| o.as_int()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    // BaseFontBlend is a "delta" array — each operand is the difference
+    // from the running sum, so we accumulate to absolute values for the
+    // caller. Per TN5176 §4 Table 4 the delta type is defined as: the
+    // first operand is absolute; each subsequent operand is added to the
+    // running total to yield the next absolute value.
+    let base_font_blend = dict
+        .get_array(Operator::BaseFontBlend)
+        .map(|ops| {
+            let mut acc = 0.0f64;
+            let mut out = Vec::with_capacity(ops.len());
+            for o in ops {
+                acc += o.as_f64();
+                out.push(acc);
+            }
+            out
+        })
+        .unwrap_or_default();
 
     TopMetadata {
         font_bbox,
@@ -555,6 +622,12 @@ fn extract_top_metadata(dict: &Dict) -> TopMetadata {
         full_name_sid,
         family_name_sid,
         weight_sid,
+        postscript_sid,
+        base_font_name_sid,
+        unique_id,
+        xuid,
+        synthetic_base,
+        base_font_blend,
     }
 }
 
@@ -581,6 +654,13 @@ mod tests {
         assert_eq!(m.copyright_sid, None);
         assert_eq!(m.version_sid, None);
         assert_eq!(m.family_name_sid, None);
+        // r176-added identity / synthetic-font operators default to absent.
+        assert_eq!(m.unique_id, None);
+        assert!(m.xuid.is_empty());
+        assert_eq!(m.synthetic_base, None);
+        assert!(m.base_font_blend.is_empty());
+        assert_eq!(m.postscript_sid, None);
+        assert_eq!(m.base_font_name_sid, None);
     }
 
     #[test]
@@ -1010,5 +1090,93 @@ mod tests {
         assert!(cff.is_cid());
         assert!(cff.registry_ordering().is_some());
         assert!(cff.fd_count() > 0);
+    }
+
+    // --- r176-added identity / synthetic-font Top-DICT operators ---------
+    //
+    // TN5176 §9 Table 9 covers UniqueID (op 13) + XUID (op 14); Table 10
+    // covers SyntheticBase (12 20), PostScript (12 21), BaseFontName
+    // (12 22), BaseFontBlend (12 23). These tests hand-encode a Top DICT
+    // carrying each operator and assert `extract_top_metadata` surfaces
+    // it correctly.
+
+    #[test]
+    fn top_metadata_picks_up_unique_id() {
+        // UniqueID = 28416 under operator 13 (op 28416 is the value
+        // TN5176 §9 uses in its annotated example dump, p. 19).
+        // Encode 28416 via op 28 (3-byte i16): 28416 fits in i16
+        // (range -32768..=32767, 28416 < 32768).
+        let mut buf = Vec::new();
+        buf.push(28);
+        buf.extend_from_slice(&28416i16.to_be_bytes());
+        buf.push(13);
+        let dict = Dict::parse(&buf).unwrap();
+        let m = extract_top_metadata(&dict);
+        assert_eq!(m.unique_id, Some(28416));
+    }
+
+    #[test]
+    fn top_metadata_picks_up_xuid_array() {
+        // XUID = [1, 11, 89, 12345] under operator 14.
+        // Encode each with the 1-byte 32..246 form where possible:
+        // 1 → 140, 11 → 150, 89 → 228. 12345 needs op 28 (3-byte i16,
+        // since 12345 < 32768).
+        let mut buf = vec![140, 150, 228];
+        buf.push(28);
+        buf.extend_from_slice(&12345i16.to_be_bytes());
+        buf.push(14);
+        let dict = Dict::parse(&buf).unwrap();
+        let m = extract_top_metadata(&dict);
+        assert_eq!(m.xuid, vec![1, 11, 89, 12345]);
+    }
+
+    #[test]
+    fn top_metadata_picks_up_synthetic_and_postscript_sids() {
+        // SyntheticBase = 42 (op 12 20). 42 → 181 (32..246 form).
+        // PostScript SID = 391 (op 12 21). 391 needs the 247..250
+        // 2-byte form: 391 = (b0 - 247) * 256 + b1 + 108. Pick b0=247
+        // → b1 = 391 - 108 = 283 (out of range). Pick b0=248 → b1 = 391
+        // - 256 - 108 = 27 (in range). So bytes 248, 27.
+        // BaseFontName SID = 400 (op 12 22). 400 = (248-247)*256 + b1
+        // + 108 = 256 + b1 + 108 → b1 = 36. So bytes 248, 36.
+        let mut buf = vec![181, 12, 20]; // SyntheticBase = 42
+        buf.extend_from_slice(&[248, 27, 12, 21]); // PostScript SID 391
+        buf.extend_from_slice(&[248, 36, 12, 22]); // BaseFontName SID 400
+        let dict = Dict::parse(&buf).unwrap();
+        let m = extract_top_metadata(&dict);
+        assert_eq!(m.synthetic_base, Some(42));
+        assert_eq!(m.postscript_sid, Some(391));
+        assert_eq!(m.base_font_name_sid, Some(400));
+    }
+
+    #[test]
+    fn top_metadata_undeltifies_base_font_blend() {
+        // BaseFontBlend = delta-encoded design vector. TN5176 §4
+        // Table 4 says the delta type's first operand is absolute and
+        // each subsequent operand is the difference from the running
+        // total. So raw [10, 5, -3, 2] → absolute [10, 15, 12, 14].
+        // Encode each with op 28 (3-byte i16) for uniformity. Op 12 23.
+        let mut buf = Vec::new();
+        for v in [10i16, 5, -3, 2] {
+            buf.push(28);
+            buf.extend_from_slice(&v.to_be_bytes());
+        }
+        buf.extend_from_slice(&[12, 23]);
+        let dict = Dict::parse(&buf).unwrap();
+        let m = extract_top_metadata(&dict);
+        assert_eq!(m.base_font_blend, vec![10.0, 15.0, 12.0, 14.0]);
+    }
+
+    #[test]
+    fn top_metadata_empty_xuid_and_blend_default_to_empty_vec() {
+        // No operators in the dict ⇒ both vectors empty (not None /
+        // not [0]). Distinct from "the operator is present but emits
+        // zero operands" which a malformed font could produce; for now
+        // we accept the latter as also-empty since it equally yields
+        // no caller-visible value.
+        let dict = Dict::parse(&[]).unwrap();
+        let m = extract_top_metadata(&dict);
+        assert!(m.xuid.is_empty());
+        assert!(m.base_font_blend.is_empty());
     }
 }

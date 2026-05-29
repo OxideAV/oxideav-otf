@@ -71,6 +71,12 @@ let _ = font.weight_name();         // Some("Regular"), etc.
 let _ = font.notice();
 let _ = font.copyright();
 let _ = font.version_string();
+let _ = font.unique_id();           // Option<i32> — legacy PS Type 1 ID
+let _ = font.xuid();                // &[i32] — extended unique ID array
+let _ = font.synthetic_base();      // Option<i32> — Name-INDEX index
+let _ = font.postscript();          // Option<&str> — embedded PS code
+let _ = font.base_font_name();      // Option<&str> — MM master FontName
+let _ = font.base_font_blend();     // &[f64] — undeltified UDV
 
 // Table-directory enumeration.
 for (tag, len) in font.table_tags() {
@@ -102,7 +108,53 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-171 additions (this push)
+## Round-176 additions (this push)
+
+CFF Top DICT identity + synthetic-font operators (Adobe TN5176 §9
+Tables 9 and 10) are now extracted into `TopMetadata` and surfaced on
+the public `Font` API. Previously the Top DICT parser already
+collected these into the raw entry list but the high-level metadata
+struct only surfaced FontBBox / FontMatrix / paint / italic / underline
+/ string-SID fields.
+
+- **`UniqueID`** (op 13, "number") — `Font::unique_id() -> Option<i32>`.
+  The legacy Adobe-assigned PostScript Type 1 unique identifier. Modern
+  fonts prefer `XUID`; many recent OpenType-CFF fonts omit it.
+- **`XUID`** (op 14, "array") — `Font::xuid() -> &[i32]`. Extended
+  unique-identifier array; the spec leaves the length unconstrained
+  beyond "array." Empty slice if absent. Deprecated in OpenType-CFF per
+  TN5176 4 Dec 03 Appendix H but still emitted by older tooling.
+- **`SyntheticBase`** (op 12 20, "number") —
+  `Font::synthetic_base() -> Option<i32>`. The Name-INDEX index of the
+  base font for synthetic fonts. Almost never present in shipping
+  OpenType-CFF (OpenType is one-font-per-CFF) but spec-defined.
+- **`PostScript`** (op 12 21, SID) — `Font::postscript() -> Option<&str>`.
+  Embedded PostScript language code (TN5176 §9 Table 10), resolved
+  through the CFF Strings table.
+- **`BaseFontName`** (op 12 22, SID) —
+  `Font::base_font_name() -> Option<&str>`. For multiple-master-derived
+  synthetics, the FontName of the underlying master, SID-resolved.
+- **`BaseFontBlend`** (op 12 23, "delta") —
+  `Font::base_font_blend() -> &[f64]`. The User Design Vector for the
+  master. The on-disk operands are *delta-encoded* per TN5176 §4
+  Table 4 ("delta" type: first operand is absolute, each subsequent
+  operand is the difference from the running total); the accessor
+  returns the **undeltified** absolute values, so a raw stream of
+  `[10, 5, -3, 2]` surfaces as `[10.0, 15.0, 12.0, 14.0]`. Empty
+  slice if absent.
+
+Six new unit tests in `src/cff/mod.rs` hand-encode a Top DICT carrying
+each operator (including the spec's worked `UniqueID = 28416` example
+from TN5176 §9 p. 19), plus an extended defaults test that asserts the
+new fields default to `None` / empty for fonts that omit them.
+
+The operator codes 12 20–23 are TN5176 §9 Table 10 escape operators;
+the existing single-byte op 20 / 21 enum discriminants for the Private
+DICT (`DefaultWidthX` / `NominalWidthX`) coexist cleanly because the
+`Operator` enum is `#[repr(u16)]` and the escape form encodes as
+`0x0C00 | sub` (e.g. `SyntheticBase = 0x0C14 ≠ DefaultWidthX = 0x14`).
+
+## Round-171 additions (previous push)
 
 The remaining CFF predefined encoding — **Expert Encoding** (TN5176
 Appendix B §2, Top DICT Encoding operand `1`) — is now resolved

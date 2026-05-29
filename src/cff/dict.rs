@@ -91,6 +91,10 @@ pub(crate) enum Operator {
     CharstringType = 0x0C06,
     FontMatrix = 0x0C07,
     StrokeWidth = 0x0C08,
+    SyntheticBase = 0x0C14,
+    PostScript = 0x0C15,
+    BaseFontName = 0x0C16,
+    BaseFontBlend = 0x0C17,
 
     // --- Two-byte Private (TN5176 Table 23 cont'd) ---
     BlueScale = 0x0C09,

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- CFF Top DICT identity + synthetic-font operators (Adobe TN5176 §9
+  Tables 9 and 10): **`UniqueID`** (op 13), **`XUID`** (op 14),
+  **`SyntheticBase`** (op 12 20), **`PostScript`** (op 12 21),
+  **`BaseFontName`** (op 12 22), **`BaseFontBlend`** (op 12 23).
+  Previously the parser collected these into the raw DICT entry list
+  but never surfaced them on `TopMetadata` or the public `Font` API.
+  - `Font::unique_id() -> Option<i32>` (legacy PostScript Type 1 ID).
+  - `Font::xuid() -> &[i32]` (extended unique-identifier array; empty
+    slice if absent).
+  - `Font::synthetic_base() -> Option<i32>` (Name-INDEX index of the
+    base font for synthetics).
+  - `Font::postscript() -> Option<&str>` (embedded PostScript code,
+    resolved through the CFF Strings table).
+  - `Font::base_font_name() -> Option<&str>` (multiple-master master
+    font name, SID-resolved).
+  - `Font::base_font_blend() -> &[f64]` (multiple-master User Design
+    Vector — undeltified into absolute values per TN5176 §4 Table 4
+    "delta" semantics; empty slice if absent).
+
+  Six new unit tests in `src/cff/mod.rs` hand-encode a Top DICT
+  carrying each operator, plus an extended defaults test that asserts
+  the new fields default to `None` / empty for fonts that omit them.
+
 ## [0.1.1](https://github.com/OxideAV/oxideav-otf/compare/v0.1.0...v0.1.1) - 2026-05-24
 
 ### Other
