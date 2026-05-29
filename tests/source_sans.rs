@@ -267,3 +267,99 @@ fn cff_r176_identity_and_synthetic_operators_do_not_panic() {
         "Source Sans 3 has no multiple-master base, BaseFontBlend should be empty"
     );
 }
+
+#[test]
+fn cff_private_hint_zones_decode_for_real_font() {
+    // Source Sans 3 ships hand-tuned hint zones in its CFF Private
+    // DICT. We do not bake the exact values into the test (Adobe may
+    // re-tune them in a point release) but we assert the qualitative
+    // properties every well-formed Latin font must satisfy and the
+    // round-183 hint-zone surface must therefore round-trip:
+    //
+    //   - BlueValues is populated and has an even count (pairs of
+    //     bottom-top y).
+    //   - All BlueValues are integral and non-decreasing — both
+    //     properties hold for the *undeltified* values per TN5176 §15.
+    //   - StdHW / StdVW are positive (dominant stem widths).
+    //   - BlueScale / BlueShift / BlueFuzz retain plausible Latin-font
+    //     values (BlueShift typically 7, BlueFuzz typically 0 or 1,
+    //     BlueScale typically near 0.04).
+    //   - LanguageGroup is 0 (Latin), ExpansionFactor is the default
+    //     0.06, ForceBold is false (Source Sans 3 Regular is not bold).
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let h = f.private_hints();
+
+    assert!(
+        !h.blue_values.is_empty(),
+        "BlueValues empty — Source Sans 3 Regular ships an alignment zone table"
+    );
+    assert_eq!(
+        h.blue_values.len() % 2,
+        0,
+        "BlueValues must come in (bottom, top) pairs; got {} entries",
+        h.blue_values.len()
+    );
+    // Undeltified values are non-decreasing (deltas are signed but the
+    // running sum across a real font's alignment zones is monotone
+    // bottom-to-top, since Adobe orders the zones ascending).
+    for window in h.blue_values.windows(2) {
+        assert!(
+            window[0] <= window[1],
+            "BlueValues should be monotone after undeltification: {} > {}",
+            window[0],
+            window[1]
+        );
+    }
+    // Each entry should be at a font-unit granularity (no fractional
+    // part).
+    for v in &h.blue_values {
+        assert!(
+            (v - v.round()).abs() < 1e-9,
+            "BlueValue {v} is not integral after undeltification"
+        );
+    }
+
+    let std_hw = h.std_hw.expect("StdHW present");
+    let std_vw = h.std_vw.expect("StdVW present");
+    assert!(std_hw > 0.0, "StdHW {std_hw} should be positive");
+    assert!(std_vw > 0.0, "StdVW {std_vw} should be positive");
+
+    // BlueShift is conventionally 7 unless the font author overrides
+    // it; either way it must be a small positive integer.
+    assert!(
+        h.blue_shift >= 0.0 && h.blue_shift < 256.0,
+        "BlueShift {} is implausible",
+        h.blue_shift
+    );
+    assert!(
+        h.blue_fuzz >= 0.0 && h.blue_fuzz < 256.0,
+        "BlueFuzz {} is implausible",
+        h.blue_fuzz
+    );
+    assert!(
+        h.blue_scale > 0.0 && h.blue_scale < 1.0,
+        "BlueScale {} should be a positive sub-unit fraction",
+        h.blue_scale
+    );
+
+    assert_eq!(
+        h.language_group, 0,
+        "Source Sans 3 is a Latin font; LanguageGroup must be 0"
+    );
+    assert!(
+        !h.force_bold,
+        "Source Sans 3 Regular is upright-non-bold; ForceBold must be false"
+    );
+
+    // glyph_private_hints on any in-range glyph routes to the same
+    // single Private DICT for a non-CID font, so it must return Some
+    // and match `private_hints` exactly.
+    let gid_a = f.glyph_index('A').unwrap();
+    let per_glyph = f.glyph_private_hints(gid_a).expect("per-glyph hints");
+    assert_eq!(
+        per_glyph, h,
+        "non-CID per-glyph hints must equal font-wide hints"
+    );
+    // Past-end gid returns None (FDSelect would have no entry).
+    assert!(f.glyph_private_hints(f.glyph_count()).is_none());
+}

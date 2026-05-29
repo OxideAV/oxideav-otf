@@ -28,7 +28,7 @@ pub mod outline;
 pub mod parser;
 pub mod tables;
 
-pub use cff::{RegistryOrdering, TopMetadata};
+pub use cff::{PrivateHints, RegistryOrdering, TopMetadata};
 pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
 
 use crate::cff::Cff;
@@ -496,6 +496,45 @@ impl<'a> Font<'a> {
     /// Empty slice if the operator is absent.
     pub fn base_font_blend(&self) -> &[f64] {
         &self.cff.top_metadata().base_font_blend
+    }
+
+    // ---- CFF Private DICT hint zones --------------------------------------
+
+    /// PostScript-style alignment / stem hinting parameters for the
+    /// Private DICT this font carries (CFF TN5176 §15 Table 23). For
+    /// non-CID fonts this is the single top-level Private DICT (every
+    /// glyph shares it); for CID-keyed fonts it is the FDArray entry at
+    /// index 0. The returned struct exposes the full TN5176 §15 hint
+    /// vocabulary: BlueValues / OtherBlues / FamilyBlues /
+    /// FamilyOtherBlues (undeltified into absolute y-coordinate pairs),
+    /// StdHW / StdVW (dominant stem widths), StemSnapH / StemSnapV
+    /// (supplementary stem widths, undeltified), BlueScale / BlueShift
+    /// / BlueFuzz (overshoot suppression tunables), ForceBold,
+    /// LanguageGroup, ExpansionFactor, and initialRandomSeed. The
+    /// round-1 outline decoder still does not enforce hints (we
+    /// anti-alias at >= 16 px); this surface is for callers inspecting
+    /// font metadata or implementing their own hinting.
+    ///
+    /// Callers wanting the per-FD hints of a CID-keyed font should use
+    /// [`Font::cff`].`private_hints_fd(fd_index)` directly. The
+    /// "hints that apply to a specific glyph" routing is
+    /// [`Font::glyph_private_hints`].
+    pub fn private_hints(&self) -> &PrivateHints {
+        self.cff.private_hints()
+    }
+
+    /// The CFF Private DICT hint zones that apply to `glyph_id`. For
+    /// non-CID fonts this returns the same value as
+    /// [`Font::private_hints`]; for CID-keyed fonts (TN5176 §18) the
+    /// glyph is routed through `FDSelect` to one of the FDArray Font
+    /// DICTs, and the hint zones returned are that FD's. Returns `None`
+    /// when `glyph_id` is past `glyph_count()` (since FDSelect has no
+    /// entry for it).
+    pub fn glyph_private_hints(&self, glyph_id: u16) -> Option<&PrivateHints> {
+        if glyph_id >= self.maxp.num_glyphs {
+            return None;
+        }
+        self.cff.private_hints_for_glyph(glyph_id)
     }
 
     // ---- per-glyph derived metrics ---------------------------------------

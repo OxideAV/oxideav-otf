@@ -37,6 +37,7 @@ use self::fdselect::FdSelect;
 use self::header::CffHeader;
 use self::index::Index;
 use self::private::PrivateDict;
+pub use self::private::PrivateHints;
 use self::strings::Strings;
 
 /// CFF Top DICT metadata surfaced for callers.
@@ -166,7 +167,9 @@ pub struct RegistryOrdering {
 #[derive(Debug, Clone)]
 enum FontKind<'a> {
     /// Non-CID font: one Top-level Private DICT for every glyph.
-    NonCid(PrivateDict<'a>),
+    /// Boxed so the variants stay similar in size (the `Cid` arm holds
+    /// a `Vec` + `FdSelect` + `RegistryOrdering`).
+    NonCid(Box<PrivateDict<'a>>),
     /// CID-keyed font: each glyph picks its Font DICT via the
     /// FDSelect map, and each Font DICT carries its own Private DICT.
     Cid {
@@ -324,7 +327,7 @@ impl<'a> Cff<'a> {
             // Non-CID font: required top-level Private DICT.
             let private = parse_private_from_dict(bytes, &top_dict)?
                 .ok_or(Error::Cff("Top DICT missing Private"))?;
-            FontKind::NonCid(private)
+            FontKind::NonCid(Box::new(private))
         };
 
         let top = extract_top_metadata(&top_dict);
@@ -441,6 +444,40 @@ impl<'a> Cff<'a> {
             FontKind::Cid { fd_array, .. } => fd_array.len(),
             FontKind::NonCid(_) => 0,
         }
+    }
+
+    /// PostScript-style hint zones (TN5176 §15 Table 23) attached to
+    /// the *first* Private DICT this CFF carries — for non-CID fonts
+    /// that is the unique top-level Private DICT (every glyph shares
+    /// it); for CID-keyed fonts it is the Font DICT at FDArray index
+    /// `0`. Callers that need per-FD hints on a CID-keyed font should
+    /// use [`Cff::private_hints_fd`].
+    pub fn private_hints(&self) -> &PrivateHints {
+        match &self.kind {
+            FontKind::NonCid(p) => &p.hints,
+            FontKind::Cid { fd_array, .. } => &fd_array[0].hints,
+        }
+    }
+
+    /// Per-FD hint zones for a CID-keyed font's FDArray entry `fd_index`
+    /// (TN5176 §18 routes each glyph through `FDSelect` to one of these
+    /// Font DICTs, and each Font DICT carries its own Private DICT).
+    /// Returns `None` for a non-CID font (use [`Cff::private_hints`]
+    /// instead) or when `fd_index >= self.fd_count()`.
+    pub fn private_hints_fd(&self, fd_index: usize) -> Option<&PrivateHints> {
+        match &self.kind {
+            FontKind::Cid { fd_array, .. } => fd_array.get(fd_index).map(|p| &p.hints),
+            FontKind::NonCid(_) => None,
+        }
+    }
+
+    /// Hint zones of the Private DICT that applies to `gid` — non-CID
+    /// fonts return the single Private DICT, CID-keyed fonts route
+    /// through `FDSelect` to the correct Font DICT (TN5176 §19).
+    /// Returns `None` if `gid` falls outside the FDSelect range on a
+    /// CID-keyed font (always succeeds for non-CID fonts).
+    pub fn private_hints_for_glyph(&self, gid: u16) -> Option<&PrivateHints> {
+        self.private_for(gid).ok().map(|p| &p.hints)
     }
 
     /// Borrowed CFF table bytes (mostly useful for diagnostics).

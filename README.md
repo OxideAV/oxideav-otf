@@ -19,8 +19,13 @@ TrueType outlines (quadratic Beziers); OTF handles CFF outlines
     (TN5176 Appendix B §1) and predefined Expert Encoding
     (Appendix B §2) — both 256-entry `code → SID` tables
     transcribed in full.
-  - Private DICT including `defaultWidthX` / `nominalWidthX` and the
-    Local Subrs INDEX offset.
+  - Private DICT including `defaultWidthX` / `nominalWidthX`, the
+    Local Subrs INDEX offset, and the full hint-zone vocabulary
+    (`BlueValues` / `OtherBlues` / `FamilyBlues` /
+    `FamilyOtherBlues` undeltified per TN5176 §4 Table 4 "delta"
+    semantics; `StdHW` / `StdVW`; `StemSnapH` / `StemSnapV`;
+    `BlueScale` / `BlueShift` / `BlueFuzz`; `ForceBold`;
+    `LanguageGroup`; `ExpansionFactor`; `initialRandomSeed`).
   - CID-keyed fonts (TN5176 §§18, 19): `ROS` detection, the `FDArray`
     Font DICT INDEX, and `FDSelect` formats 0 / 3 routing each glyph
     to its own Private DICT / Local Subrs / width defaults.
@@ -93,6 +98,18 @@ let _ = font.glyph_name(gid);       // "A" (via CFF charset → Strings)
 let _ = font.glyph_bbox(gid)?;      // per-glyph bbox derived from charstring
 let outline = font.glyph_outline(gid)?;
 
+// CFF Private DICT hint zones (TN5176 §15 Table 23).
+let h = font.private_hints();
+let _ = &h.blue_values;          // undeltified absolute y-coords
+let _ = &h.other_blues;
+let _ = h.std_hw;                // Option<f64>
+let _ = h.std_vw;
+let _ = &h.stem_snap_h;
+let _ = h.blue_scale;            // 0.039625 default
+let _ = h.force_bold;            // bool
+let _ = h.language_group;        // 0 (Latin) / 1 (CJK)
+let _ = font.glyph_private_hints(gid);  // CID-aware per-glyph routing
+
 // CID-keyed fonts (TN5176 §18) — None / 0 on a plain CFF font.
 let _ = font.is_cid();
 let _ = font.cid_registry();        // Some("Adobe")
@@ -108,7 +125,70 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-176 additions (this push)
+## Round-183 additions (this push)
+
+CFF Private DICT hint zones (Adobe TN5176 §15 Table 23) are now
+surfaced on the public `Font` API. Previously the Private DICT parser
+extracted `defaultWidthX` / `nominalWidthX` / `Subrs` and silently
+ignored every other operator; the new `PrivateHints` struct
+(re-exported at the crate root) holds the full TN5176 §15 vocabulary
+and exposes it through `Font::private_hints` and
+`Font::glyph_private_hints`.
+
+- **`BlueValues`** (op 6) / **`OtherBlues`** (op 7) /
+  **`FamilyBlues`** (op 8) / **`FamilyOtherBlues`** (op 9) —
+  alignment zones, each declared as the spec's "delta" operand type
+  (§4 Table 4: first operand absolute, every subsequent operand is a
+  difference from the running total). The accessors return the
+  **undeltified** absolute y-coordinates. So TN5176's spec-worked
+  raw stream `[-14, 14, 662, 14, -226, 10, 223, 0]` surfaces as
+  `[-14, 0, 662, 676, 450, 460, 683, 683]`. Empty vectors when the
+  operator is absent.
+- **`StdHW`** (op 10) / **`StdVW`** (op 11) — dominant horizontal and
+  vertical stem widths. `Option<f64>` so callers can distinguish
+  "absent" from "zero" (TN5176 lists no default value for either).
+- **`StemSnapH`** (op 12 12) / **`StemSnapV`** (op 12 13) —
+  supplementary stem widths the rasterizer can snap stems to.
+  Delta-encoded just like the blue-zone arrays; the accessor returns
+  the running sums.
+- **`BlueScale`** (op 12 9, default `0.039625`), **`BlueShift`**
+  (op 12 10, default `7`), **`BlueFuzz`** (op 12 11, default `1`) —
+  overshoot suppression tunables.
+- **`ForceBold`** (op 12 14, default `false`) — Multiple Master
+  synthetic-bold flag. Boolean operand decoded as `false` for `0`,
+  `true` otherwise.
+- **`LanguageGroup`** (op 12 17, default `0`) — `0` for Latin /
+  Cyrillic / etc., `1` for CJK.
+- **`ExpansionFactor`** (op 12 18, default `0.06`) — limit on the
+  per-counter expansion allowed when forcing bold.
+- **`initialRandomSeed`** (op 12 19, default `0`) — seed for the Type
+  2 `random` operator.
+
+CID-keyed fonts (TN5176 §18) carry one Private DICT per FDArray Font
+DICT; `Font::private_hints` returns FDArray index 0 (matching the
+glyph routing for FDSelect's first entry on most CID fonts), and
+`Font::glyph_private_hints(gid)` routes through `FDSelect` per
+TN5176 §19 to surface the correct per-FD hints. Callers iterating
+the full FDArray can use `font.cff().private_hints_fd(i)` directly.
+
+Hinting is still not *enforced* by the round-1 outline pipeline (we
+anti-alias at >= 16 px); this surface is for callers inspecting font
+metadata or implementing their own hinting downstream.
+
+Eight new unit tests in `src/cff/private.rs` cover spec defaults,
+delta-undeltification for every "delta"-typed operator, scalar
+overrides, `ForceBold` boolean decode, and a worked TN5176 Appendix-D
+Private DICT layout whose every field matches the spec's listed
+bytes. One new integration test against the Source Sans 3 fixture
+asserts BlueValues come in `(bottom, top)` pairs, are monotone
+non-decreasing after undeltification, are font-unit integral;
+`StdHW` / `StdVW` are positive; `BlueScale` / `BlueShift` /
+`BlueFuzz` lie in plausible ranges; `LanguageGroup == 0` and
+`ForceBold == false` for a Latin upright font; and that
+`glyph_private_hints` on any in-range glyph returns the same struct
+as `private_hints` (the non-CID invariant).
+
+## Round-176 additions (previous push)
 
 CFF Top DICT identity + synthetic-font operators (Adobe TN5176 §9
 Tables 9 and 10) are now extracted into `TopMetadata` and surfaced on

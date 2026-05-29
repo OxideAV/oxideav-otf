@@ -9,6 +9,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- CFF Private DICT hint zones surfaced on the public API (Adobe TN5176
+  §15 Table 23). Before this push the Private DICT parser only used
+  `defaultWidthX` / `nominalWidthX` / `Subrs` and silently ignored
+  every hint-related operator; the new `PrivateHints` struct holds the
+  full vocabulary:
+  - **`BlueValues`** (op 6), **`OtherBlues`** (op 7),
+    **`FamilyBlues`** (op 8), **`FamilyOtherBlues`** (op 9) — primary
+    and secondary alignment-zone tables; each is the "delta" operand
+    type per TN5176 §4 Table 4 so the accessor returns the
+    *undeltified* (running-sum) absolute y-coordinates. Empty when
+    absent.
+  - **`StdHW`** (op 10), **`StdVW`** (op 11) — dominant horizontal and
+    vertical stem widths. `Option<f64>` so callers can distinguish
+    "absent" from "zero" (TN5176 lists no default for either).
+  - **`StemSnapH`** (op 12 12), **`StemSnapV`** (op 12 13) —
+    supplementary stem widths the rasterizer snaps stems to within
+    tolerance. Same delta-decoded semantics as `BlueValues`.
+  - **`BlueScale`** (op 12 9, default `0.039625`), **`BlueShift`** (op
+    12 10, default `7`), **`BlueFuzz`** (op 12 11, default `1`) —
+    overshoot suppression and zone-fuzz tunables.
+  - **`ForceBold`** (op 12 14, default `false`) — Multiple Master
+    synthetic-bold flag. Boolean operand decoded as `false` for `0`,
+    `true` otherwise.
+  - **`LanguageGroup`** (op 12 17, default `0`) — `0` for Latin /
+    Cyrillic etc., `1` for CJK.
+  - **`ExpansionFactor`** (op 12 18, default `0.06`) — per-counter
+    expansion limit when forcing bold.
+  - **`initialRandomSeed`** (op 12 19, default `0`) — seed for the
+    Type 2 `random` operator.
+
+  Surfaced through three accessors so non-CID and CID-keyed fonts are
+  uniform:
+  - `Font::private_hints() -> &PrivateHints` — the font's primary
+    Private DICT (FDArray index 0 on a CID-keyed font).
+  - `Font::glyph_private_hints(gid) -> Option<&PrivateHints>` — routes
+    through `FDSelect` (TN5176 §19) so a CID-keyed font's per-FD
+    hints are reachable per glyph. `None` for an out-of-range glyph.
+  - `Cff::private_hints_fd(fd_index) -> Option<&PrivateHints>` — direct
+    FDArray indexing for callers iterating the full FDArray.
+
+  Hinting is still not *enforced* by the round-1 outline pipeline
+  (we anti-alias at >= 16 px); this surface is for callers inspecting
+  font metadata or implementing their own hinting downstream.
+
+  Eight new unit tests in `src/cff/private.rs` cover Table 23 defaults,
+  delta-undeltification for each of the four blue-zone operators and
+  for the stem-snap pair, scalar overrides for `BlueScale` /
+  `BlueShift` / `BlueFuzz` / `ExpansionFactor` /
+  `initialRandomSeed`, `ForceBold` boolean decode, and a full
+  TN5176-Appendix-D worked Private DICT example whose every field
+  matches the spec's listed bytes. One new integration test against
+  the Source Sans 3 fixture asserts BlueValues come in pairs, are
+  monotone-non-decreasing after undeltification, are integral; that
+  `StdHW` and `StdVW` are positive; that `BlueScale` / `BlueShift` /
+  `BlueFuzz` are in plausible ranges; that `LanguageGroup == 0` and
+  `ForceBold == false` (Latin upright font); and that
+  `Font::glyph_private_hints` of any in-range glyph routes back to the
+  same struct (non-CID invariant).
+
 - CFF Top DICT identity + synthetic-font operators (Adobe TN5176 §9
   Tables 9 and 10): **`UniqueID`** (op 13), **`XUID`** (op 14),
   **`SyntheticBase`** (op 12 20), **`PostScript`** (op 12 21),
