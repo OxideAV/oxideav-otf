@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/OxideAV/oxideav-otf/compare/v0.1.1...v0.1.2) - 2026-05-29
+
+### Other
+
+- decode `post` (PostScript) table — header + v2.0/v2.5 tails
+- surface Private DICT hint zones (TN5176 §15 Table 23)
+- surface UniqueID / XUID / SyntheticBase / PostScript / BaseFontName / BaseFontBlend (TN5176 §9 Tables 9 + 10)
+- transcribe predefined Expert Encoding table (TN5176 Appendix B §2)
+
 ### Added
 
 - OpenType **`post` (PostScript) table** decoder, spec
