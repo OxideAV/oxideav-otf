@@ -125,7 +125,75 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-183 additions (this push)
+## Round-187 additions (this push)
+
+The OpenType **`post` table** (PostScript table) is now parsed and
+surfaced on the public `Font` API. Spec: Microsoft / ISO/IEC 14496-22
+`post` (`docs/text/opentype/otspec-post.html`). Previously the table
+was reachable through the generic `Font::table_data(b"post")` bytes
+accessor but never decoded; the new `PostTable` (and `PostFormat`
+enum, both re-exported at the crate root) decode the 32-byte header
+for every version and the version-2.0 / 2.5 tails.
+
+- **Header (every version):** `italic_angle` (decoded from the on-disk
+  16.16 `Fixed`), `underline_position` (FWORD = `i16`),
+  `underline_thickness`, `is_fixed_pitch` (any non-zero on the
+  `uint32` field rounds up to `true` per spec), and the four VM hint
+  fields `min_mem_type42` / `max_mem_type42` / `min_mem_type1` /
+  `max_mem_type1`.
+- **Format 3.0** — header only; this is the format OpenType-CFF1
+  fonts must use per the spec's "Versions" preamble. Source Sans 3
+  Regular ships a 32-byte version-3.0 `post`; the new integration
+  test asserts the exact 32-byte length, version `0x00030000`,
+  zero italic angle, `isFixedPitch = false`, negative
+  `underlinePosition`, and positive `underlineThickness` below
+  `unitsPerEm`.
+- **Format 2.0** — the header + a `numGlyphs` `u16` + a
+  `glyphNameIndex[numGlyphs]` `u16` array + a Pascal-string
+  `stringData` tail. `PostTable::name_index(gid)` returns the raw
+  index; `name_string(pascal_index)` walks the Pascal-string list
+  and returns the requested entry as a `&[u8]`. The two-half
+  semantics from the spec (indices `0..258` = standard Mac glyph
+  set; indices `258..65535` = `index − 258` into the Pascal list)
+  are documented per-accessor.
+- **Format 2.5** — the header + `numGlyphs` `u16` + `offset[numGlyphs]`
+  signed-byte array; `PostTable::standard_offset(gid)` returns the
+  raw `i8`. The format is flagged deprecated by both the spec and
+  this implementation but still parsed for completeness.
+- **Format 1.0** and any **`Other` Version16Dot16** value (e.g.
+  Apple's 4.0 extension, "not supported in OpenType" per the spec)
+  decode the header and skip the tail.
+
+New on `Font`: `post()`, `post_format()`, `post_italic_angle()`,
+`post_underline_position()`, `post_underline_thickness()`,
+`post_is_fixed_pitch()`, and `post_glyph_name(gid)`. The latter
+returns the per-glyph Pascal-style name for format 2.0 glyphs whose
+`glyphNameIndex >= 258` (the non-standard half); for `< 258`
+indices, the standard-Macintosh 258-entry list is referenced from
+`otspec-post.html` but is not staged in
+`docs/text/opentype/spec/` — only the Apple TrueType Reference
+Manual's *table of contents* page is currently there. That
+sub-feature is documented as a docs gap; callers wanting per-glyph
+names that work universally for CFF1 fonts should keep using the
+existing `Font::glyph_name` (CFF charset → strings) which has no
+gap. The `post` table is treated as optional (it is one of OpenType's
+nine required tables per `otff` spec, but real-world stripped-down
+fonts sometimes omit it); a missing `post` parses fine and the
+accessors return `None`.
+
+Seventeen new unit tests in `src/tables/post.rs` cover the v1.0 /
+v3.0 / v2.0 / v2.5 / `Other` header decodes, italic-angle
+fractional decode, the `isFixedPitch` non-zero high-bit case, every
+VM field, the v2.0 multi-Pascal-string round-trip with the spec's
+worked example (glyph 408 → name index 262 → Pascal index 4), the
+v2.5 worked example (`+36, +36, +36` for A/B/C at positions
+37/38/39), truncation rejection paths, and the v2.0 Pascal-length
+spec-defensive `None` return when the on-disk length walks past the
+table tail. One new integration test against the Source Sans 3
+fixture asserts format 3.0 + zero italic + proportional + plausible
+underline.
+
+## Round-183 additions (previous push)
 
 CFF Private DICT hint zones (Adobe TN5176 §15 Table 23) are now
 surfaced on the public `Font` API. Previously the Private DICT parser
@@ -458,11 +526,18 @@ TN5177 §4.6):
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
 - The Adobe Glyph List string → codepoint mapping (round 3+ if any
   consumer needs it).
-- `OS/2`, `post`, `GSUB`, `GPOS`, `GDEF`, `kern` tables — the Adobe
-  CFF / Type 2 / sfnt PDFs are now staged under
-  `docs/text/opentype/spec/`, but the layout-table (GSUB/GPOS/GDEF)
-  and `OS/2` / `post` definitions live in the Microsoft OpenType
-  spec; only the HTML snapshot is staged so far.
+- `OS/2`, `GSUB`, `GPOS`, `GDEF`, `kern` tables — the Adobe CFF /
+  Type 2 / sfnt PDFs are now staged under `docs/text/opentype/spec/`
+  alongside the Microsoft per-table HTML snapshots (`otspec-os2.html`
+  / `otspec-gsub.html` / `otspec-gpos.html` / `otspec-gdef.html`),
+  so future rounds can pick these up; round 187 took the `post`
+  table off this list.
+- Format-1.0 / 2.0 / 2.5 glyph-name lookups in `post` (the
+  standard-Macintosh 258-entry list referenced from
+  `otspec-post.html`). The list lives in Apple's TrueType Reference
+  Manual chapter 6 and is not currently staged in
+  `docs/text/opentype/`; only the manual's table-of-contents page is
+  there. The non-standard Pascal-string half is fully resolvable.
 
 ## Test fixture
 

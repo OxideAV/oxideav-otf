@@ -35,8 +35,10 @@ use crate::cff::Cff;
 use crate::parser::TableDirectory;
 use crate::tables::{
     cmap::CmapTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable, maxp::MaxpTable,
-    name::NameTable,
+    name::NameTable, post::PostTable,
 };
+
+pub use crate::tables::post::PostFormat;
 
 /// Errors emitted during font parsing or glyph lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +173,10 @@ pub struct Font<'a> {
     cmap: CmapTable<'a>,
     name: NameTable<'a>,
     hmtx: HmtxTable<'a>,
+    /// Optional per OpenType spec: every well-formed OpenType font
+    /// carries `post`, but some real-world stripped-down fonts omit
+    /// it. We tolerate absence rather than reject the whole font.
+    post: Option<PostTable<'a>>,
     cff: Cff<'a>,
 }
 
@@ -194,6 +200,15 @@ impl<'a> Font<'a> {
             maxp.num_glyphs,
         )?;
 
+        // `post` is one of the OpenType-spec required tables (per
+        // `otspec-otff.html` "Required Tables"); for OpenType-CFF1 the
+        // spec mandates version 3.0. Some real-world stripped-down
+        // fonts omit it, so we tolerate absence and surface a `None`.
+        let post = match dir.find(b"post", bytes) {
+            Some(slice) => Some(PostTable::parse(slice)?),
+            None => None,
+        };
+
         let cff_bytes = dir.required(b"CFF ", bytes)?;
         let cff = Cff::parse(cff_bytes)?;
 
@@ -206,6 +221,7 @@ impl<'a> Font<'a> {
             cmap,
             name,
             hmtx,
+            post,
             cff,
         })
     }
@@ -580,5 +596,74 @@ impl<'a> Font<'a> {
     /// `true` if the font carries a table with `tag`.
     pub fn has_table(&self, tag: &[u8; 4]) -> bool {
         self.dir.find(tag, self.bytes).is_some()
+    }
+
+    // ---- `post` PostScript table ------------------------------------------
+
+    /// Borrow the parsed `post` table, if present. The table is one of
+    /// OpenType's nine required tables (per `otff` spec) but some
+    /// real-world stripped-down fonts omit it.
+    ///
+    /// For OpenType-CFF1 (this crate's only supported flavour) the
+    /// spec mandates `post` version 3.0; the table still carries the
+    /// 32-byte header (italic angle / underline / fixed-pitch / VM
+    /// hints) regardless of version, and version 2.0 adds the
+    /// PostScript-name array.
+    pub fn post(&self) -> Option<&PostTable<'a>> {
+        self.post.as_ref()
+    }
+
+    /// `post` table format discriminant, if present.
+    pub fn post_format(&self) -> Option<PostFormat> {
+        self.post.as_ref().map(PostTable::format)
+    }
+
+    /// Italic angle in degrees from the `post` table, if present.
+    /// Equivalent to [`Font::italic_angle`] (sourced from CFF Top
+    /// DICT) when both are populated; the spec recommends they match
+    /// but does not require it.
+    pub fn post_italic_angle(&self) -> Option<f64> {
+        self.post.as_ref().map(PostTable::italic_angle)
+    }
+
+    /// Underline position in font units from the `post` table. The
+    /// spec defines this as the y-coordinate of the *top* of the
+    /// underline (CFF Top DICT's `UnderlinePosition` operates on the
+    /// same coordinate definition).
+    pub fn post_underline_position(&self) -> Option<i16> {
+        self.post.as_ref().map(PostTable::underline_position)
+    }
+
+    /// Underline stroke thickness in font units from the `post`
+    /// table.
+    pub fn post_underline_thickness(&self) -> Option<i16> {
+        self.post.as_ref().map(PostTable::underline_thickness)
+    }
+
+    /// `post.isFixedPitch` — `true` when the font is monospaced.
+    /// `None` if `post` is absent. Note the on-disk field is a
+    /// `uint32` and any non-zero value rounds up to `true`.
+    pub fn post_is_fixed_pitch(&self) -> Option<bool> {
+        self.post.as_ref().map(PostTable::is_fixed_pitch)
+    }
+
+    /// Glyph name for `glyph_id` from the `post` table, if the table
+    /// is present in format 2.0 *and* the glyph maps to a non-
+    /// standard Pascal string. For format-2.0 glyphs that map to the
+    /// 258-entry standard Macintosh set (`glyphNameIndex < 258`),
+    /// this returns `None` because the standard-Macintosh glyph-name
+    /// list is not yet staged in `docs/text/opentype/` — see the
+    /// module-level docs in `tables::post` and the round-187 report
+    /// for the docs gap. Callers wanting names that work for every
+    /// CFF1 glyph should prefer [`Font::glyph_name`] (CFF charset
+    /// → strings, which has no docs gap).
+    pub fn post_glyph_name(&self, glyph_id: u16) -> Option<&'a [u8]> {
+        let post = self.post.as_ref()?;
+        let idx = post.name_index(glyph_id)?;
+        if idx < 258 {
+            // Standard-Mac name — table not staged. See module docs.
+            return None;
+        }
+        post.name_string(idx - 258)
     }
 }

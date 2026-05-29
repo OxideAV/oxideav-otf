@@ -363,3 +363,52 @@ fn cff_private_hint_zones_decode_for_real_font() {
     // Past-end gid returns None (FDSelect would have no entry).
     assert!(f.glyph_private_hints(f.glyph_count()).is_none());
 }
+
+#[test]
+fn post_table_surfaces_on_real_font() {
+    use oxideav_otf::PostFormat;
+
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    // OpenType-CFF1 mandates `post` version 3.0 per the spec's
+    // "Versions" preamble; Source Sans 3 is OpenType-CFF1.
+    let post_fmt = f.post_format().expect("post table present");
+    assert_eq!(
+        post_fmt,
+        PostFormat::V3_0,
+        "OpenType-CFF1 must use post version 3.0; got {post_fmt:?}"
+    );
+
+    let post = f.post().expect("post borrow");
+    assert_eq!(post.raw_version(), 0x0003_0000);
+    // Source Sans 3 Regular is upright → italic angle should be 0.
+    assert!(
+        f.post_italic_angle().unwrap().abs() < 1e-6,
+        "Source Sans 3 Regular italic angle: {}",
+        f.post_italic_angle().unwrap()
+    );
+    // Source Sans 3 Regular is proportional → not fixed pitch.
+    assert_eq!(f.post_is_fixed_pitch(), Some(false));
+
+    // Underline metrics: position is below baseline (negative),
+    // thickness is a small positive value. Both are font-author
+    // choices, so we only check the typographic conventions.
+    let up = f.post_underline_position().unwrap();
+    let ut = f.post_underline_thickness().unwrap();
+    assert!(up < 0, "post.underlinePosition {up} should be negative");
+    assert!(ut > 0, "post.underlineThickness {ut} should be positive");
+    assert!(ut < f.units_per_em() as i16, "thickness > UPEM?");
+
+    // Format 3.0 has no per-glyph name array; `post_glyph_name`
+    // returns None for every glyph.
+    let gid_a = f.glyph_index('A').unwrap();
+    assert!(
+        f.post_glyph_name(gid_a).is_none(),
+        "post v3.0 must not carry per-glyph names"
+    );
+
+    // The `post` table is also reachable through the generic
+    // table-directory enumeration; cross-check the two paths agree
+    // on size.
+    let raw = f.table_data(b"post").expect("post via table_data");
+    assert_eq!(raw.len(), 32, "OpenType-CFF1 post 3.0 is exactly 32 bytes");
+}

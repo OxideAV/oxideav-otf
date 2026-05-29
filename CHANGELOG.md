@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- OpenType **`post` (PostScript) table** decoder, spec
+  Microsoft / ISO/IEC 14496-22 (`docs/text/opentype/otspec-post.html`).
+  Previously the table was reachable through the generic
+  `Font::table_data(b"post")` bytes accessor but never decoded; the
+  new `PostTable` (and `PostFormat` enum, both re-exported at the
+  crate root) decode the 32-byte header for every version and the
+  format-2.0 / 2.5 tails.
+  - Header fields: italic-angle (decoded from the on-disk 16.16
+    `Fixed` to `f64`), underline position / thickness (FWORD), the
+    `isFixedPitch` flag (any non-zero on the `uint32` rounds to
+    `true` per spec), and the four VM hint fields
+    `minMemType42` / `maxMemType42` / `minMemType1` /
+    `maxMemType1`.
+  - Format 3.0 (header only, mandatory for OpenType-CFF1 fonts per
+    the spec's "Versions" preamble) — handled directly.
+  - Format 2.0 — `numGlyphs` u16 + `glyphNameIndex[numGlyphs]` u16
+    + Pascal-string tail. `PostTable::name_index(gid)` returns the
+    raw index, and `name_string(pascal_index)` walks the
+    Pascal-string list returning the requested entry as `&[u8]`.
+  - Format 2.5 (deprecated) — `numGlyphs` u16 + signed-byte offset
+    array; `PostTable::standard_offset(gid)` returns the raw `i8`.
+  - Format 1.0 and any `Other` Version16Dot16 value (e.g. Apple's
+    4.0 extension that the spec marks "not supported in OpenType")
+    decode the header and skip the tail.
+  - New on `Font`: `post()`, `post_format()`, `post_italic_angle()`,
+    `post_underline_position()`, `post_underline_thickness()`,
+    `post_is_fixed_pitch()`, and `post_glyph_name(gid)`. The last
+    resolves format-2.0 Pascal-string names (the
+    `glyphNameIndex >= 258` half); the standard-Macintosh 258-entry
+    name list (the `< 258` half) is referenced from
+    `otspec-post.html` but lives in Apple's TrueType Reference
+    Manual chapter 6, which is currently only staged at its
+    table-of-contents level — see the round-187 docs gap.
+  - The `post` table is treated as optional (it is one of
+    OpenType's nine required tables per `otff` spec, but real-world
+    stripped-down fonts sometimes omit it); a missing `post` parses
+    fine and the accessors return `None`.
+
+  Seventeen new unit tests in `src/tables/post.rs` cover every
+  version path including the spec's worked v2.0 + v2.5 examples,
+  truncation rejection, italic-angle fractional decode, the
+  `isFixedPitch` non-zero high-bit case, and the `Other`
+  Version16Dot16 fallback. One new integration test against the
+  Source Sans 3 fixture asserts format 3.0 + zero italic +
+  `isFixedPitch == false` + negative `underlinePosition` + positive
+  `underlineThickness` below `unitsPerEm`.
+
 - CFF Private DICT hint zones surfaced on the public API (Adobe TN5176
   §15 Table 23). Before this push the Private DICT parser only used
   `defaultWidthX` / `nominalWidthX` / `Subrs` and silently ignored
