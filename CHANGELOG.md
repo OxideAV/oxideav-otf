@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- OpenType **`OS/2` and Windows Metrics table** decoder, spec
+  Microsoft / ISO/IEC 14496-22 (`docs/text/opentype/otspec-os2.html`).
+  Previously the table was reachable only as raw bytes through the
+  generic `Font::table_data(b"OS/2")` accessor; the new `Os2Table`
+  (plus the `EmbeddingPermission` enum and the `FS_TYPE_*` /
+  `FS_SELECTION_*` mask constants, all re-exported at the crate
+  root) decodes every spec-defined version (0..5).
+  - All six version layouts handled: v0-short (68 bytes, Apple's
+    TrueType Reference Manual variant) and v0-full (78 bytes,
+    Microsoft's final v0 spec), v1 (86 bytes, adds
+    `ulCodePageRange1/2`), v2/v3/v4 (96 bytes, adds `sxHeight`,
+    `sCapHeight`, `usDefaultChar`, `usBreakChar`, `usMaxContext`,
+    plus fsSelection bits 7–9 in v4), and v5 (100 bytes, adds
+    `usLowerOpticalPointSize` / `usUpperOpticalPointSize`).
+  - Every spec-defined header field decoded. Weight class
+    (`usWeightClass`), width class (with the spec's "% of normal"
+    1..9 lookup), `fsType` (raw + decoded `EmbeddingPermission`
+    plus the "no subsetting" / "bitmap-only" bit predicates),
+    subscript / superscript metrics, the strikeout pair,
+    `sFamilyClass` decomposed into `(class, subclass)`, 10-byte
+    PANOSE, four `ulUnicodeRange*` words plus a
+    `has_unicode_range_bit(bit)` query, 4-byte `achVendID`,
+    `fsSelection` (10 named style bits with per-bit predicates),
+    first / last char index.
+  - Version-gated tails reported as `Option` so callers can detect
+    legacy-format truncation: typo metrics (`sTypoAscender`,
+    `sTypoDescender`, `sTypoLineGap`, `usWinAscent`, `usWinDescent`)
+    on v0-full+, code-page range on v1+ (with
+    `has_code_page_bit(bit)` query), v2 extension fields on v2+,
+    optical point-size range on v5 (raw TWIPs + a TWIPs/20 → points
+    conversion helper).
+  - New on `Font`: `os2()`, `os2_version()`, `weight_class()`,
+    `width_class()`, `width_class_percent()`, `fs_type()`,
+    `embedding_permission()`, `is_italic()`, `is_bold()`,
+    `is_regular()`, `use_typo_metrics()`, `is_oblique()`,
+    `vendor_id()`, `panose()`, `typo_ascender()`,
+    `typo_descender()`, `typo_line_gap()`, `win_ascent()`,
+    `win_descent()`, `x_height()`, `cap_height()`, `default_char()`,
+    `break_char()`, `max_context()`.
+  - Truncation is rejected per spec: < 68 bytes →
+    `Error::UnexpectedEof`; a v1+ declaration shorter than its
+    layout → `Error::BadStructure`; version > 5 →
+    `Error::BadStructure`.
+  - Nineteen new `tables::os2` unit tests cover every version-tail
+    drop, every error path, the `usWidthClass` spec-table lookup,
+    every `EmbeddingPermission` discriminant (including the
+    spec-reserved bit-0 legacy case), per-bit `fsSelection` helpers,
+    `has_unicode_range_bit` walking all four 32-bit words, the
+    `sFamilyClass` (class, subclass) split round-trip, and the
+    optical-size TWIPs / points conversion. One new integration
+    test against Source Sans 3 Regular asserts its real-world v3
+    96-byte `OS/2`: version 3, weight 400, width 5, `fsType = 0`
+    (Installable), `achVendID = "ADBO"`, PANOSE family-type 2,
+    Basic-Latin and Latin-1 bits set, typo / win metrics
+    mutually consistent, `usBreakChar = 0x0020`, no v5 optical-size
+    tail.
+
 ## [0.1.2](https://github.com/OxideAV/oxideav-otf/compare/v0.1.1...v0.1.2) - 2026-05-29
 
 ### Other

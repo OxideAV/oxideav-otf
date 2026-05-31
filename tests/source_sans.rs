@@ -7,7 +7,7 @@
 //! completes, metadata is sensible, and several common glyphs
 //! produce non-empty outlines with at least one cubic curve.
 
-use oxideav_otf::{CubicSegment, Font};
+use oxideav_otf::{CubicSegment, EmbeddingPermission, Font};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/SourceSans3-Regular.otf");
 
@@ -411,4 +411,97 @@ fn post_table_surfaces_on_real_font() {
     // on size.
     let raw = f.table_data(b"post").expect("post via table_data");
     assert_eq!(raw.len(), 32, "OpenType-CFF1 post 3.0 is exactly 32 bytes");
+}
+
+#[test]
+fn os2_decodes_for_source_sans_3() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let os2 = f.os2().expect("OS/2 present on Source Sans 3");
+
+    // Source Sans 3 Regular ships an `OS/2` v3 table, exactly 96
+    // bytes long (the v2/v3/v4 layout — see the spec's "OS/2 Table
+    // Formats" preamble).
+    assert_eq!(os2.version(), 3);
+    assert_eq!(os2.table_len(), 96);
+    let raw = f.table_data(b"OS/2").expect("OS/2 via table_data");
+    assert_eq!(raw.len(), 96);
+
+    // Common-values mapping (spec §usWeightClass / §usWidthClass):
+    // 400 = Regular, 5 = Medium (normal width).
+    assert_eq!(f.weight_class(), Some(400));
+    assert_eq!(f.width_class(), Some(5));
+    assert_eq!(f.width_class_percent(), Some(100.0));
+
+    // fsType = 0 → Installable embedding (no licensing restriction).
+    assert_eq!(f.fs_type(), Some(0));
+    assert_eq!(
+        f.embedding_permission(),
+        Some(EmbeddingPermission::Installable)
+    );
+
+    // Style bits: regular (bit 6 set), not italic, not bold.
+    // USE_TYPO_METRICS (bit 7) was not asserted by the version of
+    // Source Sans 3 we ship in fixtures/; the assertion below is the
+    // observed value, not the spec-recommendation.
+    assert_eq!(f.is_regular(), Some(true));
+    assert_eq!(f.is_italic(), Some(false));
+    assert_eq!(f.is_bold(), Some(false));
+    assert_eq!(f.is_oblique(), Some(false));
+
+    // achVendID = "ADBO" (Adobe's registered vendor tag).
+    assert_eq!(f.vendor_id(), Some("ADBO"));
+
+    // PANOSE: bFamilyType = 2 (Latin Text), bSerifStyle = 11 (Normal
+    // Sans). Source Sans 3 Regular's PANOSE is `[2, 11, 5, 3, 3, 4,
+    // 3, 2, 2, 4]`.
+    let panose = f.panose().expect("panose");
+    assert_eq!(panose[0], 2);
+    assert_eq!(panose[1], 11);
+
+    // Unicode-range bit 0 (Basic Latin, spec table) should be set
+    // for any general-purpose Latin font.
+    assert!(os2.has_unicode_range_bit(0));
+
+    // Typo metrics: v3+ → all four fields populated, ascender > 0,
+    // descender < 0, line gap >= 0, win clipping >= typo metrics.
+    let ta = f.typo_ascender().expect("typo asc");
+    let td = f.typo_descender().expect("typo desc");
+    let lg = f.typo_line_gap().expect("typo gap");
+    let wa = f.win_ascent().expect("win asc");
+    let wd = f.win_descent().expect("win desc");
+    assert!(ta > 0, "typo asc {ta}");
+    assert!(td < 0, "typo desc {td}");
+    assert!(lg >= 0, "typo gap {lg}");
+    assert!(wa as i32 >= ta as i32, "win asc {wa} < typo asc {ta}");
+    assert!(
+        wd as i32 >= -td as i32,
+        "win desc {wd} < -typo desc {}",
+        -td
+    );
+
+    // First / last char index in cmap-platform-3-encoding-1: 0x20
+    // (space) and 0xFFFF (supplementary-plane sentinel).
+    assert_eq!(os2.first_char_index(), 0x0020);
+    assert_eq!(os2.last_char_index(), 0xFFFF);
+
+    // Code-page range bit 0 = 1252 Latin 1 (spec ulCodePageRange
+    // table) — required for any Latin font.
+    assert!(os2.has_code_page_bit(0));
+
+    // v2+ extension: sxHeight, sCapHeight, usDefaultChar, usBreakChar,
+    // usMaxContext.
+    let xh = f.x_height().expect("x-height");
+    let ch = f.cap_height().expect("cap-height");
+    let upem = f.units_per_em() as i32;
+    assert!(xh > 0 && (xh as i32) < upem, "x-height {xh} vs upem {upem}");
+    assert!(ch > xh, "cap-height {ch} should exceed x-height {xh}");
+    assert_eq!(f.break_char(), Some(0x0020), "break char should be U+0020");
+    // usMaxContext: 5 for Source Sans 3 (matches the GSUB/GPOS depth
+    // the font carries; bounded above by 64 per recommendation).
+    let mc = f.max_context().expect("max context");
+    assert!((1..64).contains(&mc), "max context {mc}");
+
+    // v5 optical-size fields absent on this v3 table.
+    assert!(!os2.has_optical_size());
+    assert_eq!(os2.lower_optical_point_size_twips(), None);
 }

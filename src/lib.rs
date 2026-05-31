@@ -12,7 +12,7 @@
 //!   enforcement; we anti-alias at >= 16 px), and subroutine
 //!   resolution with the well-known 107 / 1131 / 32768 bias formula.
 //! - Selected sfnt tables for metadata (`head`, `hhea`, `maxp`,
-//!   `hmtx`, `cmap` formats 0/4/6/12, `name`).
+//!   `hmtx`, `cmap` formats 0/4/6/12, `name`, `post`, `OS/2`).
 //!
 //! The crate is read-only (parsing-only) and dependency-light: only
 //! `oxideav-core` for shared types. CFF2 (variable-aware), per-glyph
@@ -35,9 +35,16 @@ use crate::cff::Cff;
 use crate::parser::TableDirectory;
 use crate::tables::{
     cmap::CmapTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable, maxp::MaxpTable,
-    name::NameTable, post::PostTable,
+    name::NameTable, os2::Os2Table, post::PostTable,
 };
 
+pub use crate::tables::os2::{
+    EmbeddingPermission, FS_SELECTION_BOLD, FS_SELECTION_ITALIC, FS_SELECTION_NEGATIVE,
+    FS_SELECTION_OBLIQUE, FS_SELECTION_OUTLINED, FS_SELECTION_REGULAR, FS_SELECTION_STRIKEOUT,
+    FS_SELECTION_UNDERSCORE, FS_SELECTION_USE_TYPO_METRICS, FS_SELECTION_WWS,
+    FS_TYPE_BITMAP_EMBEDDING_ONLY, FS_TYPE_EDITABLE, FS_TYPE_NO_SUBSETTING,
+    FS_TYPE_PREVIEW_AND_PRINT, FS_TYPE_RESTRICTED_LICENSE, FS_TYPE_USAGE_MASK,
+};
 pub use crate::tables::post::PostFormat;
 
 /// Errors emitted during font parsing or glyph lookup.
@@ -177,6 +184,11 @@ pub struct Font<'a> {
     /// carries `post`, but some real-world stripped-down fonts omit
     /// it. We tolerate absence rather than reject the whole font.
     post: Option<PostTable<'a>>,
+    /// `OS/2 and Windows Metrics`. Required for OpenType but
+    /// occasionally missing on stripped-down or legacy TrueType-only
+    /// fonts; absence surfaces as `None` rather than rejecting the
+    /// whole font.
+    os2: Option<Os2Table>,
     cff: Cff<'a>,
 }
 
@@ -209,6 +221,16 @@ impl<'a> Font<'a> {
             None => None,
         };
 
+        // `OS/2` is one of the OpenType-spec required tables (per
+        // `otspec-otff.html` "Required Tables") — same tolerance
+        // policy as `post`: parse if present, surface `None`
+        // otherwise so a stripped-down TrueType-only `.otf` that
+        // omitted the table doesn't fail open.
+        let os2 = match dir.find(b"OS/2", bytes) {
+            Some(slice) => Some(Os2Table::parse(slice)?),
+            None => None,
+        };
+
         let cff_bytes = dir.required(b"CFF ", bytes)?;
         let cff = Cff::parse(cff_bytes)?;
 
@@ -222,6 +244,7 @@ impl<'a> Font<'a> {
             name,
             hmtx,
             post,
+            os2,
             cff,
         })
     }
@@ -665,5 +688,140 @@ impl<'a> Font<'a> {
             return None;
         }
         post.name_string(idx - 258)
+    }
+
+    // ---- `OS/2` table ------------------------------------------------------
+
+    /// Borrow the parsed `OS/2` table, if present. Required by the
+    /// OpenType spec but occasionally omitted from stripped-down
+    /// fonts; absence surfaces as `None` (and the per-field
+    /// convenience getters below return `None` in lock-step).
+    pub fn os2(&self) -> Option<&Os2Table> {
+        self.os2.as_ref()
+    }
+
+    /// `OS/2` table version (0..=5), if the table is present.
+    pub fn os2_version(&self) -> Option<u16> {
+        self.os2.as_ref().map(Os2Table::version)
+    }
+
+    /// `OS/2.usWeightClass` (1..=1000; 400 = Regular, 700 = Bold per
+    /// the spec's common values).
+    pub fn weight_class(&self) -> Option<u16> {
+        self.os2.as_ref().map(Os2Table::weight_class)
+    }
+
+    /// `OS/2.usWidthClass` (1..=9; 5 = Medium).
+    pub fn width_class(&self) -> Option<u16> {
+        self.os2.as_ref().map(Os2Table::width_class)
+    }
+
+    /// `usWidthClass` interpreted as the spec's "% of normal" scale
+    /// (50, 62.5, …, 200) — convenient for driving the variable-font
+    /// `wdth` axis.
+    pub fn width_class_percent(&self) -> Option<f32> {
+        self.os2.as_ref().map(Os2Table::width_class_percent)
+    }
+
+    /// `OS/2.fsType` raw embedding-licensing bitfield.
+    pub fn fs_type(&self) -> Option<u16> {
+        self.os2.as_ref().map(Os2Table::fs_type)
+    }
+
+    /// `OS/2.fsType` bits 0..3 decoded into the named permission.
+    pub fn embedding_permission(&self) -> Option<EmbeddingPermission> {
+        self.os2.as_ref().map(Os2Table::embedding_permission)
+    }
+
+    /// `OS/2.fsSelection.ITALIC` (bit 0). The spec requires this to
+    /// agree with `head.macStyle` bit 1.
+    pub fn is_italic(&self) -> Option<bool> {
+        self.os2.as_ref().map(Os2Table::is_italic)
+    }
+
+    /// `OS/2.fsSelection.BOLD` (bit 5). The spec requires this to
+    /// agree with `head.macStyle` bit 0.
+    pub fn is_bold(&self) -> Option<bool> {
+        self.os2.as_ref().map(Os2Table::is_bold)
+    }
+
+    /// `OS/2.fsSelection.REGULAR` (bit 6).
+    pub fn is_regular(&self) -> Option<bool> {
+        self.os2.as_ref().map(Os2Table::is_regular)
+    }
+
+    /// `OS/2.fsSelection.USE_TYPO_METRICS` (bit 7, v4+).
+    pub fn use_typo_metrics(&self) -> Option<bool> {
+        self.os2.as_ref().map(Os2Table::use_typo_metrics)
+    }
+
+    /// `OS/2.fsSelection.OBLIQUE` (bit 9, v4+).
+    pub fn is_oblique(&self) -> Option<bool> {
+        self.os2.as_ref().map(Os2Table::is_oblique)
+    }
+
+    /// Four-byte registered vendor tag (`OS/2.achVendID`), interpreted
+    /// as ASCII when possible.
+    pub fn vendor_id(&self) -> Option<&str> {
+        self.os2.as_ref().and_then(Os2Table::ach_vend_id_str)
+    }
+
+    /// 10-byte PANOSE classification (`OS/2.panose`).
+    pub fn panose(&self) -> Option<&[u8; 10]> {
+        self.os2.as_ref().map(Os2Table::panose)
+    }
+
+    /// `OS/2.sTypoAscender` — typographic ascender (v0-full or
+    /// later). Combine with [`Font::typo_descender`] +
+    /// [`Font::typo_line_gap`] for default line spacing when
+    /// [`Font::use_typo_metrics`] is set.
+    pub fn typo_ascender(&self) -> Option<i16> {
+        self.os2.as_ref().and_then(Os2Table::typo_ascender)
+    }
+
+    /// `OS/2.sTypoDescender` — typically negative.
+    pub fn typo_descender(&self) -> Option<i16> {
+        self.os2.as_ref().and_then(Os2Table::typo_descender)
+    }
+
+    /// `OS/2.sTypoLineGap`.
+    pub fn typo_line_gap(&self) -> Option<i16> {
+        self.os2.as_ref().and_then(Os2Table::typo_line_gap)
+    }
+
+    /// `OS/2.usWinAscent` — Windows GDI clipping ascender.
+    pub fn win_ascent(&self) -> Option<u16> {
+        self.os2.as_ref().and_then(Os2Table::win_ascent)
+    }
+
+    /// `OS/2.usWinDescent` — Windows GDI clipping descender (positive).
+    pub fn win_descent(&self) -> Option<u16> {
+        self.os2.as_ref().and_then(Os2Table::win_descent)
+    }
+
+    /// `OS/2.sxHeight` (v2+) — height of lowercase `x`.
+    pub fn x_height(&self) -> Option<i16> {
+        self.os2.as_ref().and_then(Os2Table::x_height)
+    }
+
+    /// `OS/2.sCapHeight` (v2+) — height of uppercase letters.
+    pub fn cap_height(&self) -> Option<i16> {
+        self.os2.as_ref().and_then(Os2Table::cap_height)
+    }
+
+    /// `OS/2.usDefaultChar` (v2+).
+    pub fn default_char(&self) -> Option<u16> {
+        self.os2.as_ref().and_then(Os2Table::default_char)
+    }
+
+    /// `OS/2.usBreakChar` (v2+); conventionally `0x0020` (space).
+    pub fn break_char(&self) -> Option<u16> {
+        self.os2.as_ref().and_then(Os2Table::break_char)
+    }
+
+    /// `OS/2.usMaxContext` (v2+) — maximum target-glyph context length
+    /// for any GSUB / GPOS lookup. `1` means single-glyph only.
+    pub fn max_context(&self) -> Option<u16> {
+        self.os2.as_ref().and_then(Os2Table::max_context)
     }
 }

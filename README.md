@@ -46,7 +46,8 @@ TrueType outlines (quadratic Beziers); OTF handles CFF outlines
     delta vs `nominalWidthX` / `defaultWidthX`), including the
     5-operand seac form `[width?] adx ady bchar achar endchar`.
 - Selected sfnt tables for metadata: `head`, `hhea`, `maxp`, `hmtx`,
-  `cmap` (formats 0/4/6/12), `name`.
+  `cmap` (formats 0/4/6/12), `name`, `post` (every spec version), and
+  `OS/2` (versions 0..5, all six layouts).
 
 ## Public API
 
@@ -117,6 +118,31 @@ let _ = font.cid_ordering();        // Some("Japan1") / Some("Identity")
 let _ = font.cid_supplement();      // Some(7)
 let _ = font.cff_fd_count();        // number of FDArray Font DICTs
 
+// OS/2 and Windows Metrics (spec versions 0..5, all supported).
+let _ = font.os2_version();         // Some(3) on Source Sans 3
+let _ = font.weight_class();        // Some(400) = Regular
+let _ = font.width_class();         // Some(5) = Medium
+let _ = font.width_class_percent(); // Some(100.0); maps 1..9 to spec %
+let _ = font.fs_type();             // raw embedding-licensing bits
+let _ = font.embedding_permission(); // Installable / RestrictedLicense / …
+let _ = font.is_italic();
+let _ = font.is_bold();
+let _ = font.is_regular();
+let _ = font.use_typo_metrics();    // fsSelection bit 7 (v4+)
+let _ = font.is_oblique();          // fsSelection bit 9 (v4+)
+let _ = font.vendor_id();           // achVendID as &str (e.g. "ADBO")
+let _ = font.panose();              // &[u8; 10] PANOSE classification
+let _ = font.typo_ascender();       // sTypoAscender (v0-full+)
+let _ = font.typo_descender();
+let _ = font.typo_line_gap();
+let _ = font.win_ascent();          // usWinAscent (UFWORD)
+let _ = font.win_descent();
+let _ = font.x_height();            // sxHeight (v2+)
+let _ = font.cap_height();          // sCapHeight (v2+)
+let _ = font.default_char();
+let _ = font.break_char();          // conventionally Some(0x20)
+let _ = font.max_context();         // GSUB/GPOS max context length
+
 for contour in &outline.contours {
     for seg in &contour.segments {
         // CubicSegment::MoveTo / LineTo / CurveTo / ClosePath
@@ -125,7 +151,91 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-187 additions (this push)
+## Round-198 additions (this push)
+
+The OpenType **`OS/2` and Windows Metrics table** is now parsed and
+surfaced on the public `Font` API. Spec: Microsoft / ISO/IEC
+14496-22 `OS/2` (`docs/text/opentype/otspec-os2.html`). Previously
+the table was reachable only as raw bytes through
+`Font::table_data(b"OS/2")`; the new `Os2Table` (re-exported from
+the crate root via [`Font::os2`] plus a wide set of per-field
+convenience getters) decodes every version 0..5 layout described in
+the spec's *OS/2 Table Formats* preamble.
+
+- **Six versions, all supported.** Version 0 in both the 68-byte
+  "short" layout (Apple's TrueType Reference Manual variant — see
+  `otspec-os2.html` "Some legacy TrueType fonts could have been
+  built with a shortened version 0 OS/2 table" note) and the
+  78-byte "full" Microsoft layout; v1 (86 bytes, adds
+  `ulCodePageRange`); v2/v3/v4 (96 bytes, add `sxHeight` …
+  `usMaxContext`, fsSelection bits 7–9 in v4); v5 (100 bytes, adds
+  `usLower/UpperOpticalPointSize`).
+- **Every header field decoded.** Weight class (`usWeightClass`),
+  width class (`usWidthClass` + the spec's "% of normal" mapping
+  table from 1..9 to 50/62.5/75/87.5/100/112.5/125/150/200),
+  embedding-licensing bitfield (`fsType` + the decoded
+  `EmbeddingPermission` enum covering Installable / Restricted
+  License / Preview&Print / Editable plus the "no subsetting" and
+  "bitmap embedding only" bits), subscript/superscript metrics, the
+  strikeout pair, family-class split (`sFamilyClass` decomposed into
+  `(class, subclass)`), 10-byte PANOSE classification, the four
+  `ulUnicodeRange*` words plus a `has_unicode_range_bit(bit)`
+  query, four-byte `achVendID` (raw plus best-effort UTF-8 / ASCII
+  view), the 10 named `fsSelection` style bits (ITALIC, UNDERSCORE,
+  NEGATIVE, OUTLINED, STRIKEOUT, BOLD, REGULAR, USE_TYPO_METRICS,
+  WWS, OBLIQUE) exposed both as `FS_SELECTION_*` mask constants and
+  per-bit predicate accessors, and the first / last char-index pair.
+- **Version-gated tails.** Typographic / Windows metrics
+  (`sTypoAscender`, `sTypoDescender`, `sTypoLineGap`, `usWinAscent`,
+  `usWinDescent`) are reported via `Option<i16>` / `Option<u16>` and
+  return `None` only on the legacy v0-short layout. Code-page range
+  (`ulCodePageRange1` / `ulCodePageRange2` + a 64-bit
+  `has_code_page_bit(bit)` query) is v1+. `sxHeight`, `sCapHeight`,
+  `usDefaultChar`, `usBreakChar`, `usMaxContext` are v2+. Optical
+  point-size range (`usLower/UpperOpticalPointSize`) is v5; the raw
+  TWIPs values and the TWIPs/20 → points conversion are both
+  exposed.
+- **Truncation rejection.** A short v0 (< 68 bytes) is
+  `Error::UnexpectedEof`; a v1+ table shorter than its declared
+  layout is `Error::BadStructure`. The v0-short / v0-full
+  distinction is purely table-length-driven per the spec's "check
+  the table length before reading these fields" note.
+- **`Font` integration.** [`Font::os2`] borrows the decoded table;
+  for the most common consumer paths, lookup-free convenience
+  getters on `Font` route the data: `Font::weight_class`,
+  `Font::width_class`, `Font::width_class_percent`, `Font::fs_type`,
+  `Font::embedding_permission`, `Font::is_italic`, `Font::is_bold`,
+  `Font::is_regular`, `Font::use_typo_metrics`, `Font::is_oblique`,
+  `Font::vendor_id`, `Font::panose`, `Font::typo_ascender`,
+  `Font::typo_descender`, `Font::typo_line_gap`, `Font::win_ascent`,
+  `Font::win_descent`, `Font::x_height`, `Font::cap_height`,
+  `Font::default_char`, `Font::break_char`, `Font::max_context`.
+  Absence of the table surfaces as `None` rather than rejecting the
+  whole font (mirroring how the round-187 `post` integration treats
+  optional tables).
+
+Nineteen new unit tests in `src/tables/os2.rs` cover full v5 parse,
+the v4 / v1 / v0-full / v0-short version drops, error paths for
+short v0 (< 68 bytes) / version > 5 / truncated v1 tail (before
+typo metrics, before code-page range) / truncated v2 tail / v5
+without optical-size, the spec's nine-entry `usWidthClass`
+percent-of-normal table, every `EmbeddingPermission` discriminant
+(including the spec-reserved bit-0 case and the
+multiple-bits-set legacy v0..v2 case), every named `fsSelection`
+bit helper, non-ASCII `achVendID` fallback, walking
+`has_unicode_range_bit` across all four words, the
+`sFamilyClass` (class, subclass) split, and the TWIPs / points
+optical-size conversion. One new integration test against the
+Source Sans 3 fixture decodes its real-world v3 96-byte `OS/2`
+table: version 3, exactly 96 bytes, weight 400, width 5 (100%),
+`fsType = 0` (Installable embedding), `achVendID = "ADBO"`,
+PANOSE family-type 2 (Latin Text), Basic-Latin Unicode-range bit 0
+set, Latin-1 code-page bit 0 set, typo / win metrics positive and
+mutually consistent, `usFirstCharIndex = 0x0020` and
+`usLastCharIndex = 0xFFFF`, `usBreakChar = 0x0020`, no v5 optical-
+size tail.
+
+## Round-187 additions (previous push)
 
 The OpenType **`post` table** (PostScript table) is now parsed and
 surfaced on the public `Font` API. Spec: Microsoft / ISO/IEC 14496-22
@@ -526,12 +636,12 @@ TN5177 §4.6):
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
 - The Adobe Glyph List string → codepoint mapping (round 3+ if any
   consumer needs it).
-- `OS/2`, `GSUB`, `GPOS`, `GDEF`, `kern` tables — the Adobe CFF /
+- `GSUB`, `GPOS`, `GDEF`, `kern` tables — the Adobe CFF /
   Type 2 / sfnt PDFs are now staged under `docs/text/opentype/spec/`
-  alongside the Microsoft per-table HTML snapshots (`otspec-os2.html`
-  / `otspec-gsub.html` / `otspec-gpos.html` / `otspec-gdef.html`),
+  alongside the Microsoft per-table HTML snapshots
+  (`otspec-gsub.html` / `otspec-gpos.html` / `otspec-gdef.html`),
   so future rounds can pick these up; round 187 took the `post`
-  table off this list.
+  table off this list and round 198 took the `OS/2` table off it.
 - Format-1.0 / 2.0 / 2.5 glyph-name lookups in `post` (the
   standard-Macintosh 258-entry list referenced from
   `otspec-post.html`). The list lives in Apple's TrueType Reference
