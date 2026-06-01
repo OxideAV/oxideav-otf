@@ -151,7 +151,95 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-198 additions (this push)
+## Round-204 additions (this push)
+
+The OpenType **`name` table** is now version-1 aware, with full
+language-tag record support and the complete spec-defined name-ID
+catalogue surfaced as a typed enum. Spec: Microsoft / ISO/IEC
+14496-22 `name` (`docs/text/opentype/otspec-name.html`). Previously
+the parser accepted version-1 tables but silently ignored the
+`langTagCount` / `langTagRecord[]` trailer; version-1-only language
+IDs `>= 0x8000` would have been treated as platform-specific numeric
+IDs and surfaced as garbage.
+
+- **Version 1 trailer parsed.** A version-1 `name` table now decodes
+  the `uint16 langTagCount` + `LangTagRecord[langTagCount]` block per
+  the spec's "Naming table version 1" layout. `LangTagRecord` is the
+  spec's `(length, langTagOffset)` pair pointing into the storage
+  area. The parser rejects a v1 table whose declared `storageOffset`
+  overlaps the LangTagRecord array (`Error::BadStructure(
+  "name.storageOffset overlaps langTagRecord array")`) and a v1 table
+  that is too short to carry either the `langTagCount` field or the
+  declared array (`Error::UnexpectedEof`).
+- **`NameTable::lang_tag(language_id)`** resolves a name record's
+  `languageID >= 0x8000` to its UTF-16BE BCP 47 language-tag string.
+  Per the spec's worked example, a font with `langTagRecord[0] =
+  "en"` and `langTagRecord[1] = "zh-Hant-HK"` maps language ID
+  `0x8000 → "en"` and `0x8001 → "zh-Hant-HK"`. IDs outside `[0x8000,
+  0x8000 + langTagCount)` return `None` per spec ("the identity of
+  the language is unknown; such name records should not be used");
+  IDs `< 0x8000` are platform-specific numeric LCIDs (not language
+  tags) and also return `None`. Version-0 tables always return
+  `None`.
+- **`NameId` enum** for the 26 spec-defined name IDs 0..=25 with
+  per-variant documentation (Copyright, FontFamily, FontSubfamily,
+  UniqueId, FullName, Version, PostScript, Trademark, Manufacturer,
+  Designer, Description, VendorUrl, DesignerUrl, License, LicenseUrl,
+  Reserved15, TypographicFamily, TypographicSubfamily, CompatibleFull,
+  SampleText, PostScriptCidFindfont, WwsFamily, WwsSubfamily,
+  LightBackgroundPalette, DarkBackgroundPalette, VariationsPsNamePrefix).
+  `NameId::Reserved15` is included as a distinct variant so a font
+  that emits a record with the spec-reserved ID 15 is still
+  representable. `NameId::from_raw(u16) -> Option<Self>` decodes a raw
+  ID into the typed enum; `to_raw(self) -> u16` is the inverse.
+  Re-exported at the crate root.
+- **`NameRecord` struct** + **`NameTable::records()`** iterator over
+  every on-disk record in spec-sorted (platform, encoding, language,
+  nameID) order. Each `NameRecord` carries the raw 6-tuple
+  `(platform_id, encoding_id, language_id, name_id_raw, length,
+  string_offset)`; `name_id()` returns the standard `NameId` when the
+  raw value is `0..=25`; `record_value(rec)` decodes the on-disk bytes
+  into an owned `String` using the same platform / encoding rules as
+  `find()`. Re-exported at the crate root.
+- **`NameTable::get(NameId)`** typed alternative to `find(u16)`.
+- **`NameTable::version()` / `record_count()` / `lang_tag_count()`**
+  surface the on-disk header fields.
+- **UTF-16BE decoder hardening.** The shared decoder now rejects
+  unpaired *low* surrogates (the existing code already rejected
+  unpaired high surrogates) — both are malformed UTF-16 and per
+  TN5176 §H.4 should be rejected rather than silently mojibake'd.
+
+New on `Font` (all consult the parsed `name` table; absence of the
+relevant record surfaces as `None`): `name()`, `name_version()`,
+`name_lang_tag(id)`, `name_string(NameId)`, `designer()`,
+`manufacturer()`, `description()`, `vendor_url()`, `designer_url()`,
+`license()`, `license_url()`, `trademark()`, `sample_text()`,
+`typographic_family()`, `typographic_subfamily()`, `wws_family()`,
+`wws_subfamily()`, `variations_ps_name_prefix()`, `unique_font_id()`.
+The last is distinct from the CFF-Top-DICT-sourced `Font::unique_id()`
+(which is a 32-bit integer); `unique_font_id()` is the name-ID-3
+human-readable string.
+
+Sixteen new unit tests in `src/tables/name.rs` cover: the v0
+baseline preserved by `find()`; rejection of version > 1; the
+`NameId` ↔ raw round-trip across the entire 0..=25 range plus the
+"reserved 15 is still distinct" property; v1 parsing with two
+language-tag records (the spec-worked `en` / `zh-Hant-HK` example);
+`lang_tag` resolution including the spec's "should not be used"
+out-of-range case + numeric (`< 0x8000`) rejection; v0 always-`None`
+behaviour for `lang_tag`; records iteration with on-disk-order
+guarantees; truncation rejection at the langTagCount field and
+inside the langTagRecord array; storage-overlap rejection;
+past-end string-offset rejection; truncated record-array
+rejection; UTF-16BE surrogate-pair acceptance (`U+1F600`); unpaired
+low-surrogate rejection; Mac Roman ASCII subset; and the existing
+Windows-beats-Mac priority. One new integration test against the
+Source Sans 3 fixture asserts every newly-surfaced `Font` accessor
+returns the expected string (or `None` where the font omits a
+record), iterates the records and confirms spec sort order, and
+exercises the v0 `lang_tag` invariant.
+
+## Round-198 additions (previous push)
 
 The OpenType **`OS/2` and Windows Metrics table** is now parsed and
 surfaced on the public `Font` API. Spec: Microsoft / ISO/IEC

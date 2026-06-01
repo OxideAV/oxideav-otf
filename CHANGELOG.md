@@ -9,6 +9,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- OpenType **`name` table version 1** support, spec Microsoft /
+  ISO/IEC 14496-22 (`docs/text/opentype/otspec-name.html`). The
+  existing parser accepted version-1 tables but silently ignored
+  the `langTagCount` / `langTagRecord[]` trailer; this push adds
+  full parsing of that block and a `NameTable::lang_tag(id)`
+  accessor that resolves a name record's `languageID >= 0x8000` to
+  its UTF-16BE BCP 47 language-tag string (e.g. `"en"`, `"fr-CA"`,
+  `"zh-Hant-HK"`). IDs outside the spec-declared range
+  `[0x8000, 0x8000 + langTagCount)` surface as `None` per spec
+  ("the identity of the language is unknown; such name records
+  should not be used"); IDs `< 0x8000` are platform-specific
+  numeric LCIDs (not tags) and likewise return `None`. Version-0
+  tables always return `None`.
+  - Truncation / overlap rejection: a v1 table missing the
+    `langTagCount` field or the declared `LangTagRecord[]` array
+    is `Error::UnexpectedEof`; a v1 table whose `storageOffset`
+    overlaps the `LangTagRecord[]` array surfaces as
+    `Error::BadStructure("name.storageOffset overlaps langTagRecord
+    array")`.
+- **`NameId` enum** covering every spec-defined name ID 0..=25,
+  with `NameId::Reserved15` included as a distinct variant so a
+  record with the spec-reserved ID 15 is still representable.
+  `NameId::from_raw(u16) -> Option<Self>` decodes a raw nameID;
+  `NameId::to_raw(self) -> u16` is the inverse.
+- **`NameRecord` struct** + **`NameTable::records()`** iterator
+  surfacing every on-disk name record in spec-sorted (platformID,
+  encodingID, languageID, nameID) order. `NameRecord::name_id()`
+  returns the standard `NameId` when the raw value is 0..=25;
+  `NameTable::record_value(rec)` decodes the on-disk bytes into
+  an owned `String`.
+- **`NameTable::get(NameId)`** typed lookup, **`version()` /
+  `record_count()` / `lang_tag_count()`** header accessors.
+- UTF-16BE decoder hardening: the shared decoder now rejects
+  unpaired *low* surrogates (alongside the existing unpaired
+  *high* surrogate rejection), since both are malformed UTF-16
+  per TN5176 §H.4.
+- New on `Font`: `name()`, `name_version()`, `name_lang_tag(id)`,
+  `name_string(NameId)`, `designer()`, `manufacturer()`,
+  `description()`, `vendor_url()`, `designer_url()`, `license()`,
+  `license_url()`, `trademark()`, `sample_text()`,
+  `typographic_family()`, `typographic_subfamily()`, `wws_family()`,
+  `wws_subfamily()`, `variations_ps_name_prefix()`,
+  `unique_font_id()` (the name-ID-3 string; distinct from the
+  CFF-Top-DICT-sourced `Font::unique_id()` integer).
+- `NameId` + `NameRecord` re-exported at the crate root.
+- Sixteen new `tables::name` unit tests cover the v0 baseline
+  preserved by `find()`, version-rejection above 1, every
+  `NameId` round-trip across raw 0..=25 plus the reserved-15
+  invariant, v1 parsing with the spec's worked `en` /
+  `zh-Hant-HK` example, `lang_tag` in-range + out-of-range +
+  numeric-LCID + v0-default-None paths, records iteration in
+  on-disk order, truncation rejection at the `langTagCount` field
+  and inside the `LangTagRecord` array, storage-overlap rejection,
+  past-end storage offset rejection, truncated record-array
+  rejection, UTF-16BE surrogate-pair acceptance (`U+1F600`),
+  unpaired-low-surrogate rejection, Mac Roman ASCII subset
+  decoding, and the existing Windows-beats-Mac priority in
+  `find()`. One new integration test against Source Sans 3
+  Regular asserts every newly-surfaced `Font::name_*` accessor
+  resolves to the expected string (or `None` where the font omits
+  a record), iterates the records and verifies spec sort order
+  end-to-end, and exercises the v0 `lang_tag` invariant.
+
 - OpenType **`OS/2` and Windows Metrics table** decoder, spec
   Microsoft / ISO/IEC 14496-22 (`docs/text/opentype/otspec-os2.html`).
   Previously the table was reachable only as raw bytes through the

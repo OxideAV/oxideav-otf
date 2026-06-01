@@ -38,6 +38,7 @@ use crate::tables::{
     name::NameTable, os2::Os2Table, post::PostTable,
 };
 
+pub use crate::tables::name::{NameId, NameRecord};
 pub use crate::tables::os2::{
     EmbeddingPermission, FS_SELECTION_BOLD, FS_SELECTION_ITALIC, FS_SELECTION_NEGATIVE,
     FS_SELECTION_OBLIQUE, FS_SELECTION_OUTLINED, FS_SELECTION_REGULAR, FS_SELECTION_STRIKEOUT,
@@ -823,5 +824,124 @@ impl<'a> Font<'a> {
     /// for any GSUB / GPOS lookup. `1` means single-glyph only.
     pub fn max_context(&self) -> Option<u16> {
         self.os2.as_ref().and_then(Os2Table::max_context)
+    }
+
+    // ---- `name` table -----------------------------------------------------
+
+    /// Borrow the parsed `name` table view. Use this for callers that
+    /// want to iterate every `NameRecord` directly via
+    /// `name().records()` or to test for version-1 language-tag
+    /// support via `name().version()` / `name().lang_tag(id)`.
+    pub fn name(&self) -> &NameTable<'a> {
+        &self.name
+    }
+
+    /// `name` table version (`0` for platform-specific language IDs
+    /// only, `1` when language-tag records are present).
+    pub fn name_version(&self) -> u16 {
+        self.name.version()
+    }
+
+    /// Resolve a name-record `languageID >= 0x8000` to its
+    /// version-1 BCP 47 language-tag string (per `otspec-name.html`
+    /// "naming table version 1"). Returns `None` on a version-0 table
+    /// (which has no language-tag records), for IDs `< 0x8000` (which
+    /// are platform-specific numeric IDs, not tags), and for IDs
+    /// outside the `[0x8000, 0x8000 + langTagCount)` declared range
+    /// (which the spec says "should not be used").
+    pub fn name_lang_tag(&self, language_id: u16) -> Option<String> {
+        self.name.lang_tag(language_id)
+    }
+
+    /// Generic lookup by standard `NameId`, picking the best-ranked
+    /// encoding (Windows / Unicode BMP English first). Sibling of
+    /// [`Font::family_name`] / [`Font::full_name`] for callers that
+    /// want any of the 26 spec-defined name IDs without a separate
+    /// helper.
+    pub fn name_string(&self, name_id: NameId) -> Option<&str> {
+        self.name.get(name_id)
+    }
+
+    /// Designer name (name ID 9).
+    pub fn designer(&self) -> Option<&str> {
+        self.name.get(NameId::Designer)
+    }
+
+    /// Manufacturer name (name ID 8).
+    pub fn manufacturer(&self) -> Option<&str> {
+        self.name.get(NameId::Manufacturer)
+    }
+
+    /// Typeface description (name ID 10).
+    pub fn description(&self) -> Option<&str> {
+        self.name.get(NameId::Description)
+    }
+
+    /// Vendor URL (name ID 11).
+    pub fn vendor_url(&self) -> Option<&str> {
+        self.name.get(NameId::VendorUrl)
+    }
+
+    /// Designer URL (name ID 12).
+    pub fn designer_url(&self) -> Option<&str> {
+        self.name.get(NameId::DesignerUrl)
+    }
+
+    /// License description (name ID 13).
+    pub fn license(&self) -> Option<&str> {
+        self.name.get(NameId::License)
+    }
+
+    /// License-info URL (name ID 14).
+    pub fn license_url(&self) -> Option<&str> {
+        self.name.get(NameId::LicenseUrl)
+    }
+
+    /// Trademark string (name ID 7).
+    pub fn trademark(&self) -> Option<&str> {
+        self.name.get(NameId::Trademark)
+    }
+
+    /// Sample text (name ID 19).
+    pub fn sample_text(&self) -> Option<&str> {
+        self.name.get(NameId::SampleText)
+    }
+
+    /// Typographic Family name (name ID 16; "Preferred Family" in
+    /// earlier spec text). The unconstrained extended-family grouping
+    /// used by applications that look past the 4-style style-linking
+    /// `font_family` cap.
+    pub fn typographic_family(&self) -> Option<&str> {
+        self.name.get(NameId::TypographicFamily)
+    }
+
+    /// Typographic Subfamily name (name ID 17; "Preferred Subfamily"
+    /// in earlier spec text).
+    pub fn typographic_subfamily(&self) -> Option<&str> {
+        self.name.get(NameId::TypographicSubfamily)
+    }
+
+    /// WWS Family name (name ID 21). Provides a WWS-conformant family
+    /// name when name IDs 16 / 17 carry extra non-WWS attributes; see
+    /// `OS/2.fsSelection` bit 8.
+    pub fn wws_family(&self) -> Option<&str> {
+        self.name.get(NameId::WwsFamily)
+    }
+
+    /// WWS Subfamily name (name ID 22).
+    pub fn wws_subfamily(&self) -> Option<&str> {
+        self.name.get(NameId::WwsSubfamily)
+    }
+
+    /// Variations PostScript Name Prefix (name ID 25; variable fonts).
+    pub fn variations_ps_name_prefix(&self) -> Option<&str> {
+        self.name.get(NameId::VariationsPsNamePrefix)
+    }
+
+    /// Unique font identifier from the `name` table (name ID 3).
+    /// Distinct from [`Font::unique_id`] (which is the CFF Top DICT's
+    /// legacy PostScript `UniqueID` integer).
+    pub fn unique_font_id(&self) -> Option<&str> {
+        self.name.get(NameId::UniqueId)
     }
 }

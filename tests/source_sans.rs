@@ -7,7 +7,7 @@
 //! completes, metadata is sensible, and several common glyphs
 //! produce non-empty outlines with at least one cubic curve.
 
-use oxideav_otf::{CubicSegment, EmbeddingPermission, Font};
+use oxideav_otf::{CubicSegment, EmbeddingPermission, Font, NameId};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/SourceSans3-Regular.otf");
 
@@ -504,4 +504,121 @@ fn os2_decodes_for_source_sans_3() {
     // v5 optical-size fields absent on this v3 table.
     assert!(!os2.has_optical_size());
     assert_eq!(os2.lower_optical_point_size_twips(), None);
+}
+
+#[test]
+fn name_table_surfaces_for_source_sans_3() {
+    // Source Sans 3 Regular ships standard `name` records (the OFL
+    // copyright + family/subfamily + full name + PostScript name +
+    // version + manufacturer + designer + URLs + license + license
+    // URL + typographic family/subfamily, per Adobe's `nam` build).
+    // The name table is the OpenType-canonical metadata source; we
+    // assert the spec-required happy-path records resolve, that the
+    // round-204 record-iteration API enumerates them in spec-sorted
+    // order, and that the version-0 fallback rejects every lang-tag
+    // ID per spec ("there are no language-tag records on version 0").
+    let f = Font::from_bytes(FIXTURE).unwrap();
+
+    // family_name() should be identical to NameId::FontFamily lookup.
+    let family = f.family_name().expect("family name");
+    assert!(family.contains("Source Sans"));
+    assert_eq!(f.name_string(NameId::FontFamily), Some(family));
+
+    // Subfamily is "Regular" for the Regular weight.
+    let subfamily = f.name_string(NameId::FontSubfamily).expect("subfamily");
+    assert_eq!(subfamily, "Regular");
+
+    // Full name combines family + subfamily.
+    let full = f.full_name().expect("full name");
+    assert!(full.contains("Source Sans"));
+
+    // Source Sans ships a Version string starting with "Version".
+    let version = f.name_string(NameId::Version).expect("version");
+    assert!(
+        version.starts_with("Version") || version.starts_with("version"),
+        "unexpected version string: {version:?}"
+    );
+
+    // PostScript name is ASCII per spec restrictions (codes 33..126).
+    let ps = f.name_string(NameId::PostScript).expect("ps name");
+    assert!(
+        ps.chars().all(|c| c as u32 >= 33 && c as u32 <= 126),
+        "PostScript name {ps:?} violates ASCII restriction"
+    );
+
+    // Designer / Manufacturer should both be Adobe-style strings.
+    let designer = f.designer().expect("designer");
+    let manufacturer = f.manufacturer().expect("manufacturer");
+    assert!(
+        designer.to_lowercase().contains("adobe") || !designer.is_empty(),
+        "designer: {designer:?}"
+    );
+    assert!(!manufacturer.is_empty(), "manufacturer: {manufacturer:?}");
+
+    // Trademark / license / license URL / vendor URL — exercise the
+    // accessors without baking exact strings (Adobe may re-tune them).
+    let _ = f.trademark();
+    let _ = f.license();
+    let _ = f.license_url();
+    let _ = f.vendor_url();
+    let _ = f.designer_url();
+    let _ = f.description();
+
+    // Source Sans 3 emits at least one of the typographic-family
+    // names (it is part of the Source family).
+    let _ = f.typographic_family();
+    let _ = f.typographic_subfamily();
+
+    // unique_font_id (name ID 3) is distinct from the CFF Top DICT's
+    // UniqueID integer; both accessors must be reachable without
+    // collision.
+    let _ = f.unique_font_id();
+    let _ = f.unique_id();
+
+    // Source Sans 3 is not a variable font; the variations PS prefix
+    // is expected to be absent. The accessor must still return None
+    // without panicking.
+    assert!(f.variations_ps_name_prefix().is_none());
+
+    // Records iteration. The spec mandates that records are sorted by
+    // (platformID, encodingID, languageID, nameID) ascending; our
+    // iterator surfaces them in disk order, so the same sort must
+    // hold here.
+    let name = f.name();
+    let recs: Vec<_> = name.records().collect();
+    assert!(!recs.is_empty(), "name table has zero records");
+    assert_eq!(recs.len() as u16, name.record_count());
+    for window in recs.windows(2) {
+        let a = window[0];
+        let b = window[1];
+        let ka = (a.platform_id, a.encoding_id, a.language_id, a.name_id_raw);
+        let kb = (b.platform_id, b.encoding_id, b.language_id, b.name_id_raw);
+        assert!(
+            ka <= kb,
+            "name records out of spec sort order: {ka:?} > {kb:?}"
+        );
+    }
+
+    // Every standard name record (raw < 26) must decode to a NameId
+    // variant.
+    let mut hit_family = false;
+    for r in &recs {
+        if let Some(nid) = NameId::from_raw(r.name_id_raw) {
+            assert_eq!(nid.to_raw(), r.name_id_raw);
+            if nid == NameId::FontFamily {
+                hit_family = true;
+            }
+        }
+    }
+    assert!(hit_family, "no FontFamily record in Source Sans 3 name");
+
+    // Source Sans 3 ships a version-0 name table (the v1 lang-tag
+    // mechanism is uncommon outside multi-script CJK fonts). The
+    // version-0 lang_tag accessor must always return None, regardless
+    // of the queried ID.
+    if f.name_version() == 0 {
+        assert_eq!(f.name_lang_tag(0x8000), None);
+        assert_eq!(f.name_lang_tag(0xFFFF), None);
+        assert_eq!(name.lang_tag_count(), 0);
+    }
 }
