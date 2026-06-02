@@ -6,9 +6,9 @@
 //!   Encoding / Private DICT / Local + Global Subrs, plus CID-keyed
 //!   fonts (ROS + FDArray Font DICTs + FDSelect GID→FD routing,
 //!   TN5176 §§18, 19).
-//! - CFF2 (OpenType 1.9.1 §6–§8) header + Top DICT + GlobalSubrINDEX
-//!   + CharStringINDEX + FontDICTINDEX walks; full Type 2 + blend
-//!   charstring decoding is deferred (see `cff2` module docs).
+//! - CFF2 (OpenType 1.9.1 §6–§8): header, Top DICT, GlobalSubrINDEX,
+//!   CharStringINDEX, and FontDICTINDEX walks (the `cff2` module
+//!   defers variation-aware charstring decoding to a later round).
 //! - Type 2 charstring interpreter (Adobe TN5177): every common path
 //!   construction operator, the four flex variants, the deprecated
 //!   four-operand `seac` `endchar`, hint-recording stubs (no
