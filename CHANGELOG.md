@@ -9,6 +9,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CFF2 (Compact Font Format Version 2) metadata parser**, spec
+  `docs/text/opentype/otspec-cff2.html`. Round 211 lifts the
+  blanket `Error::Cff2NotImplemented` rejection at parse time —
+  CFF2-flavoured OpenType fonts (`OTTO` sfnt + `CFF2` table) now
+  parse through to a fully populated `Font`. The previously-deferred
+  Type 2 + `blend` + `vsindex` interpreter for variable-font
+  outlines remains deferred (`Font::glyph_outline` on a CFF2 font
+  still returns `Cff2NotImplemented`); everything else, including
+  the new structural CFF2 view, is reachable.
+  - **CFF2 header** (§6 Table 8) decoded into a public
+    `Cff2Header { major, minor, header_size, top_dict_size }`. The
+    spec's "`headerSize` must be used when locating the Top DICT"
+    rule is honoured (the field exists to allow future versions to
+    grow the header); `major != 2`, `header_size < 5`, and a
+    declared header that exceeds the input buffer are all rejected.
+    `top_dict_offset()` and `global_subr_index_offset()` accessors
+    expose the spec-derived "start of TopDICT" and "start of
+    GlobalSubrINDEX" offsets respectively.
+  - **CFF2 INDEX format** (§6 "INDEX data") decoded into a public
+    `Cff2Index<'a>` type with `uint32 count` (CFF1's `Card16` is
+    the v1 form) and all four `offsetSize` widths 1 / 2 / 3 / 4 =
+    Offset8 / 16 / 24 / 32. The empty-INDEX sentinel for CFF2 is
+    the 4-byte `count = 0` form (CFF1 was 2 bytes).
+    `Cff2Index::entry(i)` returns zero-copy slices; truncation,
+    out-of-range `offsetSize`, and out-of-range `i` surface as
+    `Error::Cff(...)` / `Error::UnexpectedEof`.
+  - **CFF2 Top DICT** (§7) parsed into a public `Cff2TopDict` with
+    all five spec-permitted operators: `CharStringINDEXOffset`
+    (op 17, required), `VariationStoreOffset` (op 24, required iff
+    variable), `FontDICTINDEXOffset` (op 12 36, required),
+    `FontDICTSelectOffset` (op 12 37, optional, used when there is
+    more than one Font DICT), `FontMatrix` (op 12 7, optional;
+    restricted to `[s 0 0 s 0 0]` per spec note "only matrices with
+    uniform horizontal and vertical scaling without translation are
+    permitted"). The spec default `0.001 0 0 0.001 0 0` is
+    substituted when `FontMatrix` is absent (re-exported as the
+    crate-root constant `DEFAULT_FONT_MATRIX`).
+    Required operators missing surface as `Error::Cff(...)` with a
+    descriptive string; non-uniform / translated FontMatrix shapes
+    surface as `Error::Cff("CFF2 Top DICT FontMatrix: ...")`;
+    negative offsets surface as `Error::Cff("... negative
+    offset")`; unrecognised operators are tolerated (CFF1-style).
+  - **`Cff2::parse`** walks the spec's `Header → TopDICT →
+    GlobalSubrINDEX → CharStringINDEX → FontDICTINDEX` chain,
+    enforcing the §7.2 "FontDICTINDEX must contain at least one
+    FontDICT" invariant. Public accessors: `header()`,
+    `top_dict()`, `glyph_count()`, `font_dict_count()`,
+    `global_subr_count()`, `is_variable()`, `charstring(gid)`,
+    `font_dict(i)`, `global_subr(i)`, `bytes()`.
+  - **`Font` integration:** new `Font::is_cff2()`,
+    `Font::cff2() -> Option<&Cff2>`, `Font::cff2_header()`,
+    `Font::cff2_top_dict()`, `Font::is_variable()` accessors.
+    `Font::cff()` becomes `Option<&Cff>` (returns `None` for CFF2
+    fonts). `Font::cff_fd_count()` returns the CFF2 FontDICTINDEX
+    count for CFF2 fonts. `Font::font_matrix()` routes through the
+    CFF2 Top DICT for CFF2 fonts.
+  - **CFF1-only accessors fall back to spec defaults on CFF2 fonts**:
+    `font_bbox()` → `[0; 4]`; `italic_angle()` → `0.0`;
+    `underline_position()` → `-100.0`; `underline_thickness()` →
+    `50.0`; `is_fixed_pitch()` → `false`; `paint_type()` → `0`;
+    `charstring_type()` → `2`; `stroke_width()` → `0.0`;
+    `weight_name()`, `notice()`, `copyright()`, `version_string()`,
+    `postscript()`, `base_font_name()`, `glyph_name(gid)`,
+    `ps_name()`, `cid_registry()`, `cid_ordering()`,
+    `cid_supplement()`, `unique_id()`, `synthetic_base()` all
+    return `None`; `xuid()`, `base_font_blend()` return empty
+    slices. CFF2 callers wanting the equivalent identity / metric
+    strings should consult the sfnt `name` and `post` tables
+    instead (per the spec's "CFF2 reuses sfnt-level tables"
+    design); each accessor's rustdoc names the alternative.
+  - **DICT operator byte range widened** from `0..=21` to
+    `0..=21 ∪ {24}` so the shared `Dict` parser can recognise the
+    CFF2-specific `VariationStoreOffset` operator. The CFF1 spec
+    leaves bytes 22, 23, 25–27 reserved (TN5176 §4 Table 3); a CFF1
+    font using any of those was already malformed and stays so.
+  - **`Error::Cff2NotImplemented`** rephrased: now signals only the
+    deferred charstring decode (the previous parse-time rejection
+    is gone).
+
 - OpenType **`name` table version 1** support, spec Microsoft /
   ISO/IEC 14496-22 (`docs/text/opentype/otspec-name.html`). The
   existing parser accepted version-1 tables but silently ignored

@@ -1,11 +1,14 @@
 //! Pure-Rust OpenType / CFF font parser.
 //!
-//! Round-1 scope:
+//! Scope:
 //! - sfnt header + table directory walker (`parser`).
 //! - CFF (Adobe TN5176) Top DICT / Name / String INDEX / Charset /
 //!   Encoding / Private DICT / Local + Global Subrs, plus CID-keyed
 //!   fonts (ROS + FDArray Font DICTs + FDSelect GID→FD routing,
 //!   TN5176 §§18, 19).
+//! - CFF2 (OpenType 1.9.1 §6–§8) header + Top DICT + GlobalSubrINDEX
+//!   + CharStringINDEX + FontDICTINDEX walks; full Type 2 + blend
+//!   charstring decoding is deferred (see `cff2` module docs).
 //! - Type 2 charstring interpreter (Adobe TN5177): every common path
 //!   construction operator, the four flex variants, the deprecated
 //!   four-operand `seac` `endchar`, hint-recording stubs (no
@@ -15,7 +18,8 @@
 //!   `hmtx`, `cmap` formats 0/4/6/12, `name`, `post`, `OS/2`).
 //!
 //! The crate is read-only (parsing-only) and dependency-light: only
-//! `oxideav-core` for shared types. CFF2 (variable-aware), per-glyph
+//! `oxideav-core` for shared types. CFF2 charstring decoding (with
+//! blend / vsindex resolution against the VariationStore), per-glyph
 //! hinting interpretation, advanced GSUB/GPOS, and Bidi are deferred.
 //!
 //! See `README.md` for a tour of the public API.
@@ -24,11 +28,13 @@
 #![warn(rust_2018_idioms)]
 
 pub mod cff;
+pub mod cff2;
 pub mod outline;
 pub mod parser;
 pub mod tables;
 
 pub use cff::{PrivateHints, RegistryOrdering, TopMetadata};
+pub use cff2::{Cff2, Cff2Header, Cff2Op, Cff2TopDict, DEFAULT_FONT_MATRIX};
 pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
 
 use crate::cff::Cff;
@@ -63,7 +69,12 @@ pub enum Error {
     MissingTable(&'static str),
     /// The font has no `CFF ` or `CFF2` table.
     MissingCff,
-    /// The font carries CFF2; round-1 only handles CFF (TN5176 v1).
+    /// CFF2-flavoured fonts are parsed for metadata (header, Top
+    /// DICT, structural INDEXes — see the `cff2` module), but Type 2
+    /// charstring decoding for CFF2 (with `blend` + `vsindex`
+    /// resolution against the ItemVariationStore) is not yet
+    /// implemented; [`Font::glyph_outline`] returns this error on a
+    /// CFF2 font.
     Cff2NotImplemented,
     /// A glyph index was out of range vs. `maxp.numGlyphs` /
     /// `CharStrings INDEX count`.
@@ -120,7 +131,9 @@ impl core::fmt::Display for Error {
             Self::BadOffset => f.write_str("table offset out of range"),
             Self::MissingTable(t) => write!(f, "required table missing: {t}"),
             Self::MissingCff => f.write_str("font has no CFF/CFF2 table"),
-            Self::Cff2NotImplemented => f.write_str("CFF2 (variable) not implemented in round 1"),
+            Self::Cff2NotImplemented => {
+                f.write_str("CFF2 charstring decode not implemented (metadata is parsed)")
+            }
             Self::GlyphOutOfRange(g) => write!(f, "glyph index {g} out of range"),
             Self::UnsupportedCmapFormat(fmt) => {
                 write!(f, "cmap format {fmt} not implemented in round 1")
@@ -190,7 +203,33 @@ pub struct Font<'a> {
     /// fonts; absence surfaces as `None` rather than rejecting the
     /// whole font.
     os2: Option<Os2Table>,
-    cff: Cff<'a>,
+    /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
+    /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
+    /// metadata; CFF2 carries structural metadata (header + Top DICT +
+    /// CharStringINDEX count) but defers Type 2 + blend charstring
+    /// decoding to a future round.
+    cff: CffFlavour<'a>,
+}
+
+/// Internal discriminant for the font's CFF table flavour. The two
+/// variants are boxed to keep the `Font` struct size and `CffFlavour`
+/// discriminant cheap to move; the CFF1 variant in particular carries
+/// a TopMetadata struct + 4 INDEX views + a Strings table and is ~500
+/// bytes on its own.
+#[derive(Debug)]
+enum CffFlavour<'a> {
+    Cff1(Box<Cff<'a>>),
+    Cff2(Box<Cff2<'a>>),
+}
+
+/// Process-wide spec-default [`PrivateHints`] (TN5176 §15 defaults).
+/// Returned by the `Font::private_hints` family for CFF2 fonts, whose
+/// Private DICT decoding is deferred to a future round. Lazily
+/// initialised so the cost is paid only when first queried.
+fn default_private_hints() -> &'static PrivateHints {
+    use std::sync::OnceLock;
+    static DEFAULTS: OnceLock<PrivateHints> = OnceLock::new();
+    DEFAULTS.get_or_init(PrivateHints::default)
 }
 
 impl<'a> Font<'a> {
@@ -198,9 +237,6 @@ impl<'a> Font<'a> {
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, Error> {
         let dir = TableDirectory::parse(bytes)?;
         let cff_tag = dir.cff_tag.ok_or(Error::MissingCff)?;
-        if cff_tag == *b"CFF2" {
-            return Err(Error::Cff2NotImplemented);
-        }
 
         let head = HeadTable::parse(dir.required(b"head", bytes)?)?;
         let hhea = HheaTable::parse(dir.required(b"hhea", bytes)?)?;
@@ -232,8 +268,13 @@ impl<'a> Font<'a> {
             None => None,
         };
 
-        let cff_bytes = dir.required(b"CFF ", bytes)?;
-        let cff = Cff::parse(cff_bytes)?;
+        let cff = if cff_tag == *b"CFF2" {
+            let cff2_bytes = dir.required(b"CFF2", bytes)?;
+            CffFlavour::Cff2(Box::new(Cff2::parse(cff2_bytes)?))
+        } else {
+            let cff_bytes = dir.required(b"CFF ", bytes)?;
+            CffFlavour::Cff1(Box::new(Cff::parse(cff_bytes)?))
+        };
 
         Ok(Self {
             bytes,
@@ -294,8 +335,73 @@ impl<'a> Font<'a> {
     }
 
     /// PostScript font name from the CFF Name INDEX.
+    ///
+    /// CFF2 has no Name INDEX (the PostScript name lives in the sfnt
+    /// `name` table at name ID 6 instead); this accessor returns
+    /// `None` for CFF2 fonts. Callers wanting a PostScript name that
+    /// works for both flavours should use
+    /// `Font::name_string(NameId::PostScript)`.
     pub fn ps_name(&self) -> Option<&str> {
-        std::str::from_utf8(self.cff.ps_name()).ok()
+        std::str::from_utf8(self.cff1()?.ps_name()).ok()
+    }
+
+    /// Borrow the parsed CFF1 view, or `None` if this font uses CFF2
+    /// (TN5176 vs. OpenType 1.9.1 CFF2 are different table flavours
+    /// and only one is present in a given font).
+    fn cff1(&self) -> Option<&Cff<'a>> {
+        match &self.cff {
+            CffFlavour::Cff1(c) => Some(c),
+            CffFlavour::Cff2(_) => None,
+        }
+    }
+
+    /// Borrow the parsed CFF2 view, or `None` if this font uses CFF1.
+    fn cff2_view(&self) -> Option<&Cff2<'a>> {
+        match &self.cff {
+            CffFlavour::Cff1(_) => None,
+            CffFlavour::Cff2(c) => Some(c),
+        }
+    }
+
+    /// `true` if the font carries a `CFF2` table (OpenType 1.9.1
+    /// variation-aware CFF flavour) rather than the original `CFF `
+    /// table (Adobe TN5176 CFF version 1).
+    pub fn is_cff2(&self) -> bool {
+        matches!(self.cff, CffFlavour::Cff2(_))
+    }
+
+    /// Borrow the parsed CFF2 table, or `None` for CFF1 fonts. The
+    /// returned view exposes the CFF2 header, Top DICT, CharString
+    /// count, FontDICT INDEX, and per-glyph CharString bytes;
+    /// per-glyph outline decoding (with `blend` and `vsindex`
+    /// resolution against the `VariationStore`) is deferred to a
+    /// future round and currently surfaces as
+    /// [`Error::Cff2NotImplemented`] from [`Font::glyph_outline`].
+    pub fn cff2(&self) -> Option<&Cff2<'a>> {
+        self.cff2_view()
+    }
+
+    /// Borrow the parsed CFF2 header (`major`, `minor`, `headerSize`,
+    /// `topDICTSize`), or `None` for CFF1 fonts.
+    pub fn cff2_header(&self) -> Option<&Cff2Header> {
+        self.cff2_view().map(Cff2::header)
+    }
+
+    /// Borrow the parsed CFF2 Top DICT, or `None` for CFF1 fonts. The
+    /// returned struct surfaces all five spec-permitted operators
+    /// (`CharStringINDEXOffset`, `VariationStoreOffset`,
+    /// `FontDICTINDEXOffset`, `FontDICTSelectOffset`, `FontMatrix`).
+    pub fn cff2_top_dict(&self) -> Option<&Cff2TopDict> {
+        self.cff2_view().map(Cff2::top_dict)
+    }
+
+    /// `true` if this is a CFF2 variable font — that is, the Top DICT
+    /// carries a `VariationStoreOffset` operator (per spec §7
+    /// "VariationStoreOffset" Occurrence: required in fonts with
+    /// variations, forbidden otherwise). Always `false` for CFF1
+    /// fonts (CFF1 has no variation mechanism).
+    pub fn is_variable(&self) -> bool {
+        self.cff2_view().is_some_and(Cff2::is_variable)
     }
 
     // ---- glyph lookup ------------------------------------------------------
@@ -306,11 +412,20 @@ impl<'a> Font<'a> {
     }
 
     /// Decode the cubic-Bezier outline for `glyph_id`.
+    ///
+    /// CFF2 outlines (with `blend` + `vsindex` resolution against the
+    /// font's `VariationStore`) are not decoded this round; callers on
+    /// a CFF2 font receive [`Error::Cff2NotImplemented`] regardless of
+    /// `glyph_id`. The CFF2 charstring bytes are still reachable via
+    /// `Font::cff2().unwrap().charstring(gid)` for inspection.
     pub fn glyph_outline(&self, glyph_id: u16) -> Result<CubicOutline, Error> {
         if glyph_id >= self.maxp.num_glyphs {
             return Err(Error::GlyphOutOfRange(glyph_id));
         }
-        self.cff.glyph_outline(glyph_id)
+        match &self.cff {
+            CffFlavour::Cff1(c) => c.glyph_outline(glyph_id),
+            CffFlavour::Cff2(_) => Err(Error::Cff2NotImplemented),
+        }
     }
 
     /// Per-glyph advance width in font units.
@@ -326,14 +441,21 @@ impl<'a> Font<'a> {
     /// Glyph name (from CFF charset / strings) — useful for diagnostics
     /// and for round-2 PostScript-style lookups. Returns `None` if the
     /// charset doesn't have a SID for this gid.
+    ///
+    /// CFF2 fonts have no Charset or String INDEX (the per-glyph name
+    /// list lives in the sfnt `post` table or the AGL fallback); this
+    /// accessor returns `None` for CFF2 fonts.
     pub fn glyph_name(&self, glyph_id: u16) -> Option<&str> {
-        let sid = self.cff.charset().sid_of(glyph_id)?;
-        self.cff.strings().get(sid)
+        let cff = self.cff1()?;
+        let sid = cff.charset().sid_of(glyph_id)?;
+        cff.strings().get(sid)
     }
 
-    /// Borrow the CFF table view (mostly for tests / advanced callers).
-    pub fn cff(&self) -> &Cff<'a> {
-        &self.cff
+    /// Borrow the CFF1 table view, or `None` for CFF2 fonts. Mostly for
+    /// tests and advanced callers; the higher-level accessors on
+    /// `Font` route through this internally.
+    pub fn cff(&self) -> Option<&Cff<'a>> {
+        self.cff1()
     }
 
     // ---- CID-keyed font metadata ------------------------------------------
@@ -342,142 +464,207 @@ impl<'a> Font<'a> {
     /// `ROS` operator + an FDArray / FDSelect, Adobe TN5176 §18).
     /// CID-keyed fonts route each glyph to one of several Font DICTs;
     /// the public glyph-outline / metrics API is identical either way.
+    /// Always `false` for CFF2 fonts (CFF2 has no `ROS` operator —
+    /// every glyph routes through FontDICTSelect to one of the
+    /// FontDICTs by spec §7.2 regardless of CID-ness).
     pub fn is_cid(&self) -> bool {
-        self.cff.is_cid()
+        self.cff1().is_some_and(Cff::is_cid)
     }
 
     /// Registry string of a CID-keyed font's `ROS` operator (e.g.
     /// `"Adobe"`), resolved through the CFF Strings table. `None` for
-    /// non-CID fonts.
+    /// non-CID fonts and for CFF2 fonts.
     pub fn cid_registry(&self) -> Option<&str> {
-        let ros = self.cff.registry_ordering()?;
-        self.cff.resolve_sid(ros.registry_sid)
+        let cff = self.cff1()?;
+        let ros = cff.registry_ordering()?;
+        cff.resolve_sid(ros.registry_sid)
     }
 
     /// Ordering string of a CID-keyed font's `ROS` operator (e.g.
-    /// `"Japan1"`, `"GB1"`, `"Identity"`). `None` for non-CID fonts.
+    /// `"Japan1"`, `"GB1"`, `"Identity"`). `None` for non-CID fonts
+    /// and for CFF2 fonts.
     pub fn cid_ordering(&self) -> Option<&str> {
-        let ros = self.cff.registry_ordering()?;
-        self.cff.resolve_sid(ros.ordering_sid)
+        let cff = self.cff1()?;
+        let ros = cff.registry_ordering()?;
+        cff.resolve_sid(ros.ordering_sid)
     }
 
     /// Supplement number of a CID-keyed font's `ROS` operator (the
-    /// character-collection revision). `None` for non-CID fonts.
+    /// character-collection revision). `None` for non-CID fonts and
+    /// for CFF2 fonts.
     pub fn cid_supplement(&self) -> Option<i32> {
-        Some(self.cff.registry_ordering()?.supplement)
+        Some(self.cff1()?.registry_ordering()?.supplement)
     }
 
     /// Number of Font DICTs in a CID-keyed font's FDArray (TN5176
-    /// §18). `0` for non-CID fonts.
+    /// §18) for CFF1, or in a CFF2 font's FontDICTINDEX (spec §7.2)
+    /// for CFF2. `0` for non-CID CFF1 fonts.
     pub fn cff_fd_count(&self) -> usize {
-        self.cff.fd_count()
+        match &self.cff {
+            CffFlavour::Cff1(c) => c.fd_count(),
+            CffFlavour::Cff2(c) => c.font_dict_count() as usize,
+        }
     }
 
     // ---- CFF Top DICT metadata --------------------------------------------
+    //
+    // Every accessor in this section returns a CFF1 Top DICT value
+    // when the font is CFF1, and a sensible default when the font is
+    // CFF2 (CFF2 deliberately omits these operators because the
+    // equivalent information lives in sfnt-level tables — see CFF2
+    // §1.2 "Comparison of 'glyf', 'CFF ' and CFF2 tables"). The one
+    // exception is `font_matrix`, which IS defined in CFF2 §7 with
+    // the spec's restricted `[s 0 0 s 0 0]` shape.
+
+    /// CFF1 Top DICT metadata, or `None` for CFF2 fonts. CFF2 callers
+    /// should use [`Font::cff2_top_dict`] instead — the two structs
+    /// are not interchangeable because CFF2's Top DICT carries only
+    /// five operators (per spec §7) and none of them are CFF1's
+    /// FontBBox / italic / underline / weight / notice family.
+    fn top_metadata_view(&self) -> Option<&TopMetadata> {
+        self.cff1().map(Cff::top_metadata)
+    }
 
     /// Font-wide bounding box from CFF Top DICT `FontBBox` (TN5176
     /// §9 op 5), in font-unit coordinates `[xMin, yMin, xMax, yMax]`.
-    /// CFF's default is `[0, 0, 0, 0]` (a sentinel telling the
+    /// CFF1's default is `[0, 0, 0, 0]` (a sentinel telling the
     /// consumer to compute the bbox per-glyph by walking the
     /// charstrings — use [`Font::glyph_bbox`] for the per-glyph
-    /// alternative).
+    /// alternative). CFF2 has no `FontBBox` operator (spec §7) and
+    /// this accessor returns `[0, 0, 0, 0]`.
     pub fn font_bbox(&self) -> [f32; 4] {
-        self.cff.top_metadata().font_bbox
+        self.top_metadata_view()
+            .map(|m| m.font_bbox)
+            .unwrap_or([0.0; 4])
     }
 
     /// Italic angle in degrees, counterclockwise from vertical
     /// (CFF Top DICT `ItalicAngle`, TN5176 §9 op 12 02). `0.0` for
-    /// upright fonts.
+    /// upright fonts and for CFF2 fonts (CFF2 has no `ItalicAngle`
+    /// operator; the equivalent lives in `post.italicAngle`).
     pub fn italic_angle(&self) -> f64 {
-        self.cff.top_metadata().italic_angle
+        self.top_metadata_view()
+            .map(|m| m.italic_angle)
+            .unwrap_or(0.0)
     }
 
     /// Underline position in font units (CFF Top DICT
     /// `UnderlinePosition`, TN5176 §9 op 12 03). Negative values
     /// (the typographic convention) place the underline below the
-    /// baseline. Default per spec: -100.
+    /// baseline. Default per spec: -100. Returns `-100.0` for CFF2
+    /// fonts (`post.underlinePosition` is the CFF2-era source).
     pub fn underline_position(&self) -> f64 {
-        self.cff.top_metadata().underline_position
+        self.top_metadata_view()
+            .map(|m| m.underline_position)
+            .unwrap_or(-100.0)
     }
 
     /// Underline stroke thickness in font units (CFF Top DICT
-    /// `UnderlineThickness`, TN5176 §9 op 12 04). Default: 50.
+    /// `UnderlineThickness`, TN5176 §9 op 12 04). Default: 50. Returns
+    /// `50.0` for CFF2 fonts.
     pub fn underline_thickness(&self) -> f64 {
-        self.cff.top_metadata().underline_thickness
+        self.top_metadata_view()
+            .map(|m| m.underline_thickness)
+            .unwrap_or(50.0)
     }
 
     /// Whether the font is monospaced (CFF Top DICT `isFixedPitch`,
-    /// TN5176 §9 op 12 01). Default: false.
+    /// TN5176 §9 op 12 01). Default: false. Returns `false` for CFF2
+    /// fonts (`post.isFixedPitch` is the CFF2-era source).
     pub fn is_fixed_pitch(&self) -> bool {
-        self.cff.top_metadata().is_fixed_pitch
+        self.top_metadata_view().is_some_and(|m| m.is_fixed_pitch)
     }
 
-    /// 2x3 affine glyph → PostScript-user-space matrix from CFF Top
-    /// DICT `FontMatrix` (TN5176 §9 op 12 07), returned in spec order
+    /// 2x3 affine glyph → PostScript-user-space matrix from the CFF
+    /// Top DICT `FontMatrix` operator, returned in spec order
     /// `[a, b, c, d, tx, ty]`. Apply as
     /// `x_user = a*x + c*y + tx`, `y_user = b*x + d*y + ty`.
-    /// CFF's default is `[0.001, 0, 0, 0.001, 0, 0]` — the
-    /// 1000-unit-em convention.
+    ///
+    /// - CFF1 (TN5176 §9 op 12 07): unconstrained 2×3 affine; default
+    ///   `[0.001, 0, 0, 0.001, 0, 0]` (the 1000-unit-em convention).
+    /// - CFF2 (OpenType 1.9.1 §7): restricted to `[s 0 0 s 0 0]` with
+    ///   `s == 1 / unitsPerEm`; the operator is typically omitted
+    ///   when `unitsPerEm == 1000` and the spec default
+    ///   `[0.001, 0, 0, 0.001, 0, 0]` applies. We surface either the
+    ///   on-disk matrix or the default per [`DEFAULT_FONT_MATRIX`].
     pub fn font_matrix(&self) -> [f64; 6] {
-        self.cff.top_metadata().font_matrix
+        match &self.cff {
+            CffFlavour::Cff1(c) => c.top_metadata().font_matrix,
+            CffFlavour::Cff2(c) => c.top_dict().font_matrix,
+        }
     }
 
     /// Paint type from CFF Top DICT `PaintType` (TN5176 §9 op 12 05).
     /// `0` = filled outline (the OpenType-CFF normal case), `2` =
     /// stroked outline whose pen width is [`Font::stroke_width`].
-    /// Default: 0.
+    /// Default: 0. CFF2 has no `PaintType` operator (every CFF2 glyph
+    /// is filled), so this returns `0` for CFF2 fonts.
     pub fn paint_type(&self) -> i32 {
-        self.cff.top_metadata().paint_type
+        self.top_metadata_view().map(|m| m.paint_type).unwrap_or(0)
     }
 
     /// Charstring format from CFF Top DICT `CharstringType` (TN5176
     /// §9 op 12 06). `2` is the only value embedded in an OpenType
     /// CFF table; other values correspond to legacy PostScript
-    /// packaging. Default: 2.
+    /// packaging. Default: 2. CFF2 uses a different charstring
+    /// dialect (§9 of the CFF2 spec, including `blend` and
+    /// `vsindex`); we still report `2` for CFF2 to match the on-disk
+    /// "CharString Type 2" lineage.
     pub fn charstring_type(&self) -> i32 {
-        self.cff.top_metadata().charstring_type
+        self.top_metadata_view()
+            .map(|m| m.charstring_type)
+            .unwrap_or(2)
     }
 
     /// Stroke width applied when [`Font::paint_type`] is `2`, in font
     /// units (CFF Top DICT `StrokeWidth`, TN5176 §9 op 12 08).
     /// Ignored for filled outlines (`paint_type == 0`). Default: 0.
+    /// Returns `0.0` for CFF2 fonts (no `StrokeWidth` operator).
     pub fn stroke_width(&self) -> f64 {
-        self.cff.top_metadata().stroke_width
+        self.top_metadata_view()
+            .map(|m| m.stroke_width)
+            .unwrap_or(0.0)
     }
 
     /// Weight name from CFF Top DICT (op 4), e.g. `"Regular"`,
     /// `"Bold"`, `"Light"`. SID-resolved through the CFF Strings
     /// table; for SIDs in the standard-strings range these are
-    /// PostScript-style ASCII names from TN5176 Appendix A.
+    /// PostScript-style ASCII names from TN5176 Appendix A. `None`
+    /// for CFF2 fonts (no Strings table; use [`Font::name_string`]
+    /// with `NameId::FontSubfamily`).
     pub fn weight_name(&self) -> Option<&str> {
-        self.cff
-            .top_metadata()
+        let cff = self.cff1()?;
+        cff.top_metadata()
             .weight_sid
-            .and_then(|sid| self.cff.resolve_sid(sid))
+            .and_then(|sid| cff.resolve_sid(sid))
     }
 
-    /// Copyright / trademark notice from CFF Top DICT (op 1).
+    /// Copyright / trademark notice from CFF Top DICT (op 1). `None`
+    /// for CFF2 fonts (use `Font::name_string(NameId::Copyright)`).
     pub fn notice(&self) -> Option<&str> {
-        self.cff
-            .top_metadata()
+        let cff = self.cff1()?;
+        cff.top_metadata()
             .notice_sid
-            .and_then(|sid| self.cff.resolve_sid(sid))
+            .and_then(|sid| cff.resolve_sid(sid))
     }
 
-    /// Extended copyright field from CFF Top DICT (op 12 00).
+    /// Extended copyright field from CFF Top DICT (op 12 00). `None`
+    /// for CFF2 fonts.
     pub fn copyright(&self) -> Option<&str> {
-        self.cff
-            .top_metadata()
+        let cff = self.cff1()?;
+        cff.top_metadata()
             .copyright_sid
-            .and_then(|sid| self.cff.resolve_sid(sid))
+            .and_then(|sid| cff.resolve_sid(sid))
     }
 
     /// Version string from CFF Top DICT (op 0), typically dotted-decimal.
+    /// `None` for CFF2 fonts (use
+    /// `Font::name_string(NameId::Version)`).
     pub fn version_string(&self) -> Option<&str> {
-        self.cff
-            .top_metadata()
+        let cff = self.cff1()?;
+        cff.top_metadata()
             .version_sid
-            .and_then(|sid| self.cff.resolve_sid(sid))
+            .and_then(|sid| cff.resolve_sid(sid))
     }
 
     /// Embedded PostScript language code from CFF Top DICT
@@ -485,57 +672,61 @@ impl<'a> Font<'a> {
     /// shipping OpenType-CFF fonts; non-`None` means the font contains
     /// an arbitrary block of PostScript that the spec says is "added to
     /// the font dictionary." Resolved through the CFF Strings table.
+    /// `None` for CFF2 fonts.
     pub fn postscript(&self) -> Option<&str> {
-        self.cff
-            .top_metadata()
+        let cff = self.cff1()?;
+        cff.top_metadata()
             .postscript_sid
-            .and_then(|sid| self.cff.resolve_sid(sid))
+            .and_then(|sid| cff.resolve_sid(sid))
     }
 
     /// `BaseFontName` from CFF Top DICT (TN5176 §9 op 12 22). For
     /// synthetic fonts derived from a multiple-master master, this is
-    /// the FontName of the underlying master font. Resolved through the
-    /// CFF Strings table.
+    /// the FontName of the underlying master font. Resolved through
+    /// the CFF Strings table. `None` for CFF2 fonts.
     pub fn base_font_name(&self) -> Option<&str> {
-        self.cff
-            .top_metadata()
+        let cff = self.cff1()?;
+        cff.top_metadata()
             .base_font_name_sid
-            .and_then(|sid| self.cff.resolve_sid(sid))
+            .and_then(|sid| cff.resolve_sid(sid))
     }
 
     /// Legacy PostScript `UniqueID` (CFF Top DICT op 13, TN5176 §9
     /// Table 9). Adobe-assigned 32-bit identifier; modern fonts prefer
-    /// [`Font::xuid`]. `None` if the operator is absent from the font.
+    /// [`Font::xuid`]. `None` if the operator is absent from the font
+    /// and `None` for CFF2 fonts.
     pub fn unique_id(&self) -> Option<i32> {
-        self.cff.top_metadata().unique_id
+        self.top_metadata_view().and_then(|m| m.unique_id)
     }
 
     /// Extended unique identifier from CFF Top DICT `XUID` (op 14,
     /// TN5176 §9 Table 9). Array of 32-bit numbers (the spec leaves
     /// the length unconstrained beyond "array"). Deprecated in
-    /// OpenType-CFF per TN5176 4 Dec 03 Appendix H but still emitted by
-    /// older Type 1 / OpenType-CFF tooling. Empty slice if the operator
-    /// is absent.
+    /// OpenType-CFF per TN5176 4 Dec 03 Appendix H but still emitted
+    /// by older Type 1 / OpenType-CFF tooling. Empty slice if the
+    /// operator is absent or the font is CFF2.
     pub fn xuid(&self) -> &[i32] {
-        &self.cff.top_metadata().xuid
+        self.top_metadata_view()
+            .map_or(&[][..], |m| m.xuid.as_slice())
     }
 
     /// Synthetic-font base index from CFF Top DICT `SyntheticBase`
-    /// (TN5176 §9 op 12 20). When present, the value is the index into
-    /// the Name INDEX of the base font that this synthetic font derives
-    /// its glyph shapes from. `None` for non-synthetic fonts (the
-    /// overwhelming common case).
+    /// (TN5176 §9 op 12 20). When present, the value is the index
+    /// into the Name INDEX of the base font that this synthetic font
+    /// derives its glyph shapes from. `None` for non-synthetic fonts
+    /// (the overwhelming common case) and for CFF2 fonts.
     pub fn synthetic_base(&self) -> Option<i32> {
-        self.cff.top_metadata().synthetic_base
+        self.top_metadata_view().and_then(|m| m.synthetic_base)
     }
 
-    /// Multiple-master `BaseFontBlend` user-design vector from CFF Top
-    /// DICT (TN5176 §9 op 12 23). The values are undeltified to
+    /// Multiple-master `BaseFontBlend` user-design vector from CFF
+    /// Top DICT (TN5176 §9 op 12 23). The values are undeltified to
     /// absolute floats per TN5176 §4 Table 4 "delta" semantics —
     /// successive entries are running sums of the raw operands.
-    /// Empty slice if the operator is absent.
+    /// Empty slice if the operator is absent and for CFF2 fonts.
     pub fn base_font_blend(&self) -> &[f64] {
-        &self.cff.top_metadata().base_font_blend
+        self.top_metadata_view()
+            .map_or(&[][..], |m| m.base_font_blend.as_slice())
     }
 
     // ---- CFF Private DICT hint zones --------------------------------------
@@ -559,22 +750,35 @@ impl<'a> Font<'a> {
     /// [`Font::cff`].`private_hints_fd(fd_index)` directly. The
     /// "hints that apply to a specific glyph" routing is
     /// [`Font::glyph_private_hints`].
+    ///
+    /// For CFF2 fonts, the Private DICT vocabulary is parsed by the
+    /// CFF2 spec §10 with the same operators but is not yet exposed
+    /// through this accessor (a future round will lift it onto a
+    /// `cff2::PrivateDict` view); for now a spec-default
+    /// [`PrivateHints`] is returned.
     pub fn private_hints(&self) -> &PrivateHints {
-        self.cff.private_hints()
+        match &self.cff {
+            CffFlavour::Cff1(c) => c.private_hints(),
+            CffFlavour::Cff2(_) => default_private_hints(),
+        }
     }
 
     /// The CFF Private DICT hint zones that apply to `glyph_id`. For
     /// non-CID fonts this returns the same value as
     /// [`Font::private_hints`]; for CID-keyed fonts (TN5176 §18) the
     /// glyph is routed through `FDSelect` to one of the FDArray Font
-    /// DICTs, and the hint zones returned are that FD's. Returns `None`
-    /// when `glyph_id` is past `glyph_count()` (since FDSelect has no
-    /// entry for it).
+    /// DICTs, and the hint zones returned are that FD's. Returns
+    /// `None` when `glyph_id` is past `glyph_count()` (since FDSelect
+    /// has no entry for it). For CFF2 fonts the returned hints are
+    /// the spec-default values (see [`Font::private_hints`]).
     pub fn glyph_private_hints(&self, glyph_id: u16) -> Option<&PrivateHints> {
         if glyph_id >= self.maxp.num_glyphs {
             return None;
         }
-        self.cff.private_hints_for_glyph(glyph_id)
+        match &self.cff {
+            CffFlavour::Cff1(c) => c.private_hints_for_glyph(glyph_id),
+            CffFlavour::Cff2(_) => Some(default_private_hints()),
+        }
     }
 
     // ---- per-glyph derived metrics ---------------------------------------

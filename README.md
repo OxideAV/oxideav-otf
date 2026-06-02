@@ -151,7 +151,112 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-204 additions (this push)
+## Round-211 additions (this push)
+
+CFF2 (Compact Font Format Version 2 — OpenType 1.9.1 `CFF2` table,
+spec `docs/text/opentype/otspec-cff2.html`) is now parsed for its
+header, Top DICT, and structural INDEXes. Before this push the parser
+rejected every CFF2 font outright with `Error::Cff2NotImplemented`;
+post-push the entire metadata surface (`head` / `hhea` / `cmap` /
+`name` / `OS/2` / `post`) plus a structural CFF2 view is reachable,
+and only `Font::glyph_outline` still returns `Cff2NotImplemented`
+(the Type 2 + `blend` + `vsindex` interpreter for variable-font
+outlines stays deferred).
+
+- **CFF2 header (§6 Table 8, "headerFormat")** decoded into a new
+  `Cff2Header { major, minor, header_size, top_dict_size }` (5 bytes,
+  `uint16` `topDICTSize` instead of CFF1's `Card8 offSize`). The
+  parser honours the spec's "headerSize must be used when locating
+  the Top DICT" rule (the field exists so future versions can grow
+  the header), rejects `major != 2`, rejects `header_size < 5`, and
+  rejects a declared header that exceeds the table buffer. The
+  derived `top_dict_offset()` (== `header_size`) and
+  `global_subr_index_offset()` (== `header_size + top_dict_size`,
+  per spec §6) are exposed for callers walking the table.
+- **CFF2 INDEX format (§6 "INDEX data")** decoded into a new
+  `Cff2Index<'a>` type whose `count` field is `uint32` (vs. CFF1's
+  `Card16`) and whose empty-INDEX sentinel is the 4-byte `(count=0)`
+  form (vs. CFF1's 2-byte `Card16(0)`). All four spec-allowed
+  `offsetSize` values (1, 2, 3, 4 = Offset8 / 16 / 24 / 32) are
+  supported; `entry(i)` returns zero-copy slices. The truncation,
+  out-of-range, and `offsetSize ∉ 1..=4` error paths are
+  rejected with `Error::Cff(...)` and `Error::UnexpectedEof`.
+- **CFF2 Top DICT (§7)** parsed into `Cff2TopDict` with all five
+  spec-permitted operators:
+  - `CharStringINDEXOffset` (0x11, required) — offset to the
+    CharStringINDEX from the CFF2 table start.
+  - `VariationStoreOffset` (0x18, required iff the font has
+    variations) — offset to the OpenType `ItemVariationStore`.
+  - `FontDICTINDEXOffset` (0x0c24, required) — offset to the
+    FontDICT INDEX.
+  - `FontDICTSelectOffset` (0x0c25, optional) — present only when
+    the font has more than one FontDICT.
+  - `FontMatrix` (0x0c07, optional) — the spec-restricted
+    `[s 0 0 s 0 0]` form (`a == d`, all other entries zero) is
+    enforced; the default `0.001 0 0 0.001 0 0` (`DEFAULT_FONT_MATRIX`,
+    re-exported at the crate root) is substituted when the operator
+    is absent (i.e. for the `unitsPerEm == 1000` case the spec
+    recommends).
+  The two required operators are rejected at parse time when
+  missing; non-uniform / translated FontMatrix shapes are rejected
+  with descriptive `Error::Cff(...)` strings; unknown operators are
+  silently skipped (CFF1-style tolerance).
+- **`Cff2` struct** drives the four-step walk `Header → Top DICT →
+  GlobalSubrINDEX → CharStringINDEX → FontDICTINDEX`. The required
+  "non-empty FontDICTINDEX" invariant (§7.2) is enforced.
+  Accessors: `header()`, `top_dict()`, `glyph_count()`,
+  `font_dict_count()`, `global_subr_count()`, `is_variable()`,
+  `charstring(gid)` (raw bytes for later decoding),
+  `font_dict(i)`, `global_subr(i)`, `bytes()`.
+- **`Font` integration.** New accessors on the public `Font` API:
+  - `is_cff2()` — true for CFF2 fonts.
+  - `cff2() -> Option<&Cff2>` — borrows the parsed CFF2 view; `None`
+    for CFF1 fonts (the existing `cff()` is now `Option<&Cff>` for
+    symmetry, `None` for CFF2 fonts).
+  - `cff2_header()` / `cff2_top_dict()` — convenience views.
+  - `is_variable()` — true when the CFF2 Top DICT carries a
+    `VariationStoreOffset` operator.
+  - `cff_fd_count()` now routes through CFF2's FontDICTINDEX count
+    on CFF2 fonts (in addition to the CFF1 FDArray count behaviour).
+- **CFF1-only accessors return spec defaults on CFF2 fonts** instead
+  of panicking or producing garbage. `font_bbox()` returns
+  `[0; 4]`; `italic_angle()` returns `0.0`; `underline_position()` /
+  `underline_thickness()` return CFF's `-100` / `50` spec defaults;
+  `paint_type()`, `charstring_type()`, `stroke_width()` return their
+  CFF spec defaults; `weight_name()` / `notice()` / `copyright()` /
+  `version_string()` / `postscript()` / `base_font_name()` /
+  `glyph_name(gid)` / `ps_name()` / `cid_registry()` /
+  `cid_ordering()` / `cid_supplement()` / `unique_id()` /
+  `synthetic_base()` all return `None`; `xuid()` / `base_font_blend()`
+  return empty slices. The doc on each accessor calls out the CFF2
+  fallback explicitly so callers know which alternative tables
+  (`name` table for textual identity, `post` for italic/underline
+  metrics) to consult.
+- **CFF1 charstring expansion still benefits.** As a side effect of
+  letting the shared DICT parser handle CFF2 byte `0x18`
+  (VariationStoreOffset operator), the operator-byte range is now
+  `0..=21 ∪ {24}` instead of `0..=21`. The CFF1 spec leaves bytes
+  22, 23, 25–27 reserved (per TN5176 §4 Table 3); a CFF1 font using
+  any of those was already malformed and stays so.
+- **`font_matrix()` on `Font`** now reads from the CFF2 Top DICT
+  for CFF2 fonts (vs. previously returning a stale CFF1 default).
+
+Sixteen new unit tests in `src/cff2/{header.rs, index.rs,
+top_dict.rs, mod.rs}` cover: header parse + format-detect, header
+rejection paths (wrong major, header_size < 5, truncated buffer);
+CFF2 INDEX parse with `offSize` of 1 / 2 / 3 / 4, empty CFF2 INDEX
+= 4 bytes, truncation rejection, out-of-range `offSize`; Top DICT
+parse with each operator, missing-required rejection,
+non-uniform/translated FontMatrix rejection, negative offset
+rejection, unknown-operator tolerance; full `Cff2::parse` of a
+minimal hand-assembled table, empty-FontDICTINDEX rejection,
+variable-font detection, truncated Top DICT and out-of-range
+CharString offset rejection. Four new integration tests in
+`tests/cff2_synthetic.rs` build a complete synthetic
+OpenType/CFF2 font (`head` / `hhea` / `cmap` / `hmtx` / `maxp` /
+`name` / `CFF2`) and exercise every new `Font` accessor end-to-end.
+
+## Round-204 additions (previous push)
 
 The OpenType **`name` table** is now version-1 aware, with full
 language-tag record support and the complete spec-defined name-ID
@@ -717,10 +822,15 @@ TN5177 §4.6):
   operand expansion. These tests fail before the fix and pass
   after.
 
-## Out of scope (round 3+)
+## Out of scope (round 212+)
 
-- CFF2 (OpenType 1.8+ variation-aware variant — Adobe TN5174).
-  Detected at parse time and reported as `Error::Cff2NotImplemented`.
+- CFF2 Type 2 + `blend` + `vsindex` charstring decoder (OpenType 1.9.1
+  CFF2 spec §9). The CFF2 header, Top DICT, GlobalSubrINDEX,
+  CharStringINDEX, and FontDICTINDEX are now parsed (round 211);
+  `Font::glyph_outline` on a CFF2 font still returns
+  `Error::Cff2NotImplemented` until the variation-aware charstring
+  interpreter and the `ItemVariationStore` region-blend resolver
+  land.
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
 - The Adobe Glyph List string → codepoint mapping (round 3+ if any
   consumer needs it).
