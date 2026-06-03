@@ -151,7 +151,92 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-211 additions (this push)
+## Round-217 additions (this push)
+
+The **Adobe Glyph List (AGL 2.0)** — the canonical PostScript
+glyph-name to Unicode-scalar-value mapping — is now shipped in-tree
+and exposed through a dedicated `agl` module plus two new `Font`
+accessors. Source: `data/agl-glyphlist.txt`, a verbatim copy of the
+AGL 2.0 table (September 20, 2002) staged under
+`docs/text/opentype/spec/agl-glyphlist.txt`; the format is described
+in the companion `agl-aglfn-README.md`. Before this push the
+crate-internal `cff::strings::glyph_name_to_codepoint` stub returned
+`None` for every input; round-1 deferred AGL on the grounds that the
+sfnt `cmap` always wins for codepoint→GID. Round 217 fills the
+opposite direction: callers that have a **PostScript glyph name** in
+hand (PDF content streams, `post`-format-2.0 Pascal-string tails,
+TeX font-encoding files) can now route it back to a glyph id without
+implementing their own AGL.
+
+- **`agl` module** (re-exported at the crate root via `oxideav_otf::agl`):
+  - `name_to_codepoints(name) -> Option<Codepoints<'static>>` — full
+    AGL lookup. `Codepoints::Single(char)` for the 4200
+    single-codepoint entries; `Codepoints::Sequence(&[char])` for
+    the 81 multi-codepoint entries (mostly Hebrew base + vowel-
+    pointing combinations like `dalethatafpatah → [U+05D3, U+05B2]`).
+  - `name_to_codepoint(name) -> Option<char>` — common-case helper
+    that returns `Some` only for single-codepoint entries.
+  - `codepoint_to_name(cp) -> Option<&'static str>` — reverse lookup
+    keyed on a single Unicode scalar value. When multiple AGL aliases
+    share a codepoint (most common case: ~17 Hebrew names aliasing
+    U+05B8 HEBREW POINT QAMATS, plus the `Acutesmall` /
+    `acutesmall` PUA pairs), the alphabetically-first name in
+    AGL's on-disk order is returned. Multi-codepoint sequence
+    entries do not participate in the reverse path (a single `char`
+    can't disambiguate them).
+  - `entries() -> impl Iterator<Item = (&'static str, Codepoints<'static>)>`
+    — iterates every AGL pair in on-disk ASCII-sorted-by-name order.
+  - `entry_count() -> usize` — `4281` for AGL 2.0
+    (4200 single-codepoint + 81 sequence entries).
+  - `distinct_codepoint_count() -> usize` — `3680` distinct
+    codepoints reachable via the reverse path (the gap between
+    4200 single-codepoint entries and 3680 distinct codepoints is
+    the legacy alias families).
+- **`Font::glyph_id_from_agl_name(name) -> Option<u16>`** — two-step
+  resolver: look up `name` in AGL, then look up the resulting
+  codepoint in the font's `cmap`. The right tool for callers who
+  have a PostScript glyph name and need a glyph id without first
+  decoding it themselves. The AGL Specification's §6 component-name
+  decomposition algorithm (`f_f_i` → `ffi`, `uniXXXX` → `U+XXXX`)
+  is **not** applied because that document is not staged under
+  `docs/text/opentype/` — only the raw AGL 2.0 table and its
+  `aglfn-README.md` companion are.
+- **`Font::agl_glyph_name(gid) -> Option<&str>`** — canonical AGL
+  name for a glyph, with a three-step resolution order tuned for
+  the "use the font's own knowledge first" convention: (1) the CFF
+  charset → Strings name (the font's authored PostScript name);
+  (2) the `post` table version-2.0 Pascal-string tail (UTF-8-clean);
+  (3) the AGL reverse table, keyed on whichever BMP codepoint the
+  font's `cmap` routes to this glyph. CFF1 fonts almost always
+  surface from step 1; the `post` fallback is for CFF2 / TrueType-
+  outline mixed cases.
+
+A new `cff::strings::glyph_name_to_codepoint` body — previously a
+`None`-returning stub kept alive only so `encoding.rs` compiled —
+now delegates to `agl::name_to_codepoint`. No API surface changed,
+but the legacy Standard-Encoding fallback hook is now functional
+for the first time.
+
+Sixteen new unit tests in `src/agl.rs` cover: AGL 2.0 entry count
+landmarks (4281 total / 4200 single-codepoint / 3680 distinct
+reachable codepoints / 81 sequence entries); full ASCII letter and
+digit round-trip; common-punctuation PostScript-name landmarks;
+PUA small-cap landmarks (`Acutesmall = U+F7B4`,
+`Asmall = U+F761`, `AEsmall = U+F7E6`); BMP-ligature spec-worked
+entries (`AE`, `ae`, `OE`, `oe`, `ffi`); the canonical
+multi-codepoint Hebrew example (`dalethatafpatah`); CJK kana spot
+checks; the "alphabetically-first alias wins" reverse-lookup
+property on U+05B8 with 17 sharing names; ASCII-alphanumeric
+defence on every parsed glyph name; surrogate / astral-plane
+absence in AGL 2.0; the `Codepoints` accessor helpers; and the
+"sequence entries don't participate in reverse lookup" invariant.
+Four new integration tests in `tests/source_sans.rs` exercise the
+new `Font` accessors against the Source Sans 3 fixture: ASCII-letter
+round trip via `glyph_id_from_agl_name`; the "CFF charset wins over
+AGL fallback" priority on every alphabetic glyph; missing-name
+rejection; and out-of-range glyph rejection on `agl_glyph_name`.
+
+## Round-211 additions (previous push)
 
 CFF2 (Compact Font Format Version 2 — OpenType 1.9.1 `CFF2` table,
 spec `docs/text/opentype/otspec-cff2.html`) is now parsed for its
@@ -822,7 +907,7 @@ TN5177 §4.6):
   operand expansion. These tests fail before the fix and pass
   after.
 
-## Out of scope (round 212+)
+## Out of scope (round 218+)
 
 - CFF2 Type 2 + `blend` + `vsindex` charstring decoder (OpenType 1.9.1
   CFF2 spec §9). The CFF2 header, Top DICT, GlobalSubrINDEX,
@@ -832,8 +917,14 @@ TN5177 §4.6):
   interpreter and the `ItemVariationStore` region-blend resolver
   land.
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
-- The Adobe Glyph List string → codepoint mapping (round 3+ if any
-  consumer needs it).
+- The AGL Specification §6 component-name decomposition algorithm
+  (`f_f_i` → `ffi`, `uniXXXX` → `U+XXXX`, `uXXXXX` → astral
+  scalar values, etc.). Round 217 ships the static AGL 2.0 table
+  but not the §6 algorithm — the AGL Specification document itself
+  is not staged under `docs/text/opentype/`; only the raw glyph-list
+  table and its `aglfn-README.md` companion are. Once the spec is
+  staged, `agl::name_to_codepoints` can absorb the algorithm
+  without an API change.
 - `GSUB`, `GPOS`, `GDEF`, `kern` tables — the Adobe CFF /
   Type 2 / sfnt PDFs are now staged under `docs/text/opentype/spec/`
   alongside the Microsoft per-table HTML snapshots
@@ -845,7 +936,9 @@ TN5177 §4.6):
   `otspec-post.html`). The list lives in Apple's TrueType Reference
   Manual chapter 6 and is not currently staged in
   `docs/text/opentype/`; only the manual's table-of-contents page is
-  there. The non-standard Pascal-string half is fully resolvable.
+  there. The non-standard Pascal-string half is fully resolvable
+  through `post_glyph_name` and now also via `agl_glyph_name`'s
+  step-3 AGL fallback.
 
 ## Test fixture
 

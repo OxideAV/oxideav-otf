@@ -622,3 +622,68 @@ fn name_table_surfaces_for_source_sans_3() {
         assert_eq!(name.lang_tag_count(), 0);
     }
 }
+
+#[test]
+fn agl_round_trip_on_real_font() {
+    // Adobe Glyph List integration on a real Adobe CFF font. Source
+    // Sans 3's CFF charset stores PostScript glyph names directly,
+    // so any AGL name reachable via `cmap` must round-trip through
+    // both `glyph_id_from_agl_name` and the AGL reverse path.
+    let f = Font::from_bytes(FIXTURE).unwrap();
+
+    // Basic Latin uppercase / lowercase letters all have AGL names
+    // that match their character, and Source Sans 3 supports them
+    // all.
+    for (name, expected_char) in [("A", 'A'), ("Z", 'Z'), ("a", 'a'), ("z", 'z')] {
+        let gid_via_agl = f
+            .glyph_id_from_agl_name(name)
+            .unwrap_or_else(|| panic!("AGL→GID failed for {name}"));
+        let gid_via_cmap = f.glyph_index(expected_char).unwrap();
+        assert_eq!(
+            gid_via_agl, gid_via_cmap,
+            "AGL gid for {name} ({gid_via_agl}) != cmap gid ({gid_via_cmap})"
+        );
+        // Reverse: AGL name for the glyph (Source Sans 3 CFF charset
+        // stores the same PostScript names verbatim).
+        let back = f.agl_glyph_name(gid_via_agl).expect("agl_glyph_name");
+        assert_eq!(back, name);
+    }
+}
+
+#[test]
+fn agl_glyph_name_prefers_cff_charset() {
+    // Source Sans 3 is a CFF1 font, so `agl_glyph_name` must surface
+    // the CFF charset → Strings name (the font's authored
+    // PostScript name) for every glyph in range, not the AGL
+    // fallback.
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    for ch in "ABCabc012".chars() {
+        let gid = f.glyph_index(ch).unwrap();
+        let cff_name = f.glyph_name(gid).unwrap();
+        let agl_name = f.agl_glyph_name(gid).unwrap();
+        assert_eq!(
+            cff_name, agl_name,
+            "agl_glyph_name must prefer CFF charset over AGL fallback for {ch}"
+        );
+    }
+}
+
+#[test]
+fn agl_lookup_missing_name_returns_none() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    // A name that's not in the AGL must surface None at the
+    // glyph_id_from_agl_name path (no codepoint to translate).
+    assert!(f.glyph_id_from_agl_name("not_a_real_glyph_xyz").is_none());
+    // AGL names that exist but aren't encoded in the font's cmap
+    // also surface None. CJK ideograph names in AGL aren't covered
+    // by Source Sans 3.
+    assert!(f.glyph_id_from_agl_name("ahiragana").is_none());
+}
+
+#[test]
+fn agl_glyph_name_for_out_of_range_glyph_is_none() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let max = f.glyph_count();
+    assert_eq!(f.agl_glyph_name(max), None);
+    assert_eq!(f.agl_glyph_name(u16::MAX), None);
+}

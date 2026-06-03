@@ -478,24 +478,15 @@ impl<'a> Strings<'a> {
     }
 }
 
-/// Map a glyph-name string to the unicode codepoint it represents,
-/// using the well-known Adobe Glyph List subset that covers the
-/// first ~250 entries of the standard strings table.
+/// Map a PostScript glyph-name string to the Unicode scalar value it
+/// represents, via the Adobe Glyph List (AGL 2.0). The full 4281-entry
+/// table now ships verbatim in `crate::agl`; this thin wrapper exists
+/// so the legacy [`crate::cff::encoding`] resolver doesn't need to
+/// reach across modules for a one-call lookup.
 ///
-/// We carry only the entries needed for legacy Encoding lookup; the
-/// full AGL is too large to ship here without crossing into "external
-/// lookup table" territory and serves no purpose for round 1 (the
-/// real `cmap` table in the sfnt directory always wins). Returns
-/// `None` for unrecognised names.
-pub(crate) fn glyph_name_to_codepoint(_name: &str) -> Option<u32> {
-    // round-2 / blocked: this mapping is in the Adobe Glyph List
-    // (`AGL`) document. We don't need it for round 1 because every
-    // OpenType-CFF font carries a sfnt `cmap` table that supplies
-    // the correct codepoint→GID mapping, and that's what the public
-    // `Font::glyph_index` uses. The stub is here so `encoding.rs`
-    // compiles cleanly and round-2 can wire the table without an API
-    // break.
-    None
+/// Returns `None` for names absent from AGL.
+pub(crate) fn glyph_name_to_codepoint(name: &str) -> Option<u32> {
+    crate::agl::name_to_codepoint(name).map(|c| c as u32)
 }
 
 #[cfg(test)]

@@ -27,6 +27,7 @@
 #![deny(missing_debug_implementations)]
 #![warn(rust_2018_idioms)]
 
+pub mod agl;
 pub mod cff;
 pub mod cff2;
 pub mod outline;
@@ -1147,5 +1148,87 @@ impl<'a> Font<'a> {
     /// legacy PostScript `UniqueID` integer).
     pub fn unique_font_id(&self) -> Option<&str> {
         self.name.get(NameId::UniqueId)
+    }
+
+    // ---- Adobe Glyph List (AGL) integration ------------------------------
+
+    /// Resolve a PostScript glyph name to a glyph id by routing through
+    /// the **Adobe Glyph List (AGL 2.0)** name → Unicode codepoint
+    /// table (`crate::agl`) and then through the font's own `cmap`.
+    ///
+    /// This is the right tool when callers have a PostScript glyph
+    /// name in hand (e.g. parsed from a PDF content stream, or from a
+    /// `post`-format-2.0 Pascal-string entry) and need to map back to
+    /// a glyph id without first decoding the name into a Unicode
+    /// scalar.
+    ///
+    /// Two-step semantics:
+    ///
+    /// 1. Look up `name` in AGL via [`crate::agl::name_to_codepoint`].
+    ///    `None` if the name isn't in AGL.
+    /// 2. Map that codepoint to a glyph id via the font's `cmap`. `None`
+    ///    if the font doesn't encode that codepoint.
+    ///
+    /// The AGL Specification's §6 component-name decomposition
+    /// (`f_f_i` → `ffi`, `uniXXXX` → `U+XXXX`) is **not** applied —
+    /// the AGL spec document itself is not staged under
+    /// `docs/text/opentype/`. Callers that need the §6 algorithm can
+    /// implement it in their own code on top of this exact-match
+    /// lookup.
+    pub fn glyph_id_from_agl_name(&self, name: &str) -> Option<u16> {
+        let cp = agl::name_to_codepoint(name)?;
+        self.glyph_index(cp)
+    }
+
+    /// Canonical Adobe Glyph List name for `glyph_id`, if any.
+    ///
+    /// Resolution order, mirroring "use the font's own knowledge
+    /// first, then fall back to the standard":
+    ///
+    /// 1. The CFF charset → Strings name (the same lookup as
+    ///    [`Font::glyph_name`]). For CFF1 fonts this surfaces the
+    ///    font's authored PostScript name regardless of whether it
+    ///    happens to be an AGL entry. Always `None` for CFF2 fonts
+    ///    (CFF2 has no Charset / Strings).
+    /// 2. The `post` table version-2.0 Pascal-string tail (the same
+    ///    lookup as [`Font::post_glyph_name`]); decoded as UTF-8 and
+    ///    returned only when the on-disk bytes are valid UTF-8.
+    /// 3. The AGL reverse-lookup table — if the glyph is reachable
+    ///    from a `cmap` entry, the AGL name of that codepoint.
+    ///
+    /// `None` only when none of the three sources have a name for
+    /// this glyph.
+    pub fn agl_glyph_name(&self, glyph_id: u16) -> Option<&str> {
+        if glyph_id >= self.maxp.num_glyphs {
+            return None;
+        }
+        // 1. CFF charset → Strings.
+        if let Some(name) = self.glyph_name(glyph_id) {
+            return Some(name);
+        }
+        // 2. post-format-2.0 Pascal-string tail (UTF-8-clean only).
+        if let Some(bytes) = self.post_glyph_name(glyph_id) {
+            if let Ok(s) = std::str::from_utf8(bytes) {
+                return Some(s);
+            }
+        }
+        // 3. AGL reverse lookup keyed on the glyph's `cmap`
+        //    codepoint. The CmapTable doesn't expose a reverse
+        //    iterator, so we walk the BMP only — the AGL itself is
+        //    BMP-only (no astral entries), so any astral glyph would
+        //    never match anyway.
+        for cp in 0u32..0x1_0000 {
+            if let Some(c) = char::from_u32(cp) {
+                if self.cmap.lookup(cp) == Some(glyph_id) {
+                    if let Some(name) = agl::codepoint_to_name(c) {
+                        return Some(name);
+                    }
+                    // Found the codepoint but it's not in AGL; keep
+                    // scanning in case another encoded codepoint maps
+                    // to the same glyph and *is* in AGL.
+                }
+            }
+        }
+        None
     }
 }

@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Adobe Glyph List (AGL 2.0) name ↔ codepoint mapping**, source
+  `docs/text/opentype/spec/agl-glyphlist.txt` (file format
+  documented in `docs/text/opentype/spec/agl-aglfn-README.md`).
+  Round 217 ships the table verbatim under `data/agl-glyphlist.txt`
+  and exposes it through a new `agl` module:
+  - `agl::name_to_codepoints(name) -> Option<Codepoints<'static>>`
+    surfaces every AGL 2.0 entry — `Codepoints::Single(char)` for
+    the 4200 single-codepoint entries, `Codepoints::Sequence(&[char])`
+    for the 81 multi-codepoint entries (most are Hebrew base + vowel
+    pointing combinations such as `dalethatafpatah → [U+05D3,
+    U+05B2]`).
+  - `agl::name_to_codepoint` is the common-case helper that returns
+    `Some` only for single-codepoint entries.
+  - `agl::codepoint_to_name(cp) -> Option<&'static str>` is the
+    reverse lookup, keyed on a single Unicode scalar value. When
+    multiple AGL aliases share a codepoint (e.g. ~17 Hebrew names
+    aliasing U+05B8), the alphabetically-first name in AGL's on-disk
+    order is returned.
+  - `agl::entries`, `agl::entry_count` (= 4281), and
+    `agl::distinct_codepoint_count` (= 3680) round out the
+    introspection surface.
+  - The AGL Specification §6 component-name decomposition algorithm
+    (`f_f_i`, `uniXXXX`, `uXXXXX`) is **not** implemented because
+    the AGL Specification document itself is not staged under
+    `docs/text/opentype/`; only the raw table is. The current API
+    accommodates a future §6 layer without changes.
+- **`Font::glyph_id_from_agl_name(name) -> Option<u16>`** routes a
+  PostScript glyph name through AGL then through the font's `cmap`,
+  giving callers a one-call name → glyph-id resolver.
+- **`Font::agl_glyph_name(gid) -> Option<&str>`** returns a canonical
+  glyph name, preferring the font's authored CFF charset → Strings
+  name; falling back to the `post` table version-2.0 Pascal-string
+  tail (UTF-8-clean); finally falling back to the AGL reverse-lookup
+  table keyed on whichever BMP codepoint the font's `cmap` routes to
+  this glyph. CFF2 / TrueType-outline fonts now have a path to a
+  PostScript name without a per-glyph CFF Strings table.
+
 - **CFF2 (Compact Font Format Version 2) metadata parser**, spec
   `docs/text/opentype/otspec-cff2.html`. Round 211 lifts the
   blanket `Error::Cff2NotImplemented` rejection at parse time —
@@ -207,6 +244,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Basic-Latin and Latin-1 bits set, typo / win metrics
     mutually consistent, `usBreakChar = 0x0020`, no v5 optical-size
     tail.
+
+### Changed
+
+- `cff::strings::glyph_name_to_codepoint` — a `None`-returning stub
+  since round 1 — now delegates to `agl::name_to_codepoint`. The
+  legacy Standard-Encoding fallback hook in `cff::encoding` is
+  therefore functional for the first time. No public API change.
 
 ## [0.1.2](https://github.com/OxideAV/oxideav-otf/compare/v0.1.1...v0.1.2) - 2026-05-29
 
