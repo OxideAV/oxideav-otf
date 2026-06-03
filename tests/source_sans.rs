@@ -777,3 +777,104 @@ fn gdef_coverage_index_is_dense_when_set() {
     let a_gid = f.glyph_index('A').unwrap();
     assert_eq!(cd.class_of(a_gid), 1);
 }
+
+#[test]
+fn gsub_header_and_lookup_count() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gsub().expect("Source Sans 3 carries a GSUB table");
+    // Source Sans 3's GSUB table is version 1.0 (no FeatureVariations).
+    assert_eq!(g.version(), (1, 0));
+    assert!(!g.has_feature_variations());
+    assert_eq!(g.feature_variations_offset(), 0);
+    // Sanity: at least one script, one feature, one lookup.
+    assert!(g.script_count() >= 1);
+    assert!(g.feature_count() >= 1);
+    assert!(g.lookup_count() >= 1);
+}
+
+#[test]
+fn gsub_default_script_resolves() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gsub().unwrap();
+    let scripts = g.script_list().unwrap();
+    // Every shaper expects a DFLT script to exist for fallback.
+    let mut found_dflt = false;
+    let mut found_latn = false;
+    for (tag, _) in scripts.iter() {
+        if &tag == b"DFLT" {
+            found_dflt = true;
+        }
+        if &tag == b"latn" {
+            found_latn = true;
+        }
+    }
+    assert!(found_dflt, "Source Sans 3 should ship a DFLT script");
+    assert!(found_latn, "Source Sans 3 should ship a latn script");
+
+    let dflt = g.find_script(b"DFLT").unwrap();
+    assert!(dflt.has_default_lang_sys());
+    let default_lang = dflt.default_lang_sys().unwrap().unwrap();
+    // Every well-formed font hooks at least one feature off DFLT/dflt.
+    assert!(default_lang.feature_count() >= 1);
+}
+
+#[test]
+fn gsub_features_are_tagged() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gsub().unwrap();
+    let feats = g.feature_list().unwrap();
+    // Walk the whole list and confirm every record yields a 4-byte
+    // tag that maps to a parseable Feature record.
+    for (tag, feat_res) in feats.iter() {
+        let feat = feat_res.expect("FeatureList record must parse");
+        let _ = tag;
+        // Every feature points at one or more lookups; an empty
+        // Feature is legal but unusual.
+        for idx in feat.lookup_indices() {
+            assert!(idx < g.lookup_count());
+        }
+    }
+}
+
+#[test]
+fn gpos_header_and_lookups_walk() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gpos().expect("Source Sans 3 carries a GPOS table");
+    assert_eq!(g.version(), (1, 0));
+    assert!(!g.has_feature_variations());
+
+    // Source Sans 3 ships several latn-tagged features, including
+    // kern. We don't hardcode counts (vendor adjustments happen
+    // across releases) but every lookup must parse cleanly.
+    let lookups = g.lookup_list().unwrap();
+    assert!(lookups.count() >= 1);
+    for (i, l_res) in lookups.iter().enumerate() {
+        let l = l_res.unwrap_or_else(|e| panic!("GPOS lookup {i} parse error: {e:?}"));
+        // GPOS lookup types are 1..=9 per the spec; an unknown type
+        // here would point at our parser, not the font.
+        let t = l.lookup_type();
+        assert!((1..=9).contains(&t), "lookup {i} has unknown type {t}");
+        // markFilteringSet presence agrees with the flag bit.
+        let want = l.flag().use_mark_filtering_set();
+        assert_eq!(l.mark_filtering_set().is_some(), want);
+    }
+}
+
+#[test]
+fn gpos_finds_latin_script() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gpos().unwrap();
+    let latn = g.find_script(b"latn").expect("latn script in GPOS");
+    assert!(latn.has_default_lang_sys());
+    let default_lang = latn.default_lang_sys().unwrap().unwrap();
+    assert!(default_lang.feature_count() >= 1);
+    // No required feature is set on Source Sans 3's latn/dflt.
+    assert!(default_lang.required_feature_index().is_none());
+}
+
+#[test]
+fn layout_table_version_accessors() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    assert_eq!(f.gsub_version(), Some((1, 0)));
+    assert_eq!(f.gpos_version(), Some((1, 0)));
+}

@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`GSUB` and `GPOS` table headers parsed**, with the shared
+  `ScriptList` / `Script` / `LangSys` / `FeatureList` / `Feature` /
+  `LookupList` / `Lookup` / `LookupFlag` common-layout primitives.
+  Sources: `docs/text/opentype/otspec-gsub.html`,
+  `docs/text/opentype/otspec-gpos.html`, and
+  `docs/text/opentype/otspec-chapter2-common-layout-tables.html`.
+  Round 229 ships a new `tables::layout` module with the chapter-2
+  primitives and `tables::gsub` / `tables::gpos` modules with the
+  per-table header decoders. Both v1.0 (10-byte) and v1.1 (14-byte
+  with `featureVariationsOffset`) headers are recognised; unknown
+  versions and truncated v1.1 trailers are rejected with
+  `Error::BadStructure` / `Error::UnexpectedEof`. The
+  `LookupFlag` wrapper exposes the spec's bit vocabulary
+  (`RIGHT_TO_LEFT`, `IGNORE_BASE_GLYPHS`, `IGNORE_LIGATURES`,
+  `IGNORE_MARKS`, `USE_MARK_FILTERING_SET`, and the
+  `MARK_ATTACHMENT_CLASS_FILTER` high-byte mask) with named
+  boolean accessors. `Lookup` parses the conditionally-present
+  `markFilteringSet` field (decoded iff
+  `USE_MARK_FILTERING_SET` is set, per the spec's variable-length
+  Lookup rule); per-subtable raw byte slices are exposed via
+  `Lookup::subtable_bytes(i)` for downstream subtable-format work.
+  New on `Font`: `gsub()`, `gsub_version()`, `gpos()`,
+  `gpos_version()`. The view types are re-exported as `GsubView` /
+  `GposView`; the chapter-2 primitives (`ScriptList`,
+  `ScriptListIter`, `Script`, `LangSys`, `NO_REQUIRED_FEATURE`,
+  `FeatureList`, `FeatureListIter`, `Feature`, `LookupList`,
+  `LookupListIter`, `Lookup`, `LookupFlag`) are re-exported at
+  the crate root. The per-lookup substitution / positioning
+  subtable formats (GSUB lookup types 1–8, GPOS lookup types 1–9)
+  themselves are surfaced only as raw byte slices; decoding their
+  interiors (ligature sets, ValueRecords, Anchors, MarkArrays, …)
+  is deferred to a future round, as are the FeatureVariations and
+  feature-parameter (`'cv01'–'cv99'` / `'ss01'–'ss20'` / `'size'`)
+  table formats.
 - **`GDEF` Glyph Definition Table parsed**, source
   `docs/text/opentype/otspec-gdef.html` with the shared `Coverage` /
   `ClassDef` formats pulled from

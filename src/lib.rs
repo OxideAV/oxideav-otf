@@ -15,7 +15,9 @@
 //!   enforcement; we anti-alias at >= 16 px), and subroutine
 //!   resolution with the well-known 107 / 1131 / 32768 bias formula.
 //! - Selected sfnt tables for metadata (`head`, `hhea`, `maxp`,
-//!   `hmtx`, `cmap` formats 0/4/6/12, `name`, `post`, `OS/2`).
+//!   `hmtx`, `cmap` formats 0/4/6/12, `name`, `post`, `OS/2`,
+//!   `GDEF`, and the `GSUB` / `GPOS` headers with their
+//!   `ScriptList` / `FeatureList` / `LookupList` walks).
 //!
 //! The crate is read-only (parsing-only) and dependency-light: only
 //! `oxideav-core` for shared types. CFF2 charstring decoding (with
@@ -41,13 +43,20 @@ pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
 use crate::cff::Cff;
 use crate::parser::TableDirectory;
 use crate::tables::{
-    cmap::CmapTable, gdef::GdefTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable,
-    maxp::MaxpTable, name::NameTable, os2::Os2Table, post::PostTable,
+    cmap::CmapTable, gdef::GdefTable, gpos::GposTable, gsub::GsubTable, head::HeadTable,
+    hhea::HheaTable, hmtx::HmtxTable, maxp::MaxpTable, name::NameTable, os2::Os2Table,
+    post::PostTable,
 };
 
 pub use crate::tables::gdef::{
     AttachList, AttachPoint, CaretValue, ClassDef, Coverage, CoverageIter, GlyphClass,
     LigCaretList, LigGlyph, MarkGlyphSets,
+};
+pub use crate::tables::gpos::GposTable as GposView;
+pub use crate::tables::gsub::GsubTable as GsubView;
+pub use crate::tables::layout::{
+    Feature, FeatureList, FeatureListIter, LangSys, Lookup, LookupFlag, LookupList, LookupListIter,
+    Script, ScriptList, ScriptListIter, NO_REQUIRED_FEATURE,
 };
 pub use crate::tables::name::{NameId, NameRecord};
 pub use crate::tables::os2::{
@@ -214,6 +223,16 @@ pub struct Font<'a> {
     /// MarkAttachClassDef and MarkGlyphSets sub-tables that GSUB and
     /// GPOS shaping consult.
     gdef: Option<GdefTable<'a>>,
+    /// `GSUB` — Glyph Substitution Table header view. Optional
+    /// (a font that performs no glyph substitution omits the table).
+    /// When present, surfaces the ScriptList / FeatureList /
+    /// LookupList shape; per-lookup subtable decoding is deferred to a
+    /// future round.
+    gsub: Option<GsubTable<'a>>,
+    /// `GPOS` — Glyph Positioning Table header view. Optional. Same
+    /// header shape as `GSUB`; per-lookup positioning-subtable
+    /// decoding is deferred.
+    gpos: Option<GposTable<'a>>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -286,6 +305,18 @@ impl<'a> Font<'a> {
             None => None,
         };
 
+        // `GSUB` and `GPOS` are both optional in OpenType: a
+        // glyph-only font with neither substitution nor positioning
+        // rules omits both.
+        let gsub = match dir.find(b"GSUB", bytes) {
+            Some(slice) => Some(GsubTable::parse(slice)?),
+            None => None,
+        };
+        let gpos = match dir.find(b"GPOS", bytes) {
+            Some(slice) => Some(GposTable::parse(slice)?),
+            None => None,
+        };
+
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
             CffFlavour::Cff2(Box::new(Cff2::parse(cff2_bytes)?))
@@ -306,6 +337,8 @@ impl<'a> Font<'a> {
             post,
             os2,
             gdef,
+            gsub,
+            gpos,
             cff,
         })
     }
@@ -1085,6 +1118,47 @@ impl<'a> Font<'a> {
             .as_ref()
             .map(|g| g.mark_attach_class(glyph_id))
             .unwrap_or(0)
+    }
+
+    // ---- `GSUB` / `GPOS` layout tables ------------------------------------
+
+    /// Borrow the parsed `GSUB` (Glyph Substitution Table) view, if
+    /// present.
+    ///
+    /// GSUB is optional per the OpenType spec — a font that performs
+    /// no glyph substitution legitimately omits it. The view surfaces
+    /// the header (`majorVersion` + `minorVersion` +
+    /// `featureVariationsOffset`) and `ScriptList` / `FeatureList` /
+    /// `LookupList` walks. Decoding the per-lookup substitution
+    /// subtable formats (GsubLookupType 1–8) is deferred to a future
+    /// round.
+    pub fn gsub(&self) -> Option<&GsubTable<'a>> {
+        self.gsub.as_ref()
+    }
+
+    /// `GSUB` `(majorVersion, minorVersion)`, if the table is present.
+    pub fn gsub_version(&self) -> Option<(u16, u16)> {
+        self.gsub.as_ref().map(GsubTable::version)
+    }
+
+    /// Borrow the parsed `GPOS` (Glyph Positioning Table) view, if
+    /// present.
+    ///
+    /// GPOS is optional per the OpenType spec — a font with no
+    /// kerning or other positioning lookups legitimately omits it.
+    /// The view surfaces the header and `ScriptList` / `FeatureList`
+    /// / `LookupList` walks. Decoding the per-lookup positioning
+    /// subtable formats (GposLookupType 1–9: SinglePos, PairPos,
+    /// CursivePos, MarkBasePos, MarkLigPos, MarkMarkPos,
+    /// ContextPos, ChainContextPos, Extension) is deferred to a
+    /// future round.
+    pub fn gpos(&self) -> Option<&GposTable<'a>> {
+        self.gpos.as_ref()
+    }
+
+    /// `GPOS` `(majorVersion, minorVersion)`, if the table is present.
+    pub fn gpos_version(&self) -> Option<(u16, u16)> {
+        self.gpos.as_ref().map(GposTable::version)
     }
 
     // ---- `name` table -----------------------------------------------------

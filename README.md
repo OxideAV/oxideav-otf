@@ -150,6 +150,31 @@ let _ = font.gdef_version();        // Some((1, 0)) on Source Sans 3
 let _ = font.glyph_class(gid);      // Some(GlyphClass::Base | …) / None
 let _ = font.mark_attach_class(gid); // mark-attach class number; 0 = unclassified
 
+// GSUB / GPOS — header views (optional; both None for fonts without
+// substitution or positioning rules).
+let _ = font.gsub();                // Option<&GsubTable>
+let _ = font.gsub_version();        // Some((1, 0)) on Source Sans 3
+let _ = font.gpos();                // Option<&GposTable>
+let _ = font.gpos_version();        // Some((1, 0)) on Source Sans 3
+if let Some(g) = font.gsub() {
+    let scripts = g.script_list()?;
+    let dflt = g.find_script(b"DFLT");
+    let _ = g.feature_count();      // number of FeatureRecords
+    let _ = g.lookup_count();
+    let _ = scripts;
+    let _ = dflt;
+    for (tag, feat) in g.feature_list()?.iter() {
+        // tag = b"liga" / b"kern" / b"calt" / …
+        let _ = (tag, feat);
+    }
+    for lookup in g.lookup_list()?.iter() {
+        let l = lookup?;
+        let _ = l.lookup_type();    // 1..=8 for GSUB, 1..=9 for GPOS
+        let _ = l.flag().ignore_marks();
+        let _ = l.mark_filtering_set();
+    }
+}
+
 for contour in &outline.contours {
     for seg in &contour.segments {
         // CubicSegment::MoveTo / LineTo / CurveTo / ClosePath
@@ -157,6 +182,108 @@ for contour in &outline.contours {
     }
 }
 ```
+
+## Round-229 additions (this push)
+
+The OpenType **`GSUB` and `GPOS` headers** are now parsed and
+surfaced on the public `Font` API, together with the shared chapter-2
+common-layout primitives: `ScriptList`, `Script`, `LangSys`,
+`FeatureList`, `Feature`, `LookupList`, `Lookup`, and `LookupFlag`.
+Spec: `docs/text/opentype/otspec-gsub.html` and
+`docs/text/opentype/otspec-gpos.html` (headers); the inner
+ScriptList / FeatureList / LookupList / Lookup / LookupFlag formats
+are pulled from
+`docs/text/opentype/otspec-chapter2-common-layout-tables.html`.
+Before this push the GSUB / GPOS tables were reachable only as raw
+bytes via `Font::table_data(b"GSUB")` / `b"GPOS"`; the round-222
+`GDEF` work landed the per-glyph metadata side of the shaper plumbing
+but the per-feature / per-lookup half stayed opaque.
+
+- **Both header versions decoded.** Version 1.0 (10 bytes,
+  `majorVersion` + `minorVersion` + `scriptListOffset` +
+  `featureListOffset` + `lookupListOffset`); version 1.1 (14 bytes,
+  adds an `Offset32 featureVariationsOffset`). Unknown versions and
+  truncation at the v1.1 trailer are rejected
+  (`Error::BadStructure` and `Error::UnexpectedEof` respectively).
+  Out-of-range header offsets are rejected at parse time.
+- **`ScriptList`** decodes `scriptCount` plus the
+  `scriptRecords[scriptCount]` (`(Tag[4], Offset16)`) array. The
+  records are spec-sorted alphabetically by tag, so
+  `find(tag)` binary-searches in `O(log n)`; `iter()` walks the
+  list in on-disk order.
+- **`Script`** decodes `defaultLangSysOffset` plus the
+  `langSysRecords[langSysCount]` array, with binary-search
+  `find_lang_sys(tag)` and a `default_lang_sys()` accessor for the
+  common-case fallback.
+- **`LangSys`** decodes the spec's three core fields:
+  `lookupOrderOffset` (reserved — must be NULL),
+  `requiredFeatureIndex` (with `NO_REQUIRED_FEATURE = 0xFFFF`
+  surfaced as `None`), and the `featureIndices[featureIndexCount]`
+  array that points at the parent FeatureList. Iteration is
+  zero-copy.
+- **`FeatureList`** decodes `featureCount` + `featureRecords[]`;
+  `tag(i)` and `feature(i)` walk the array. The spec wording is
+  "should be sorted by tag" rather than "must" (because a tag may
+  legally appear more than once for distinct scripts / language
+  systems), so look-up is linear via `iter()` rather than binary
+  search.
+- **`Feature`** decodes `featureParamsOffset` (surfaced as a raw
+  `u16`; the `'cv01'–'cv99'` / `'ss01'–'ss20'` / `'size'`
+  parameter formats are deferred) plus
+  `lookupListIndices[lookupIndexCount]` — the indices into the
+  parent LookupList that implement the feature.
+- **`LookupList`** decodes `lookupCount` + `lookupOffsets[]`;
+  `lookup(i)` parses the `Lookup` at the indexed offset and
+  `iter()` walks every lookup in on-disk order.
+- **`Lookup`** decodes `lookupType` + `lookupFlag` +
+  `subTableCount` + `subtableOffsets[]`, plus the conditionally
+  present `markFilteringSet` field (decoded iff
+  `LookupFlag::USE_MARK_FILTERING_SET` is set, per the spec's
+  variable-length Lookup rule). Per-subtable raw byte slices are
+  exposed via `Lookup::subtable_bytes(i)`; the per-lookup-type
+  subtable formats (GSUB types 1–8, GPOS types 1–9) are surfaced as
+  raw bytes only, with decoding deferred to a future round.
+- **`LookupFlag`** wraps the 16-bit flag word with the spec's bit
+  vocabulary: `RIGHT_TO_LEFT` (`0x0001`, cursive-attachment-only),
+  `IGNORE_BASE_GLYPHS` (`0x0002`), `IGNORE_LIGATURES` (`0x0004`),
+  `IGNORE_MARKS` (`0x0008`), `USE_MARK_FILTERING_SET` (`0x0010`),
+  and the high-byte `MARK_ATTACHMENT_CLASS_FILTER` mask (`0xFF00`).
+  Each flag has a boolean accessor; the high byte is also exposed
+  as `mark_attachment_type() -> u8`. The reserved-zero bits
+  (`0x00E0`) are ignored on read, per the spec's "set to zero".
+- **`Font` integration.** `Font::gsub()` and `Font::gpos()` borrow
+  the parsed views; `Font::gsub_version()` and
+  `Font::gpos_version()` return the header version pair without
+  going through the full view. Absence of either table surfaces as
+  `None` rather than rejecting the whole font (a glyph-only font
+  with no substitution or positioning rules can legitimately omit
+  both).
+
+Re-exported at the crate root: `ScriptList`, `ScriptListIter`,
+`Script`, `LangSys`, `NO_REQUIRED_FEATURE`, `FeatureList`,
+`FeatureListIter`, `Feature`, `LookupList`, `LookupListIter`,
+`Lookup`, `LookupFlag`. The GSUB / GPOS view types are also
+re-exported as `GsubView` / `GposView` so callers that want a
+top-level alias do not have to dive into `oxideav_otf::tables`.
+
+Twelve new unit tests in `src/tables/layout.rs`,
+`src/tables/gsub.rs`, and `src/tables/gpos.rs` cover header round
+trips for both v1.0 and v1.1, rejection of unknown major / minor
+versions, rejection of truncated trailers, the `LookupFlag` bit
+helpers across the full mask space, a synthetic ScriptList +
+Script + LangSys + FeatureList + Feature + LookupList + Lookup
+byte tower, a minimal `GSUB` `liga` byte tower, a minimal `GPOS`
+`kern` byte tower, and rejection of the
+`USE_MARK_FILTERING_SET`-with-missing-trailer-word edge case. Six
+new integration tests in `tests/source_sans.rs` exercise the
+real-font path against Source Sans 3: the GSUB header parses as
+v1.0 with no feature variations, the GSUB ScriptList exposes both
+`DFLT` and `latn`, every parsed Feature record yields lookup-list
+indices within the lookup count, the GPOS header parses as v1.0,
+every GPOS lookup has a type in the spec's `1..=9` range with a
+self-consistent `markFilteringSet` presence, and the `latn` GPOS
+script resolves through to a default-LangSys with at least one
+feature index but no required feature.
 
 ## Round-222 additions (this push)
 
