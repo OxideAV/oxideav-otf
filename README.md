@@ -143,6 +143,13 @@ let _ = font.default_char();
 let _ = font.break_char();          // conventionally Some(0x20)
 let _ = font.max_context();         // GSUB/GPOS max context length
 
+// GDEF — Glyph Definition Table (optional; None for fonts without
+// GSUB / GPOS layout lookups).
+let _ = font.gdef();                // Option<&GdefTable>
+let _ = font.gdef_version();        // Some((1, 0)) on Source Sans 3
+let _ = font.glyph_class(gid);      // Some(GlyphClass::Base | …) / None
+let _ = font.mark_attach_class(gid); // mark-attach class number; 0 = unclassified
+
 for contour in &outline.contours {
     for seg in &contour.segments {
         // CubicSegment::MoveTo / LineTo / CurveTo / ClosePath
@@ -151,7 +158,107 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-217 additions (this push)
+## Round-222 additions (this push)
+
+The OpenType **`GDEF` Glyph Definition Table** is now parsed and
+surfaced on the public `Font` API, along with the shared
+**Coverage** and **ClassDef** common-layout primitives. Spec:
+Microsoft / ISO/IEC 14496-22 `GDEF`
+(`docs/text/opentype/otspec-gdef.html`) with the Coverage / ClassDef
+formats pulled from
+`docs/text/opentype/otspec-chapter2-common-layout-tables.html`.
+Before this push the table was reachable only as raw bytes through
+`Font::table_data(b"GDEF")`; GSUB / GPOS shaping (a future-round
+target) could not consult `LookupFlag.ignoreMarks` /
+`ignoreLigatures` / `markAttachmentType` / `useMarkFilteringSet`
+without it.
+
+- **All three header versions decoded.** Version 1.0 (12 bytes,
+  `GlyphClassDef` + `AttachList` + `LigCaretList` +
+  `MarkAttachClassDef`); version 1.2 (14 bytes, adds
+  `MarkGlyphSetsDef`); version 1.3 (18 bytes, adds a `uint32`
+  `itemVarStoreOffset`). The spec-undefined `minorVersion = 1` is
+  rejected with `Error::BadStructure`; truncation at the v1.2 / v1.3
+  trailers surfaces as `Error::UnexpectedEof`.
+- **GlyphClassDef** routes through the generic [`ClassDef`] parser
+  and returns the spec's four-class enumeration: `1 = Base`,
+  `2 = Ligature`, `3 = Mark`, `4 = Component`. Glyphs not covered by
+  the on-disk records implicitly belong to class 0 and surface as
+  `None` from `Font::glyph_class(gid)`.
+- **AttachList** decodes the `coverageOffset` + `glyphCount` +
+  `attachPointOffsets[glyphCount]` header; per-glyph `AttachPoint`
+  records expose the contour-point index array with `len()` /
+  `get(i)` / `iter()`. Walked from a glyph ID via the embedded
+  Coverage table.
+- **LigCaretList** decodes the same Coverage-keyed shape plus the
+  three `CaretValueFormat` variants: format 1 (`coordinate: i16` in
+  design units), format 2 (`contourPointIndex: u16`), and format 3
+  (`coordinate: i16` plus a `deviceOffset: u16` to a Device or
+  VariationIndex table — the offset itself is surfaced raw; Device /
+  VariationIndex decoding is deferred). `LigGlyph::caret_count()` /
+  `caret_value(i)` walk the records in spec-sorted increasing-
+  coordinate order.
+- **MarkAttachClassDef** is the same `ClassDef` shape as
+  `GlyphClassDef`; `Font::mark_attach_class(gid)` returns the class
+  number (`0` for unclassified — the "unfiltered" semantics
+  `LookupFlag.markAttachmentType` uses).
+- **MarkGlyphSets** (v1.2+) decodes the `format = 1` + `setCount` +
+  `coverageOffsets[setCount]` table; the spec's "uses Offset32, not
+  Offset16" note for the offsets is honoured. `MarkGlyphSets::set(i)`
+  returns a [`Coverage`] view; `contains(i, glyph_id)` is the
+  per-glyph membership query that `LookupFlag.useMarkFilteringSet`
+  needs.
+- **ItemVariationStore** (v1.3+) is surfaced only as its raw
+  `itemVarStoreOffset` byte offset
+  (`GdefTable::item_var_store_offset()`). Decoding the store itself
+  (the variation-data adjustment-delta records) is deferred to the
+  same future round that lands variable-font CFF2 charstring
+  decoding.
+- **Coverage** common-layout table (chapter 2). Both spec formats
+  decoded: format 1 (sorted `glyphArray[]`) and format 2
+  (sorted `(start, end, startCoverageIndex)` ranges). Both
+  `index_of(glyph_id)` paths binary-search the sorted on-disk
+  records; format 2 then computes the dense Coverage Index using the
+  spec's `startCoverageIndex + g - startGlyphID` formula. `iter()`
+  walks every `(glyph_id, coverage_index)` pair in spec order;
+  `contains(glyph_id)` is the common-case shortcut.
+- **ClassDef** common-layout table (chapter 2). Format 1
+  (`startGlyphID` + dense `classValues[glyphCount]` array) and
+  format 2 (sorted `(start, end, class)` ranges) both decoded;
+  `class_of(glyph_id)` returns the assigned class number or `0` for
+  any glyph not covered (the spec's "implicit class 0" default).
+- **`Font` integration.** [`Font::gdef`] borrows the parsed table;
+  the lookup-free convenience routes [`Font::gdef_version`],
+  [`Font::glyph_class`], and [`Font::mark_attach_class`] cover the
+  common queries shapers actually run. Absence of the table surfaces
+  as `None` rather than rejecting the whole font (a font with no
+  GSUB / GPOS lookups can legitimately omit `GDEF`).
+
+Re-exported at the crate root: `Coverage`, `CoverageIter`,
+`ClassDef`, `GlyphClass`, `AttachList`, `AttachPoint`,
+`LigCaretList`, `LigGlyph`, `CaretValue`, `MarkGlyphSets`.
+
+Sixteen new unit tests in `src/tables/gdef.rs` cover Coverage
+format 1 + 2 round-trips (lookup + iter), Coverage rejection paths
+(unknown format, truncation), ClassDef format 1 default-zero outside
+the dense range, ClassDef format 2 with the spec's Example-2
+`GlyphClassDef` shape (one range per spec glyph class), ClassDef
+rejection paths, full v1.0 / v1.2 / v1.3 header round-trips,
+rejection of `majorVersion != 1` and the spec-undefined
+`minorVersion = 1`, truncation rejection at the v1.2 + v1.3
+trailers, the spec's Example-3 AttachList shape (two glyphs,
+1 + 2 attach points), a hand-built LigCaretList exercising all
+three `CaretValueFormat` variants, and the `GlyphClass::from_raw`
+round-trip across `0..=5` plus the `0xFFFF` defence. Two new
+integration tests in `tests/source_sans.rs` exercise the new
+accessors against the real Source Sans 3 fixture: the font ships a
+v1.0 GDEF with a format-2 GlyphClassDef + MarkAttachClassDef (no
+AttachList / LigCaretList), every ASCII letter classifies as
+`GlyphClass::Base`, every spec class is represented at least once
+across the full 1900-glyph repertoire, and a synthetic Coverage
+table round-trips through the public re-export.
+
+## Round-217 additions (earlier)
 
 The **Adobe Glyph List (AGL 2.0)** — the canonical PostScript
 glyph-name to Unicode-scalar-value mapping — is now shipped in-tree
@@ -925,12 +1032,15 @@ TN5177 §4.6):
   table and its `aglfn-README.md` companion are. Once the spec is
   staged, `agl::name_to_codepoints` can absorb the algorithm
   without an API change.
-- `GSUB`, `GPOS`, `GDEF`, `kern` tables — the Adobe CFF /
-  Type 2 / sfnt PDFs are now staged under `docs/text/opentype/spec/`
-  alongside the Microsoft per-table HTML snapshots
-  (`otspec-gsub.html` / `otspec-gpos.html` / `otspec-gdef.html`),
-  so future rounds can pick these up; round 187 took the `post`
-  table off this list and round 198 took the `OS/2` table off it.
+- `GSUB`, `GPOS`, `kern` tables — the Adobe CFF / Type 2 / sfnt
+  PDFs are now staged under `docs/text/opentype/spec/` alongside the
+  Microsoft per-table HTML snapshots (`otspec-gsub.html` /
+  `otspec-gpos.html`), so future rounds can pick these up; round 187
+  took the `post` table off this list, round 198 took the `OS/2`
+  table off it, and round 222 took the `GDEF` table off it.
+  `GDEF.itemVarStore` decoding (the variation-data delta store
+  shared with GPOS / JSTF) is still deferred; only the raw offset
+  is surfaced.
 - Format-1.0 / 2.0 / 2.5 glyph-name lookups in `post` (the
   standard-Macintosh 258-entry list referenced from
   `otspec-post.html`). The list lives in Apple's TrueType Reference

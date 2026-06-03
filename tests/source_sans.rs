@@ -7,7 +7,7 @@
 //! completes, metadata is sensible, and several common glyphs
 //! produce non-empty outlines with at least one cubic curve.
 
-use oxideav_otf::{CubicSegment, EmbeddingPermission, Font, NameId};
+use oxideav_otf::{CubicSegment, EmbeddingPermission, Font, GlyphClass, NameId};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/SourceSans3-Regular.otf");
 
@@ -686,4 +686,94 @@ fn agl_glyph_name_for_out_of_range_glyph_is_none() {
     let max = f.glyph_count();
     assert_eq!(f.agl_glyph_name(max), None);
     assert_eq!(f.agl_glyph_name(u16::MAX), None);
+}
+
+#[test]
+fn gdef_table_parses_and_classifies_glyphs() {
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let gdef = f.gdef().expect("Source Sans 3 ships a GDEF table");
+    // Source Sans 3 Regular emits a v1.0 GDEF.
+    assert_eq!(gdef.version(), (1, 0));
+    assert!(!gdef.has_mark_glyph_sets());
+    assert!(!gdef.has_item_var_store());
+
+    // The font ships a GlyphClassDef sub-table; AttachList and
+    // LigCaretList are absent (the v1.0 minor=0 header has all four
+    // optional Offset16 fields, but only GlyphClassDef and
+    // MarkAttachClassDef are populated in this font).
+    assert!(gdef.glyph_class_def().is_some());
+    assert!(gdef.attach_list().is_none());
+    assert!(gdef.lig_caret_list().is_none());
+    assert!(gdef.mark_attach_class_def().is_some());
+
+    // Every ASCII letter is a single-character spacing base glyph in
+    // any well-formed Latin font.
+    for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".chars() {
+        let gid = f
+            .glyph_index(ch)
+            .unwrap_or_else(|| panic!("missing {ch:?}"));
+        assert_eq!(
+            f.glyph_class(gid),
+            Some(GlyphClass::Base),
+            "expected Base for {ch:?} (gid {gid})"
+        );
+        // Mark-attach class is always 0 for base glyphs.
+        assert_eq!(f.mark_attach_class(gid), 0);
+    }
+
+    // Spec count guarantee: every glyph in the font surfaces a class
+    // value (either an assigned 1..=4 or the implicit 0). Walk the
+    // whole font and tally each class to confirm every spec class
+    // (Base / Ligature / Mark / Component) is represented at least
+    // once — Source Sans 3 carries Latin diacritics (Mark), `fi`-style
+    // ligatures (Ligature), and CFF seac component parts (Component).
+    let mut bases = 0u32;
+    let mut ligatures = 0u32;
+    let mut marks = 0u32;
+    let mut components = 0u32;
+    for gid in 0..f.glyph_count() {
+        match f.glyph_class(gid) {
+            Some(GlyphClass::Base) => bases += 1,
+            Some(GlyphClass::Ligature) => ligatures += 1,
+            Some(GlyphClass::Mark) => marks += 1,
+            Some(GlyphClass::Component) => components += 1,
+            None => {}
+        }
+    }
+    assert!(bases > 0, "expected at least one base glyph");
+    assert!(ligatures > 0, "expected at least one ligature glyph");
+    assert!(marks > 0, "expected at least one mark glyph");
+    assert!(components > 0, "expected at least one component glyph");
+}
+
+#[test]
+fn gdef_coverage_index_is_dense_when_set() {
+    use oxideav_otf::Coverage;
+
+    // Build a synthetic Coverage table and confirm the public API
+    // routes through the same parser the GDEF accessors use.
+    let mut raw = Vec::new();
+    raw.extend_from_slice(&1u16.to_be_bytes());
+    raw.extend_from_slice(&3u16.to_be_bytes());
+    raw.extend_from_slice(&5u16.to_be_bytes());
+    raw.extend_from_slice(&8u16.to_be_bytes());
+    raw.extend_from_slice(&13u16.to_be_bytes());
+    let cov = Coverage::parse(&raw).unwrap();
+    assert_eq!(cov.index_of(8), Some(1));
+    assert!(cov.contains(13));
+    assert!(!cov.contains(7));
+    let items: Vec<_> = cov.iter().collect();
+    assert_eq!(items, vec![(5, 0), (8, 1), (13, 2)]);
+
+    // And confirm the round-trip works on Source Sans 3's actual
+    // GlyphClassDef structure: the table is format 2 (range-encoded)
+    // and surfaces ASCII letters as class 1 (= Base).
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let cd = f.gdef().unwrap().glyph_class_def().unwrap();
+    assert_eq!(cd.format(), 2);
+    // The class number returned for any uncovered glyph is 0.
+    assert_eq!(cd.class_of(u16::MAX), 0);
+    // 'A' is covered and is class 1 (Base).
+    let a_gid = f.glyph_index('A').unwrap();
+    assert_eq!(cd.class_of(a_gid), 1);
 }

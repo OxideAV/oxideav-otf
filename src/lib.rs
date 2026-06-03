@@ -41,10 +41,14 @@ pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
 use crate::cff::Cff;
 use crate::parser::TableDirectory;
 use crate::tables::{
-    cmap::CmapTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable, maxp::MaxpTable,
-    name::NameTable, os2::Os2Table, post::PostTable,
+    cmap::CmapTable, gdef::GdefTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable,
+    maxp::MaxpTable, name::NameTable, os2::Os2Table, post::PostTable,
 };
 
+pub use crate::tables::gdef::{
+    AttachList, AttachPoint, CaretValue, ClassDef, Coverage, CoverageIter, GlyphClass,
+    LigCaretList, LigGlyph, MarkGlyphSets,
+};
 pub use crate::tables::name::{NameId, NameRecord};
 pub use crate::tables::os2::{
     EmbeddingPermission, FS_SELECTION_BOLD, FS_SELECTION_ITALIC, FS_SELECTION_NEGATIVE,
@@ -204,6 +208,12 @@ pub struct Font<'a> {
     /// fonts; absence surfaces as `None` rather than rejecting the
     /// whole font.
     os2: Option<Os2Table>,
+    /// `GDEF` — Glyph Definition Table. Optional per the OpenType
+    /// spec: a font without GSUB / GPOS lookups doesn't need it. When
+    /// present, surfaces per-glyph class data + ligature carets + the
+    /// MarkAttachClassDef and MarkGlyphSets sub-tables that GSUB and
+    /// GPOS shaping consult.
+    gdef: Option<GdefTable<'a>>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -269,6 +279,13 @@ impl<'a> Font<'a> {
             None => None,
         };
 
+        // `GDEF` is optional — a font without GSUB/GPOS lookups can
+        // legitimately omit it. Parse if present.
+        let gdef = match dir.find(b"GDEF", bytes) {
+            Some(slice) => Some(GdefTable::parse(slice)?),
+            None => None,
+        };
+
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
             CffFlavour::Cff2(Box::new(Cff2::parse(cff2_bytes)?))
@@ -288,6 +305,7 @@ impl<'a> Font<'a> {
             hmtx,
             post,
             os2,
+            gdef,
             cff,
         })
     }
@@ -1029,6 +1047,44 @@ impl<'a> Font<'a> {
     /// for any GSUB / GPOS lookup. `1` means single-glyph only.
     pub fn max_context(&self) -> Option<u16> {
         self.os2.as_ref().and_then(Os2Table::max_context)
+    }
+
+    // ---- `GDEF` table -----------------------------------------------------
+
+    /// Borrow the parsed `GDEF` table, if present.
+    ///
+    /// GDEF is optional per the OpenType spec — a font without any
+    /// GSUB / GPOS layout lookups can legitimately omit it, and many
+    /// stripped-down system fonts do. Absence surfaces as `None`
+    /// rather than rejecting the whole font.
+    pub fn gdef(&self) -> Option<&GdefTable<'a>> {
+        self.gdef.as_ref()
+    }
+
+    /// `GDEF` `(majorVersion, minorVersion)` pair (`(1, 0)`, `(1, 2)`,
+    /// or `(1, 3)`), if the table is present.
+    pub fn gdef_version(&self) -> Option<(u16, u16)> {
+        self.gdef.as_ref().map(GdefTable::version)
+    }
+
+    /// Spec [`GlyphClass`] for `glyph_id`, from `GDEF.GlyphClassDef`.
+    ///
+    /// `None` when `GDEF` is absent, the GlyphClassDef sub-table is
+    /// absent, or the glyph is unclassified (the spec's class-0 default
+    /// for any glyph not covered by the on-disk records).
+    pub fn glyph_class(&self, glyph_id: u16) -> Option<GlyphClass> {
+        self.gdef.as_ref().and_then(|g| g.glyph_class(glyph_id))
+    }
+
+    /// Mark-attachment class for `glyph_id`, from
+    /// `GDEF.MarkAttachClassDef`. Returns `0` if the table is absent,
+    /// the sub-table is absent, or the glyph is unclassified — the
+    /// "unfiltered" semantics `LookupFlag.markAttachmentType` uses.
+    pub fn mark_attach_class(&self, glyph_id: u16) -> u16 {
+        self.gdef
+            .as_ref()
+            .map(|g| g.mark_attach_class(glyph_id))
+            .unwrap_or(0)
     }
 
     // ---- `name` table -----------------------------------------------------

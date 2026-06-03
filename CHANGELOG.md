@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`GDEF` Glyph Definition Table parsed**, source
+  `docs/text/opentype/otspec-gdef.html` with the shared `Coverage` /
+  `ClassDef` formats pulled from
+  `docs/text/opentype/otspec-chapter2-common-layout-tables.html`.
+  Round 222 ships a new `tables::gdef` module with `GdefTable`,
+  `Coverage` (formats 1 + 2), `ClassDef` (formats 1 + 2), `AttachList`
+  / `AttachPoint`, `LigCaretList` / `LigGlyph` / `CaretValue` (formats
+  1 + 2 + 3), `MarkGlyphSets`, and a `GlyphClass` enum mapping the
+  spec's GlyphClassDef numbers (1 = Base, 2 = Ligature, 3 = Mark,
+  4 = Component). All three header versions are recognised — v1.0
+  (12 bytes), v1.2 (14 bytes, `markGlyphSetsDefOffset`), and v1.3
+  (18 bytes, `itemVarStoreOffset`); the ItemVariationStore itself is
+  surfaced only as its raw offset (variation-store decoding is
+  deferred). New on `Font`: `gdef()`, `gdef_version()`,
+  `glyph_class(gid)`, and `mark_attach_class(gid)`. All accessors
+  borrow zero-copy sub-slices against the original table bytes;
+  `Coverage::index_of` and `ClassDef::class_of` binary-search the
+  spec-sorted on-disk records. `Coverage` and the GDEF sub-table
+  types are re-exported at the crate root.
 - **Adobe Glyph List (AGL 2.0) name ↔ codepoint mapping**, source
   `docs/text/opentype/spec/agl-glyphlist.txt` (file format
   documented in `docs/text/opentype/spec/agl-aglfn-README.md`).

@@ -6,6 +6,7 @@
 //! are documented per-module.
 
 pub mod cmap;
+pub mod gdef;
 pub mod head;
 pub mod hhea;
 pub mod hmtx;
