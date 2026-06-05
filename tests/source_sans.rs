@@ -837,6 +837,96 @@ fn gsub_features_are_tagged() {
 }
 
 #[test]
+fn gsub_single_subst_decodes_every_type_1_lookup() {
+    // Walk every GSUB lookup; for the type-1 lookups (single
+    // substitution), decode the subtable through the typed
+    // [`SingleSubst`] view and verify the spec's invariants on the
+    // result. Source Sans 3 ships 57 type-1 lookups split between
+    // SingleSubstFormat1 (12) and SingleSubstFormat2 (45), which
+    // exercises both decode paths against real-font byte windows.
+    use oxideav_otf::SingleSubst;
+
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gsub().expect("Source Sans 3 carries a GSUB table");
+    let n = f.glyph_count();
+
+    let mut total_subtables = 0;
+    let mut fmt1_subtables = 0;
+    let mut fmt2_subtables = 0;
+    let mut total_pairs = 0usize;
+
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != 1 {
+            continue;
+        }
+        for s in 0..l.subtable_count() {
+            let ss: SingleSubst<'_> = g
+                .single_subst(i, s)
+                .unwrap_or_else(|| panic!("lookup {i} sub {s} missing"))
+                .unwrap_or_else(|e| panic!("lookup {i} sub {s} decode: {e:?}"));
+            total_subtables += 1;
+            match ss.format() {
+                1 => fmt1_subtables += 1,
+                2 => fmt2_subtables += 1,
+                f => panic!("lookup {i} sub {s} unknown format {f}"),
+            }
+            // Walk the iterator. The spec requires every covered glyph
+            // to map to *some* output glyph; every output must be a
+            // valid glyph ID for this font (< maxp.numGlyphs).
+            let mut last_input: Option<u32> = None;
+            for (input, output) in ss.iter() {
+                // Coverage iteration is sorted ascending.
+                if let Some(prev) = last_input {
+                    assert!(
+                        (input as u32) > prev,
+                        "Coverage iter not ascending at lookup {i} sub {s}: {prev} -> {input}",
+                    );
+                }
+                last_input = Some(input as u32);
+                // Both input and output index real glyph rows.
+                assert!(
+                    (input as u32) < n as u32,
+                    "input glyph {input} >= numGlyphs {n} at lookup {i} sub {s}",
+                );
+                assert!(
+                    (output as u32) < n as u32,
+                    "output glyph {output} >= numGlyphs {n} at lookup {i} sub {s}",
+                );
+                // The point-lookup must agree with the iterator.
+                assert_eq!(
+                    ss.substitute(input),
+                    Some(output),
+                    "substitute(input) disagrees with iter at lookup {i} sub {s}",
+                );
+                total_pairs += 1;
+            }
+            // A glyph guaranteed NOT to be in this subtable: the
+            // synthetic glyph ID `n` is past the end of the font.
+            assert_eq!(ss.substitute(n), None);
+        }
+    }
+
+    // Source Sans 3 historically ships at least 50 type-1 lookups and
+    // both formats appear; loosen the bounds slightly so a future
+    // Adobe re-cut does not regress the test.
+    assert!(
+        total_subtables >= 50,
+        "expected >=50 type-1 subtables, got {total_subtables}",
+    );
+    assert!(
+        fmt1_subtables >= 5,
+        "expected >=5 SingleSubstFormat1 subtables, got {fmt1_subtables}",
+    );
+    assert!(
+        fmt2_subtables >= 30,
+        "expected >=30 SingleSubstFormat2 subtables, got {fmt2_subtables}",
+    );
+    // Every type-1 lookup contributes at least one substitution pair.
+    assert!(total_pairs >= total_subtables);
+}
+
+#[test]
 fn gpos_header_and_lookups_walk() {
     let f = Font::from_bytes(FIXTURE).unwrap();
     let g = f.gpos().expect("Source Sans 3 carries a GPOS table");

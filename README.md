@@ -173,6 +173,25 @@ if let Some(g) = font.gsub() {
         let _ = l.flag().ignore_marks();
         let _ = l.mark_filtering_set();
     }
+
+    // GSUB Lookup Type 1 — single substitution. The typed view
+    // decodes both on-disk subtable formats and answers
+    // `substitute(input)` / iterates `(input, output)` pairs.
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != oxideav_otf::GSUB_LOOKUP_TYPE_SINGLE {
+            continue;
+        }
+        for s in 0..l.subtable_count() {
+            let ss = g.single_subst(i, s).unwrap()?;
+            let _ = ss.format();          // 1 or 2
+            let _ = ss.substitute(42);    // Option<u16>; None when uncovered
+            for (input, output) in ss.iter() {
+                // Apply the substitution as a shaper would.
+                let _ = (input, output);
+            }
+        }
+    }
 }
 
 for contour in &outline.contours {
@@ -183,7 +202,7 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-229 additions (this push)
+## Round-229 additions (previous push)
 
 The OpenType **`GSUB` and `GPOS` headers** are now parsed and
 surfaced on the public `Font` API, together with the shared chapter-2
@@ -285,7 +304,68 @@ self-consistent `markFilteringSet` presence, and the `latn` GPOS
 script resolves through to a default-LangSys with at least one
 feature index but no required feature.
 
-## Round-222 additions (this push)
+## Round-236 additions (this push)
+
+The first **GSUB lookup-type subtable decoder** lands —
+`GsubLookupType = 1`, **single substitution**, surfaced as the typed
+[`SingleSubst`] view. Spec:
+`docs/text/opentype/otspec-gsub.html` §"Lookup type 1 subtable:
+single substitution". The chapter-2 Coverage table is re-used from
+`tables::gdef::Coverage` (it is shared between GSUB, GPOS and the
+rest of the layout tables per
+`docs/text/opentype/otspec-chapter2-common-layout-tables.html`).
+
+- **Format 1 (`SingleSubstFormat1`, 6 bytes)** decoded —
+  `(format, coverageOffset, deltaGlyphID)` — with the spec's
+  modular-arithmetic semantics on the output: "Addition of
+  `deltaGlyphID` is modulo 65536" and "If the result after adding
+  `deltaGlyphID` to the input glyph index is less than zero, add
+  65536". Both are implemented via `rem_euclid(65536)` on an `i32`
+  sum so the wrap-around is symmetrical.
+- **Format 2 (`SingleSubstFormat2`)** decoded —
+  `(format, coverageOffset, glyphCount, substituteGlyphIDs[])`.
+  The spec's invariant "The `substituteGlyphIDs` array must
+  contain the same number of glyph indices as the Coverage table"
+  is enforced at `parse()` time: a `glyphCount`-vs-Coverage-length
+  mismatch returns `Error::BadStructure`.
+- **`SingleSubst::substitute(input)`** returns `Option<u16>`:
+  `None` when the input glyph is not in the Coverage set, `Some`
+  with the rewritten glyph otherwise. **`SingleSubst::iter()`**
+  yields every `(input_glyph, output_glyph)` pair in ascending
+  input-glyph order — convenient for offline subset / shape audits.
+- **`GsubTable::single_subst(lookup_i, sub_i)`** is the convenience
+  accessor: it walks the LookupList, asserts the lookup is declared
+  as `GSUB_LOOKUP_TYPE_SINGLE`, slices the indexed subtable, and
+  parses it. `None` is reserved for genuinely missing
+  indices; a type-mismatch surfaces as `Some(Err(BadStructure))` so
+  callers can distinguish the two failure shapes.
+- **`GsubLookupType` constants exposed**: `GSUB_LOOKUP_TYPE_SINGLE`
+  (1), `MULTIPLE` (2), `ALTERNATE` (3), `LIGATURE` (4), `CONTEXT`
+  (5), `CHAINED_CONTEXT` (6), `EXTENSION` (7),
+  `REVERSE_CHAINED_SINGLE` (8). Decoders for types 2..8 remain
+  follow-up work — `Lookup::subtable_bytes(i)` continues to expose
+  them as raw sub-slices.
+
+Twelve new unit tests cover format-1 round-trip + positive- and
+negative-delta modular wrap (input `5` + delta `-10` ↦ `65531`;
+input `65530` + delta `+10` ↦ `4`), format-2 round-trip,
+rejection of a `glyphCount` that disagrees with the Coverage,
+rejection of an unknown subtable format, rejection of truncated
+trailers, and one end-to-end synthetic that walks the GSUB
+header → ScriptList → FeatureList → LookupList → Lookup → typed
+`SingleSubst` chain. One Source Sans 3 integration test decodes
+**every type-1 lookup in the font** — 57 lookups, split between
+12 `SingleSubstFormat1` and 45 `SingleSubstFormat2` subtables —
+verifying each Coverage iterator is strictly ascending, every
+`(input, output)` pair stays within `maxp.numGlyphs`, the
+iterator agrees with `substitute(input)` point lookups, and a
+synthetic out-of-range glyph (numerically equal to `numGlyphs`)
+correctly returns `None`.
+
+Re-exported at the crate root: `SingleSubst`, `SingleSubstIter`,
+and the eight `GSUB_LOOKUP_TYPE_*` constants.
+
+## Round-222 additions (previous push)
 
 The OpenType **`GDEF` Glyph Definition Table** is now parsed and
 surfaced on the public `Font` API, along with the shared

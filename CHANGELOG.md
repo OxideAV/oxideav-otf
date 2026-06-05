@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GSUB Lookup Type 1 (single substitution) decoded** via a new
+  `SingleSubst` typed view — both on-disk subtable formats
+  (`SingleSubstFormat1` with `deltaGlyphID` modulo-65536 wrap, and
+  `SingleSubstFormat2` with the per-Coverage-index substitute
+  array). Source: `docs/text/opentype/otspec-gsub.html` §"Lookup
+  type 1 subtable: single substitution"; the Coverage table is
+  re-used from `tables::gdef::Coverage` (shared with GPOS and the
+  rest of GSUB per `otspec-chapter2-common-layout-tables.html`).
+  `SingleSubst::substitute(input)` returns the rewritten glyph
+  (`None` when uncovered), and `SingleSubst::iter()` yields
+  `(input_glyph, output_glyph)` pairs in ascending input order.
+  The format-1 path applies the spec's "addition is modulo 65536"
+  and "if result < 0, add 65536" rules via `rem_euclid(65536)` on
+  an `i32`. New convenience accessor `GsubTable::single_subst(
+  lookup_i, sub_i)` returns `Option<Result<SingleSubst, Error>>`:
+  `None` for out-of-range indices, `Some(Err(BadStructure))` when
+  the referenced lookup is not declared as type 1. Also surfaced:
+  named constants `GSUB_LOOKUP_TYPE_SINGLE` …
+  `GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE` (values 1 .. 8) for
+  the `GsubLookupType` enumeration. Synthetic-byte unit tests
+  cover format-1 (positive / negative modular-arithmetic wrap),
+  format-2 (round-trip + glyph-count / Coverage-length disagreement
+  rejection), unknown-format and truncation paths, and one
+  end-to-end GSUB synthetic that walks the header → ScriptList →
+  Lookup chain into a real SingleSubstFormat1 subtable. A Source
+  Sans 3 integration test decodes all 57 of its type-1 lookups
+  (12 SingleSubstFormat1 + 45 SingleSubstFormat2 subtables),
+  verifies the Coverage iterator is ascending, that every
+  `(input, output)` pair stays within `maxp.numGlyphs`, and that
+  the iterator agrees with point lookups via
+  `substitute(input)`. The other lookup types (2 Multiple,
+  3 Alternate, 4 Ligature, 5 Contextual, 6 Chained-context,
+  7 Extension, 8 Reverse-chained-single) remain raw sub-slices
+  pending dedicated rounds.
+
 - **`GSUB` and `GPOS` table headers parsed**, with the shared
   `ScriptList` / `Script` / `LangSys` / `FeatureList` / `Feature` /
   `LookupList` / `Lookup` / `LookupFlag` common-layout primitives.
