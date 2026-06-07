@@ -927,6 +927,148 @@ fn gsub_single_subst_decodes_every_type_1_lookup() {
 }
 
 #[test]
+fn gsub_ligature_subst_decodes_every_type_4_lookup() {
+    // Walk every GSUB lookup; for the type-4 lookups (ligature
+    // substitution), decode the subtable through the typed
+    // [`LigatureSubst`] view and verify the spec's invariants:
+    //
+    // * format == 1 (the only defined LigatureSubst format)
+    // * every LigatureSet's count and per-Ligature offsets are
+    //   reachable
+    // * every Ligature has componentCount >= 1
+    // * every component glyph and every ligature glyph fits inside
+    //   maxp.numGlyphs
+    // * iter() walks Coverage in ascending order
+    use oxideav_otf::LigatureSubst;
+
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gsub().expect("Source Sans 3 carries a GSUB table");
+    let n = f.glyph_count();
+
+    let mut total_subtables = 0;
+    let mut total_sets = 0usize;
+    let mut total_ligatures = 0usize;
+    let mut total_components = 0usize;
+
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != 4 {
+            continue;
+        }
+        for s in 0..l.subtable_count() {
+            let ls: LigatureSubst<'_> = g
+                .ligature_subst(i, s)
+                .unwrap_or_else(|| panic!("lookup {i} sub {s} missing"))
+                .unwrap_or_else(|e| panic!("lookup {i} sub {s} decode: {e:?}"));
+            assert_eq!(ls.format(), 1, "lookup {i} sub {s} format != 1");
+            total_subtables += 1;
+
+            // Coverage iter is sorted ascending.
+            let mut last_first: Option<u32> = None;
+            for (first_glyph, set_res) in ls.iter() {
+                if let Some(prev) = last_first {
+                    assert!(
+                        (first_glyph as u32) > prev,
+                        "Coverage iter not ascending at lookup {i} sub {s}: {prev} -> {first_glyph}",
+                    );
+                }
+                last_first = Some(first_glyph as u32);
+                assert!(
+                    (first_glyph as u32) < n as u32,
+                    "first-component glyph {first_glyph} >= numGlyphs {n} \
+                     at lookup {i} sub {s}",
+                );
+                let set = set_res.unwrap_or_else(|e| {
+                    panic!("LigatureSet decode at lookup {i} sub {s} glyph {first_glyph}: {e:?}")
+                });
+                total_sets += 1;
+                let lig_count = set.ligature_count();
+                assert!(
+                    lig_count >= 1,
+                    "empty LigatureSet at lookup {i} sub {s} glyph {first_glyph}",
+                );
+                for j in 0..lig_count {
+                    let lig = set
+                        .ligature(j)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "Ligature index {j} missing at lookup {i} sub {s} \
+                                 glyph {first_glyph}",
+                            )
+                        })
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "Ligature decode at lookup {i} sub {s} glyph {first_glyph} \
+                                 lig {j}: {e:?}",
+                            )
+                        });
+                    let comp = lig.component_count();
+                    assert!(
+                        comp >= 1,
+                        "componentCount = 0 at lookup {i} sub {s} glyph {first_glyph} lig {j}",
+                    );
+                    let lig_glyph = lig.ligature_glyph();
+                    assert!(
+                        (lig_glyph as u32) < n as u32,
+                        "ligature glyph {lig_glyph} >= numGlyphs {n} \
+                         at lookup {i} sub {s} glyph {first_glyph} lig {j}",
+                    );
+                    // Every tail component glyph also fits inside the
+                    // font's glyph table.
+                    let tail: Vec<u16> = lig.component_glyphs().collect();
+                    assert_eq!(tail.len(), (comp - 1) as usize);
+                    for &c in &tail {
+                        assert!(
+                            (c as u32) < n as u32,
+                            "component glyph {c} >= numGlyphs {n} \
+                             at lookup {i} sub {s} glyph {first_glyph} lig {j}",
+                        );
+                    }
+                    total_components += comp as usize;
+                    total_ligatures += 1;
+
+                    // The substitute() shaper-path returns this
+                    // Ligature for the canonical input
+                    // [first, tail[0], tail[1], …] — provided no
+                    // earlier Ligature in the set matched first. We
+                    // check the simplest case: the first Ligature in
+                    // the set must match its own canonical input.
+                    if j == 0 {
+                        let mut input = Vec::with_capacity(comp as usize);
+                        input.push(first_glyph);
+                        input.extend_from_slice(&tail);
+                        let got = ls.substitute(&input);
+                        assert_eq!(
+                            got,
+                            Some((lig_glyph, comp)),
+                            "substitute() didn't return Ligature 0 for its own input \
+                             at lookup {i} sub {s} glyph {first_glyph}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Source Sans 3 ships at least one type-4 subtable (the standard
+    // 'liga' feature). Loosen the bounds slightly so a future Adobe
+    // re-cut doesn't regress the test.
+    assert!(
+        total_subtables >= 1,
+        "expected >=1 type-4 subtables, got {total_subtables}",
+    );
+    assert!(
+        total_ligatures >= total_sets,
+        "ligature count {total_ligatures} < set count {total_sets}",
+    );
+    assert!(
+        total_components >= 2 * total_ligatures,
+        "expected at least 2-component ligatures on average, got \
+         {total_components} components across {total_ligatures} ligatures",
+    );
+}
+
+#[test]
 fn gpos_header_and_lookups_walk() {
     let f = Font::from_bytes(FIXTURE).unwrap();
     let g = f.gpos().expect("Source Sans 3 carries a GPOS table");

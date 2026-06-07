@@ -9,6 +9,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GSUB Lookup Type 4 (ligature substitution) decoded** via a new
+  `LigatureSubst` typed view, joining the round-247 `SingleSubst`
+  work. Source: `docs/text/opentype/otspec-gsub.html` §"Lookup type 4
+  subtable: ligature substitution"; the Coverage table is re-used
+  from `tables::gdef::Coverage` (the shared common-layout primitive,
+  per `otspec-chapter2-common-layout-tables.html`). `LigatureSubst`
+  decodes the subtable header (`format`, `coverageOffset`,
+  `ligatureSetCount`, `ligatureSetOffsets[]`); `LigatureSet` decodes
+  the per-first-component `(ligatureCount, ligatureOffsets[])` pair;
+  `Ligature` decodes `(ligatureGlyph, componentCount,
+  componentGlyphIDs[componentCount - 1])`. The first component glyph
+  is implicit (it's the Coverage entry that selected the
+  LigatureSet), so the on-disk `componentGlyphIDs[]` array starts at
+  the second component (input glyph sequence index = 1) per the
+  spec. A `componentCount` of zero is rejected as `BadStructure` —
+  the spec counts the first component, so zero leaves the
+  first-component invariant unsatisfiable.
+  `LigatureSubst::substitute(input: &[u16]) -> Option<(u16, u16)>`
+  is the shaper-path entrypoint: the first glyph of `input` selects
+  a LigatureSet via Coverage, the set is walked in array order
+  (= preference order, "longer / preferred first" per spec), and the
+  first Ligature whose `componentGlyphIDs[..]` matches the input
+  tail wins — returning `(ligatureGlyph, componentCount)`, i.e. the
+  substitute glyph and the total number of input glyphs consumed.
+  `None` is returned for empty input, an uncovered first glyph, or
+  no matching Ligature in the selected set. `LigatureSubst::iter()`
+  yields `(coverage_glyph, LigatureSet)` pairs in ascending Coverage
+  order; `LigatureSet::ligature(i)` borrows the Ligature at
+  preference index `i`; `Ligature::component_glyphs()` yields the
+  tail glyphs in input order. New convenience accessor
+  `GsubTable::ligature_subst(lookup_i, sub_i)` mirrors
+  `single_subst(...)`: `None` for out-of-range indices,
+  `Some(Err(BadStructure))` when the referenced lookup is not
+  declared as type 4. `LigatureSubst`, `LigatureSubstIter`,
+  `LigatureSet`, `Ligature`, and `LigatureComponentIter` are
+  re-exported at the crate root. Synthetic-byte unit tests cover the
+  spec's worked Example 6 (Coverage = `{e, f}`, e-set = `[etc]`,
+  f-set = `[ffi, fi]` with ffi preferred), the `format != 1`
+  rejection, out-of-range `coverageOffset`, truncated
+  `ligatureSetOffsets[]`, the `componentCount == 0` rejection, the
+  `substitute()` first-match preference rule, the empty / uncovered /
+  no-match paths, and an end-to-end GSUB byte tower whose only
+  lookup is the same Example-6 subtable. A Source Sans 3 integration
+  test walks every type-4 lookup, decodes every LigatureSet and
+  Ligature, verifies Coverage iteration is ascending, every ligature
+  glyph and every component glyph fits inside `maxp.numGlyphs`,
+  `componentCount >= 1`, the tail iterator yields exactly
+  `componentCount - 1` entries, and the first Ligature in each set
+  round-trips through `substitute()` on its own canonical input.
+  The other lookup types (2 Multiple, 3 Alternate, 5 Contextual,
+  6 Chained-context, 7 Extension, 8 Reverse-chained-single) remain
+  raw sub-slices pending dedicated rounds.
+
 - **GSUB Lookup Type 1 (single substitution) decoded** via a new
   `SingleSubst` typed view — both on-disk subtable formats
   (`SingleSubstFormat1` with `deltaGlyphID` modulo-65536 wrap, and

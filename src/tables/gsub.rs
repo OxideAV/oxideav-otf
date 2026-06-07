@@ -34,12 +34,26 @@
 //!   * Format 2 — `(format, coverageOffset, glyphCount,
 //!     substituteGlyphIDs[glyphCount])`. Output glyph ID =
 //!     `substituteGlyphIDs[coverage_index_of(input)]`.
+//! * **GsubLookupType 4 — Ligature substitution** (a sequence of glyphs
+//!   replaced by a single ligature glyph) via [`LigatureSubst`]. The
+//!   one on-disk format is decoded
+//!   ([`docs/text/opentype/otspec-gsub.html` §"Lookup type 4 subtable:
+//!   ligature substitution"]):
+//!   * Format 1 — `(format, coverageOffset, ligatureSetCount,
+//!     ligatureSetOffsets[ligatureSetCount])`. Each LigatureSet is
+//!     `(ligatureCount, ligatureOffsets[ligatureCount])`; each Ligature
+//!     is `(ligatureGlyph, componentCount,
+//!     componentGlyphIDs[componentCount - 1])`. The first component
+//!     glyph is the Coverage entry; the tail of the input sequence is
+//!     matched against `componentGlyphIDs[..]` in order, and a full
+//!     match yields `ligatureGlyph`. Within a LigatureSet, the array
+//!     order is the preference order — longer / preferred ligatures
+//!     come first.
 //!
-//! Other GSUB subtable types (2 Multiple, 3 Alternate, 4 Ligature,
-//! 5 Contextual, 6 Chained-context, 7 Extension, 8 Reverse-chained-
-//! single) remain raw sub-slices via
-//! [`super::layout::Lookup::subtable_bytes`]; decoding their
-//! interiors is deferred to a future round.
+//! Other GSUB subtable types (2 Multiple, 3 Alternate, 5 Contextual,
+//! 6 Chained-context, 7 Extension, 8 Reverse-chained-single) remain
+//! raw sub-slices via [`super::layout::Lookup::subtable_bytes`];
+//! decoding their interiors is deferred to a future round.
 
 use crate::parser::{read_i16, read_u16};
 use crate::tables::gdef::Coverage;
@@ -286,6 +300,375 @@ impl<'a> Iterator for SingleSubstIter<'a> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Lookup type 4: Ligature substitution (otspec-gsub.html §"Lookup type 4
+// subtable: ligature substitution")
+// ---------------------------------------------------------------------------
+
+/// Parsed `LigatureSubst` subtable — the GSUB `lookupType = 4` payload.
+///
+/// Spec: `docs/text/opentype/otspec-gsub.html` §"Lookup type 4 subtable:
+/// ligature substitution".
+///
+/// On-disk layout (one format defined):
+///
+/// ```text
+/// LigatureSubstFormat1 subtable
+///   0 / 2 / format = 1
+///   2 / 2 / coverageOffset       (Offset16, from start of subtable)
+///   4 / 2 / ligatureSetCount
+///   6 / 2 * n / ligatureSetOffsets[ligatureSetCount]
+///                                 (Offset16, from start of subtable,
+///                                  ordered by Coverage index)
+///
+/// LigatureSet table
+///   0 / 2 / ligatureCount
+///   2 / 2 * n / ligatureOffsets[ligatureCount]
+///                                 (Offset16, from start of LigatureSet,
+///                                  ordered by preference; longer /
+///                                  preferred ligatures first)
+///
+/// Ligature table
+///   0 / 2 / ligatureGlyph
+///   2 / 2 / componentCount        (total components incl. the first)
+///   4 / 2 * (componentCount - 1) / componentGlyphIDs[componentCount - 1]
+/// ```
+///
+/// The Coverage table names the **first** component glyph of every
+/// ligature in the subtable; the tail components live in the per-Ligature
+/// `componentGlyphIDs[]` array, starting from the second component
+/// (input glyph sequence index = 1). Ligature lookup is therefore
+/// driven by the first glyph: an input sequence whose first glyph is
+/// in Coverage selects the LigatureSet at that Coverage Index, then
+/// each Ligature inside the set is tried in array order and the first
+/// whose `componentGlyphIDs[..]` matches the input tail is the result.
+///
+/// All offsets are validated at parse time. [`Self::substitute`]
+/// applies the spec's "first-match wins" rule against an input slice
+/// and returns `(ligatureGlyph, componentCount)` for the matching
+/// Ligature, or `None` if no Ligature in the selected LigatureSet
+/// matches. The component count tells the caller how many input glyphs
+/// the ligature consumed (the first glyph + `componentCount - 1` tail
+/// glyphs).
+#[derive(Debug, Clone, Copy)]
+pub struct LigatureSubst<'a> {
+    /// Raw subtable bytes (offsets in the on-disk records are relative
+    /// to this buffer's start).
+    bytes: &'a [u8],
+    coverage: Coverage<'a>,
+    /// Slice of the `ligatureSetOffsets[]` array (2 bytes per offset).
+    set_offsets: &'a [u8],
+}
+
+impl<'a> LigatureSubst<'a> {
+    /// Parse a LigatureSubst subtable from a buffer whose first two
+    /// bytes are the `format` identifier.
+    ///
+    /// Validates the format discriminant (only `1` is defined), the
+    /// `coverageOffset` window, and the trailing `ligatureSetOffsets[]`
+    /// array length. The per-LigatureSet and per-Ligature payloads
+    /// themselves are validated lazily — [`Self::ligature_set`] and
+    /// [`Self::ligature`] re-validate on each call so a malformed
+    /// inner record can't poison the top-level view.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let format = read_u16(bytes, 0)?;
+        if format != 1 {
+            return Err(Error::BadStructure(
+                "GSUB/LigatureSubst: unknown subtable format",
+            ));
+        }
+        let cov_off = read_u16(bytes, 2)? as usize;
+        if cov_off == 0 || cov_off >= bytes.len() {
+            return Err(Error::BadStructure(
+                "GSUB/LigatureSubst: coverageOffset out of range",
+            ));
+        }
+        let coverage = Coverage::parse(&bytes[cov_off..])?;
+        let set_count = read_u16(bytes, 4)? as usize;
+        let array_start = 6usize;
+        let need = array_start
+            .checked_add(
+                set_count
+                    .checked_mul(2)
+                    .ok_or(Error::BadStructure("GSUB/LigatureSubst length overflow"))?,
+            )
+            .ok_or(Error::BadStructure("GSUB/LigatureSubst length overflow"))?;
+        if bytes.len() < need {
+            return Err(Error::UnexpectedEof);
+        }
+        Ok(Self {
+            bytes,
+            coverage,
+            set_offsets: &bytes[array_start..need],
+        })
+    }
+
+    /// Subtable format discriminant (always `1`).
+    pub fn format(&self) -> u16 {
+        1
+    }
+
+    /// The input-side [`Coverage`] table. Each covered glyph is the
+    /// **first** component of every ligature in the corresponding
+    /// LigatureSet.
+    pub fn coverage(&self) -> Coverage<'a> {
+        self.coverage
+    }
+
+    /// `ligatureSetCount` — number of LigatureSet tables.
+    pub fn ligature_set_count(&self) -> u16 {
+        (self.set_offsets.len() / 2) as u16
+    }
+
+    /// Borrow the [`LigatureSet`] at the given Coverage index. Returns
+    /// `None` for an out-of-range index, `Some(Err(...))` when the
+    /// referenced bytes are malformed.
+    pub fn ligature_set(&self, set_i: u16) -> Option<Result<LigatureSet<'a>, Error>> {
+        let off2 = (set_i as usize).checked_mul(2)?;
+        if off2 + 2 > self.set_offsets.len() {
+            return None;
+        }
+        let off = u16::from_be_bytes([self.set_offsets[off2], self.set_offsets[off2 + 1]]) as usize;
+        if off == 0 || off >= self.bytes.len() {
+            return Some(Err(Error::BadStructure(
+                "GSUB/LigatureSubst: ligatureSetOffset out of range",
+            )));
+        }
+        Some(LigatureSet::parse(&self.bytes[off..]))
+    }
+
+    /// Apply this subtable as a shaper would.
+    ///
+    /// `input` is the current glyph sequence starting at the position
+    /// the shaper is trying to ligate. `input[0]` must be in
+    /// [`Self::coverage`]; the tail `input[1..]` is matched against
+    /// each Ligature's `componentGlyphIDs[]` in array order.
+    ///
+    /// Returns `Some((ligature_glyph, component_count))` for the first
+    /// matching Ligature — `component_count` is the total number of
+    /// input glyphs consumed (including `input[0]`). Returns `None`
+    /// when `input` is empty, when `input[0]` is uncovered, or when no
+    /// Ligature in the selected LigatureSet matches the input tail.
+    ///
+    /// Per the spec, "the order in the Ligature offset array defines
+    /// the preference for using the ligatures" — first-match wins,
+    /// even if a later Ligature in the set would also match a (shorter)
+    /// prefix.
+    pub fn substitute(&self, input: &[u16]) -> Option<(u16, u16)> {
+        let first = *input.first()?;
+        let set_i = self.coverage.index_of(first)?;
+        let set = self.ligature_set(set_i)?.ok()?;
+        for j in 0..set.ligature_count() {
+            let lig = set.ligature(j)?.ok()?;
+            let comp_count = lig.component_count() as usize;
+            if comp_count == 0 {
+                // Spec says componentCount is the total count *including*
+                // the first; zero is malformed. Skip silently rather
+                // than error: this is shaper-path code, not parse-path.
+                continue;
+            }
+            if comp_count > input.len() {
+                continue;
+            }
+            // The first component is the Coverage entry; we already
+            // matched it. Match the tail.
+            let mut ok = true;
+            for k in 0..(comp_count - 1) {
+                let want = lig.component_glyph(k as u16)?;
+                if want != input[k + 1] {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                return Some((lig.ligature_glyph(), comp_count as u16));
+            }
+        }
+        None
+    }
+
+    /// Iterate the `(coverage_glyph, LigatureSet)` pairs in this
+    /// subtable in ascending Coverage order. Malformed LigatureSet
+    /// references are surfaced as `Err`.
+    pub fn iter(&self) -> LigatureSubstIter<'a> {
+        LigatureSubstIter {
+            cov: self.coverage.iter(),
+            outer: *self,
+        }
+    }
+}
+
+/// Iterator yielded by [`LigatureSubst::iter`].
+#[derive(Debug, Clone)]
+pub struct LigatureSubstIter<'a> {
+    cov: crate::tables::gdef::CoverageIter<'a>,
+    outer: LigatureSubst<'a>,
+}
+
+impl<'a> Iterator for LigatureSubstIter<'a> {
+    type Item = (u16, Result<LigatureSet<'a>, Error>);
+    fn next(&mut self) -> Option<Self::Item> {
+        let (g, idx) = self.cov.next()?;
+        let set = self.outer.ligature_set(idx)?;
+        Some((g, set))
+    }
+}
+
+/// Parsed `LigatureSet` table — a count + an offset array pointing at
+/// the individual `Ligature` tables for a single first-component glyph.
+#[derive(Debug, Clone, Copy)]
+pub struct LigatureSet<'a> {
+    bytes: &'a [u8],
+    /// Slice of the `ligatureOffsets[]` array (2 bytes per offset).
+    lig_offsets: &'a [u8],
+}
+
+impl<'a> LigatureSet<'a> {
+    /// Parse a LigatureSet table from a buffer whose first two bytes
+    /// are `ligatureCount`.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let count = read_u16(bytes, 0)? as usize;
+        let array_start = 2usize;
+        let need = array_start
+            .checked_add(
+                count
+                    .checked_mul(2)
+                    .ok_or(Error::BadStructure("GSUB/LigatureSet length overflow"))?,
+            )
+            .ok_or(Error::BadStructure("GSUB/LigatureSet length overflow"))?;
+        if bytes.len() < need {
+            return Err(Error::UnexpectedEof);
+        }
+        Ok(Self {
+            bytes,
+            lig_offsets: &bytes[array_start..need],
+        })
+    }
+
+    /// `ligatureCount` — number of Ligature tables in this set.
+    pub fn ligature_count(&self) -> u16 {
+        (self.lig_offsets.len() / 2) as u16
+    }
+
+    /// Borrow the [`Ligature`] at preference index `i` (`0 ..
+    /// ligature_count`). Returns `None` for an out-of-range index,
+    /// `Some(Err(...))` when the referenced bytes are malformed.
+    pub fn ligature(&self, i: u16) -> Option<Result<Ligature<'a>, Error>> {
+        let off2 = (i as usize).checked_mul(2)?;
+        if off2 + 2 > self.lig_offsets.len() {
+            return None;
+        }
+        let off = u16::from_be_bytes([self.lig_offsets[off2], self.lig_offsets[off2 + 1]]) as usize;
+        if off == 0 || off >= self.bytes.len() {
+            return Some(Err(Error::BadStructure(
+                "GSUB/LigatureSet: ligatureOffset out of range",
+            )));
+        }
+        Some(Ligature::parse(&self.bytes[off..]))
+    }
+}
+
+/// Parsed `Ligature` table — one ligature substitution candidate.
+///
+/// The on-disk record is `(ligatureGlyph, componentCount,
+/// componentGlyphIDs[componentCount - 1])`. The first component glyph
+/// is **not** stored here — it is the LigatureSet's covered glyph,
+/// surfaced through [`LigatureSubst::coverage`].
+#[derive(Debug, Clone, Copy)]
+pub struct Ligature<'a> {
+    glyph: u16,
+    component_count: u16,
+    /// Raw `componentGlyphIDs[]` payload — `2 * (componentCount - 1)`
+    /// bytes, big-endian `u16` per entry.
+    tail: &'a [u8],
+}
+
+impl<'a> Ligature<'a> {
+    /// Parse a Ligature table from a buffer whose first two bytes are
+    /// `ligatureGlyph`.
+    ///
+    /// A `componentCount` of zero is rejected as `BadStructure`: the
+    /// spec specifies "Number of components in the ligature" including
+    /// the first, so zero leaves the first-component invariant
+    /// unsatisfiable.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let glyph = read_u16(bytes, 0)?;
+        let component_count = read_u16(bytes, 2)?;
+        if component_count == 0 {
+            return Err(Error::BadStructure(
+                "GSUB/Ligature: componentCount must be >= 1",
+            ));
+        }
+        let tail_entries = (component_count - 1) as usize;
+        let tail_start = 4usize;
+        let need = tail_start
+            .checked_add(
+                tail_entries
+                    .checked_mul(2)
+                    .ok_or(Error::BadStructure("GSUB/Ligature length overflow"))?,
+            )
+            .ok_or(Error::BadStructure("GSUB/Ligature length overflow"))?;
+        if bytes.len() < need {
+            return Err(Error::UnexpectedEof);
+        }
+        Ok(Self {
+            glyph,
+            component_count,
+            tail: &bytes[tail_start..need],
+        })
+    }
+
+    /// `ligatureGlyph` — the substitute glyph ID for this ligature.
+    pub fn ligature_glyph(&self) -> u16 {
+        self.glyph
+    }
+
+    /// `componentCount` — total number of input glyphs (including the
+    /// first, Coverage-supplied component) this ligature replaces.
+    pub fn component_count(&self) -> u16 {
+        self.component_count
+    }
+
+    /// The component glyph at tail index `i` (`0 .. componentCount -
+    /// 1`). Index `0` is the **second** component glyph (input glyph
+    /// sequence index = 1) per the spec.
+    pub fn component_glyph(&self, i: u16) -> Option<u16> {
+        let off = (i as usize).checked_mul(2)?;
+        if off + 2 > self.tail.len() {
+            return None;
+        }
+        Some(u16::from_be_bytes([self.tail[off], self.tail[off + 1]]))
+    }
+
+    /// Iterator over every tail-component glyph in input order.
+    pub fn component_glyphs(&self) -> LigatureComponentIter<'a> {
+        LigatureComponentIter {
+            bytes: self.tail,
+            pos: 0,
+        }
+    }
+}
+
+/// Iterator over a [`Ligature`]'s tail `componentGlyphIDs[]` in input
+/// order (i.e. starting at the second component).
+#[derive(Debug, Clone)]
+pub struct LigatureComponentIter<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Iterator for LigatureComponentIter<'a> {
+    type Item = u16;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos + 2 > self.bytes.len() {
+            return None;
+        }
+        let g = u16::from_be_bytes([self.bytes[self.pos], self.bytes[self.pos + 1]]);
+        self.pos += 2;
+        Some(g)
+    }
+}
+
 /// Parsed `GSUB` header view.
 #[derive(Debug, Clone, Copy)]
 pub struct GsubTable<'a> {
@@ -402,6 +785,31 @@ impl<'a> GsubTable<'a> {
         }
         let bytes = lk.subtable_bytes(sub_i)?;
         Some(SingleSubst::parse(bytes))
+    }
+
+    /// Decode subtable `sub_i` of lookup `lookup_i` as a
+    /// [`LigatureSubst`] (`GsubLookupType = 4`).
+    ///
+    /// Returns:
+    /// * `None` — `lookup_i` or `sub_i` is out of range, or the
+    ///   referenced subtable bytes are unreachable.
+    /// * `Some(Err(Error::BadStructure))` — the lookup is not
+    ///   declared as `GSUB_LOOKUP_TYPE_LIGATURE`, or the subtable bytes
+    ///   are malformed.
+    /// * `Some(Ok(LigatureSubst))` — the typed subtable view.
+    pub fn ligature_subst(
+        &self,
+        lookup_i: u16,
+        sub_i: u16,
+    ) -> Option<Result<LigatureSubst<'a>, Error>> {
+        let lk = self.lookup(lookup_i)?;
+        if lk.lookup_type() != GSUB_LOOKUP_TYPE_LIGATURE {
+            return Some(Err(Error::BadStructure(
+                "GSUB/LigatureSubst: lookup is not type 4",
+            )));
+        }
+        let bytes = lk.subtable_bytes(sub_i)?;
+        Some(LigatureSubst::parse(bytes))
     }
 }
 
@@ -774,5 +1182,411 @@ mod tests {
             GsubTable::parse(&bytes),
             Err(Error::BadStructure(_))
         ));
+    }
+
+    // -------------- LigatureSubst Format 1 -----------------------------
+
+    /// Build a `LigatureSubstFormat1` subtable that mirrors the spec's
+    /// Example 6: Coverage = `{e, f}`, e-set = `[etc]`, f-set = `[ffi,
+    /// fi]` (ffi preferred over fi per the spec).
+    ///
+    /// Component glyph IDs are made-up flat numbers so we can assert
+    /// the actual decoded bytes; the layout matches the OFF spec
+    /// exactly.
+    fn build_example_6_subtable() -> Vec<u8> {
+        // Choose glyph IDs:
+        //   e = 5, f = 6, t = 20, c = 21, i = 9, etc = 100,
+        //   ffi = 101, fi = 102.
+        //
+        // Layout plan:
+        //   0   /  2 / format = 1
+        //   2   /  2 / coverageOffset → 30
+        //   4   /  2 / ligatureSetCount = 2
+        //   6   /  2 / ligatureSetOffsets[0] = 10   (→ e-set @ 10)
+        //   8   /  2 / ligatureSetOffsets[1] = 18   (→ f-set @ 18)
+        //  10   /  2 / ligatureCount = 1            (e-set: just "etc")
+        //  12   /  2 / ligatureOffsets[0] = 4       (→ etc @ 14)
+        //  14   /  2 / ligatureGlyph = 100  (etc)
+        //  16   /  2 / componentCount = 3
+        //  18   /  ⋮ / componentGlyphIDs unused for e-set (it's only 1
+        //              ligature, but its bytes overlap the f-set start —
+        //              fix the plan: lay out per-set independently.)
+        //
+        // Replan to avoid overlap. Use:
+        //   off 0 .. 10 = header (format, covOff, setCount, setOffsets[0..2])
+        //   off 10 .. ?  = e-set (1 ligature: "etc" — 3 components)
+        //                  10 / 2 / ligatureCount = 1
+        //                  12 / 2 / ligatureOffsets[0] = 4 (→ off 14)
+        //                  14 / 2 / ligatureGlyph = 100
+        //                  16 / 2 / componentCount = 3
+        //                  18 / 2 / componentGlyphIDs[0] = t = 20
+        //                  20 / 2 / componentGlyphIDs[1] = c = 21
+        //                  → e-set ends at 22.
+        //   off 22 .. ?  = f-set (2 ligatures: ffi, fi)
+        //                  22 / 2 / ligatureCount = 2
+        //                  24 / 2 / ligatureOffsets[0] = 8 (→ off 30; ffi)
+        //                  26 / 2 / ligatureOffsets[1] = 16 (→ off 38; fi)
+        //                  Wait — those offsets are from start of LigatureSet,
+        //                  i.e. from off 22. Compute the on-disk offsets:
+        //                    ffi @ off 30 → 30 - 22 = 8.   OK
+        //                    fi  @ off 38 → 38 - 22 = 16.  OK
+        //                  ffi Ligature @ 30:
+        //                    30 / 2 / ligatureGlyph = 101
+        //                    32 / 2 / componentCount = 3   (f, f, i)
+        //                    34 / 2 / componentGlyphIDs[0] = f = 6
+        //                    36 / 2 / componentGlyphIDs[1] = i = 9
+        //                    → ends at 38.
+        //                  fi Ligature @ 38:
+        //                    38 / 2 / ligatureGlyph = 102
+        //                    40 / 2 / componentCount = 2   (f, i)
+        //                    42 / 2 / componentGlyphIDs[0] = i = 9
+        //                    → ends at 44.
+        //   off 44 .. 50 = Coverage Format 1 with [e, f] (sorted)
+        //                  44 / 2 / coverage format = 1
+        //                  46 / 2 / glyphCount = 2
+        //                  48 / 2 / glyphArray[0] = e = 5
+        //                  50 / 2 / glyphArray[1] = f = 6
+        //                  → ends at 52.
+        //
+        // Re-pin Coverage offset to 44 and ligatureSetOffsets to [10, 22].
+        let mut out = vec![0u8; 52];
+        // Header
+        out[0..2].copy_from_slice(&be(1)); // format
+        out[2..4].copy_from_slice(&be(44)); // coverageOffset
+        out[4..6].copy_from_slice(&be(2)); // ligatureSetCount
+        out[6..8].copy_from_slice(&be(10)); // ligatureSetOffsets[0]
+        out[8..10].copy_from_slice(&be(22)); // ligatureSetOffsets[1]
+                                             // e-set @ 10 (1 ligature, "etc")
+        out[10..12].copy_from_slice(&be(1)); // ligatureCount
+        out[12..14].copy_from_slice(&be(4)); // ligatureOffsets[0]
+                                             // etc Ligature @ 14
+        out[14..16].copy_from_slice(&be(100)); // ligatureGlyph
+        out[16..18].copy_from_slice(&be(3)); // componentCount
+        out[18..20].copy_from_slice(&be(20)); // t
+        out[20..22].copy_from_slice(&be(21)); // c
+                                              // f-set @ 22 (2 ligatures, ffi then fi)
+        out[22..24].copy_from_slice(&be(2)); // ligatureCount
+        out[24..26].copy_from_slice(&be(8)); // ligatureOffsets[0] -> ffi
+        out[26..28].copy_from_slice(&be(16)); // ligatureOffsets[1] -> fi
+                                              // ffi Ligature @ 30
+        out[28..30].copy_from_slice(&[0, 0]); // padding (set table only goes
+                                              // through offset 28; bytes 28..30 unused, set to 0)
+        out[30..32].copy_from_slice(&be(101)); // ligatureGlyph
+        out[32..34].copy_from_slice(&be(3)); // componentCount
+        out[34..36].copy_from_slice(&be(6)); // f
+        out[36..38].copy_from_slice(&be(9)); // i
+                                             // fi Ligature @ 38
+        out[38..40].copy_from_slice(&be(102)); // ligatureGlyph
+        out[40..42].copy_from_slice(&be(2)); // componentCount
+        out[42..44].copy_from_slice(&be(9)); // i
+                                             // Coverage Format 1 @ 44
+        out[44..46].copy_from_slice(&be(1)); // coverage format
+        out[46..48].copy_from_slice(&be(2)); // glyphCount
+        out[48..50].copy_from_slice(&be(5)); // e
+        out[50..52].copy_from_slice(&be(6)); // f
+        out
+    }
+
+    #[test]
+    fn ligature_subst_example_6_round_trip() {
+        // Replays the spec's Example 6: Coverage = {e, f}; e → [etc];
+        // f → [ffi, fi].
+        let raw = build_example_6_subtable();
+        let ls = LigatureSubst::parse(&raw).unwrap();
+        assert_eq!(ls.format(), 1);
+        assert_eq!(ls.ligature_set_count(), 2);
+
+        // e-set: one ligature "etc" matching glyphs [e=5, t=20, c=21].
+        let e_set = ls.ligature_set(0).unwrap().unwrap();
+        assert_eq!(e_set.ligature_count(), 1);
+        let etc = e_set.ligature(0).unwrap().unwrap();
+        assert_eq!(etc.ligature_glyph(), 100);
+        assert_eq!(etc.component_count(), 3);
+        let etc_tail: Vec<_> = etc.component_glyphs().collect();
+        assert_eq!(etc_tail, vec![20, 21]);
+
+        // f-set: ffi (preferred) then fi.
+        let f_set = ls.ligature_set(1).unwrap().unwrap();
+        assert_eq!(f_set.ligature_count(), 2);
+        let ffi = f_set.ligature(0).unwrap().unwrap();
+        assert_eq!(ffi.ligature_glyph(), 101);
+        assert_eq!(ffi.component_count(), 3);
+        let ffi_tail: Vec<_> = ffi.component_glyphs().collect();
+        assert_eq!(ffi_tail, vec![6, 9]);
+        let fi = f_set.ligature(1).unwrap().unwrap();
+        assert_eq!(fi.ligature_glyph(), 102);
+        assert_eq!(fi.component_count(), 2);
+        let fi_tail: Vec<_> = fi.component_glyphs().collect();
+        assert_eq!(fi_tail, vec![9]);
+    }
+
+    #[test]
+    fn ligature_subst_substitute_matches_etc() {
+        let raw = build_example_6_subtable();
+        let ls = LigatureSubst::parse(&raw).unwrap();
+        // Input sequence (e, t, c) → etc-ligature (gid 100), 3 glyphs
+        // consumed.
+        assert_eq!(ls.substitute(&[5, 20, 21]), Some((100, 3)));
+        // Trailing glyphs past the ligature length are ignored.
+        assert_eq!(ls.substitute(&[5, 20, 21, 99]), Some((100, 3)));
+    }
+
+    #[test]
+    fn ligature_subst_substitute_prefers_ffi_over_fi() {
+        let raw = build_example_6_subtable();
+        let ls = LigatureSubst::parse(&raw).unwrap();
+        // Per spec: "the order in the Ligature offset array defines
+        // the preference for using the ligatures". ffi precedes fi in
+        // f-set's offset list, so an (f, f, i) input matches ffi first
+        // — even though (f, f) is not a valid fi prefix, this fixture
+        // mostly demonstrates that the *first* matching ligature wins.
+        assert_eq!(ls.substitute(&[6, 6, 9]), Some((101, 3)));
+        // An (f, i) input — too short for ffi — falls through to fi.
+        assert_eq!(ls.substitute(&[6, 9]), Some((102, 2)));
+    }
+
+    #[test]
+    fn ligature_subst_substitute_returns_none_when_no_match() {
+        let raw = build_example_6_subtable();
+        let ls = LigatureSubst::parse(&raw).unwrap();
+        // Empty input → None.
+        assert_eq!(ls.substitute(&[]), None);
+        // First glyph uncovered → None.
+        assert_eq!(ls.substitute(&[7, 9]), None);
+        // First glyph covered (e) but no Ligature in e-set matches the
+        // tail (e-set only contains "etc" which expects t, c).
+        assert_eq!(ls.substitute(&[5, 0, 0]), None);
+        // First glyph f but no matching tail (f-set wants either
+        // [f, i] or [f, i] — wait, ffi tail is [f, i] and fi tail is [i].
+        // An (f, x) input where x != i and second-glyph != f matches
+        // nothing.
+        assert_eq!(ls.substitute(&[6, 99]), None);
+    }
+
+    #[test]
+    fn ligature_subst_iter_walks_coverage_in_order() {
+        let raw = build_example_6_subtable();
+        let ls = LigatureSubst::parse(&raw).unwrap();
+        let glyphs: Vec<_> = ls.iter().map(|(g, _)| g).collect();
+        assert_eq!(glyphs, vec![5, 6]);
+        // Each set still decodes from the iter view.
+        for (_, set_res) in ls.iter() {
+            let set = set_res.unwrap();
+            assert!(set.ligature_count() >= 1);
+        }
+    }
+
+    #[test]
+    fn ligature_subst_rejects_unknown_format() {
+        // format = 2 — undefined for Lookup Type 4.
+        let mut raw = vec![0u8; 16];
+        raw[0..2].copy_from_slice(&be(2));
+        raw[2..4].copy_from_slice(&be(8));
+        // Plausible coverage payload at offset 8.
+        raw[8..10].copy_from_slice(&be(1));
+        raw[10..12].copy_from_slice(&be(1));
+        raw[12..14].copy_from_slice(&be(5));
+        assert!(matches!(
+            LigatureSubst::parse(&raw),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn ligature_subst_rejects_truncated_set_offsets_array() {
+        // Header claims ligatureSetCount = 4 (needs 8 bytes of
+        // setOffsets at offsets 6..14) but the buffer ends mid-array.
+        // The Coverage table is placed in-range so that the
+        // coverageOffset check passes and the trailing-array length
+        // check actually fires.
+        //
+        //   0  / 2 / format = 1
+        //   2  / 2 / coverageOffset = 8   (must be < buffer.len() = 12)
+        //   4  / 2 / ligatureSetCount = 4 (needs 8 bytes from off 6 →
+        //                                  need = 14; buffer = 12.)
+        //   6  / 2 / ligatureSetOffsets[0]
+        //   8  / 2 / coverage format = 1
+        //  10  / 2 / glyphCount = 0
+        let mut raw = vec![0u8; 12];
+        raw[0..2].copy_from_slice(&be(1));
+        raw[2..4].copy_from_slice(&be(8));
+        raw[4..6].copy_from_slice(&be(4));
+        raw[6..8].copy_from_slice(&be(0));
+        raw[8..10].copy_from_slice(&be(1));
+        raw[10..12].copy_from_slice(&be(0));
+        assert!(matches!(
+            LigatureSubst::parse(&raw),
+            Err(Error::UnexpectedEof)
+        ));
+    }
+
+    #[test]
+    fn ligature_subst_rejects_coverage_offset_out_of_range() {
+        let mut raw = vec![0u8; 10];
+        raw[0..2].copy_from_slice(&be(1)); // format
+        raw[2..4].copy_from_slice(&be(99)); // coverageOffset past end
+        raw[4..6].copy_from_slice(&be(0)); // ligatureSetCount
+        assert!(matches!(
+            LigatureSubst::parse(&raw),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn ligature_subst_zero_component_count_rejected() {
+        // A Ligature with componentCount = 0 is malformed by spec
+        // (componentCount counts the first glyph too). Build a 1-set,
+        // 1-lig subtable whose Ligature claims componentCount = 0.
+        //
+        //   0   / 2 / format = 1
+        //   2   / 2 / coverageOffset = 14
+        //   4   / 2 / ligatureSetCount = 1
+        //   6   / 2 / ligatureSetOffsets[0] = 8 (→ off 8)
+        //   8   / 2 / ligatureCount = 1
+        //  10   / 2 / ligatureOffsets[0] = 4 (→ off 12)
+        //  12   / 2 / ligatureGlyph = 50
+        //  14   / 2 / componentCount = 0   (overlapping with Coverage —
+        //                                   we'll lay it out so it's
+        //                                   non-overlapping)
+        //  Replan: put Coverage AFTER the Ligature payload.
+        //   0   / 2 / format = 1
+        //   2   / 2 / coverageOffset = 16
+        //   4   / 2 / ligatureSetCount = 1
+        //   6   / 2 / ligatureSetOffsets[0] = 8 (→ off 8)
+        //   8   / 2 / ligatureCount = 1
+        //  10   / 2 / ligatureOffsets[0] = 4 (→ off 12)
+        //  12   / 2 / ligatureGlyph = 50
+        //  14   / 2 / componentCount = 0
+        //  16   / 2 / coverage format = 1
+        //  18   / 2 / glyphCount = 1
+        //  20   / 2 / glyph = 10
+        let mut raw = vec![0u8; 22];
+        raw[0..2].copy_from_slice(&be(1));
+        raw[2..4].copy_from_slice(&be(16));
+        raw[4..6].copy_from_slice(&be(1));
+        raw[6..8].copy_from_slice(&be(8));
+        raw[8..10].copy_from_slice(&be(1));
+        raw[10..12].copy_from_slice(&be(4));
+        raw[12..14].copy_from_slice(&be(50));
+        raw[14..16].copy_from_slice(&be(0)); // componentCount = 0 → reject
+        raw[16..18].copy_from_slice(&be(1));
+        raw[18..20].copy_from_slice(&be(1));
+        raw[20..22].copy_from_slice(&be(10));
+        let ls = LigatureSubst::parse(&raw).unwrap();
+        let set = ls.ligature_set(0).unwrap().unwrap();
+        let lig = set.ligature(0).unwrap();
+        assert!(matches!(lig, Err(Error::BadStructure(_))));
+    }
+
+    // -------------- GsubTable::ligature_subst integration --------------
+
+    /// Build a tiny GSUB table whose only lookup is a type-4
+    /// LigatureSubst subtable.
+    fn build_minimal_ligature_gsub() -> Vec<u8> {
+        // Subtable bytes copied wholesale from the Example-6 subtable.
+        let sub = build_example_6_subtable();
+
+        // GSUB layout (all offsets relative to start of GSUB):
+        //   0   /  10 / header (script=10, feature=22, lookup=36)
+        //   10  /  12 / ScriptList (1 record, DFLT @18)
+        //   18  /   4 / Script (no LangSys)
+        //   22  /  10 / FeatureList (1 record, "liga" @ 30)
+        //   30  /   6 / Feature
+        //   36  /   4 / LookupList (1 entry → 40)
+        //   40  /   8 / Lookup type=4, flag=0, subTableCount=1, subOff=8
+        //   48  /  ?  / LigatureSubstFormat1 subtable (sub.len() bytes)
+        let head_end = 48 + sub.len();
+        let mut bytes = vec![0u8; head_end];
+        // header
+        bytes[0..2].copy_from_slice(&be(1));
+        bytes[2..4].copy_from_slice(&be(0));
+        bytes[4..6].copy_from_slice(&be(10));
+        bytes[6..8].copy_from_slice(&be(22));
+        bytes[8..10].copy_from_slice(&be(36));
+        // ScriptList
+        bytes[10..12].copy_from_slice(&be(1));
+        bytes[12..16].copy_from_slice(b"DFLT");
+        bytes[16..18].copy_from_slice(&be(8));
+        // Script
+        bytes[18..20].copy_from_slice(&be(0));
+        bytes[20..22].copy_from_slice(&be(0));
+        // FeatureList
+        bytes[22..24].copy_from_slice(&be(1));
+        bytes[24..28].copy_from_slice(b"liga");
+        bytes[28..30].copy_from_slice(&be(8));
+        // Feature
+        bytes[30..32].copy_from_slice(&be(0));
+        bytes[32..34].copy_from_slice(&be(1));
+        bytes[34..36].copy_from_slice(&be(0));
+        // LookupList
+        bytes[36..38].copy_from_slice(&be(1));
+        bytes[38..40].copy_from_slice(&be(4));
+        // Lookup: type=4, flag=0, subTableCount=1, subtableOffsets=[8]
+        bytes[40..42].copy_from_slice(&be(4));
+        bytes[42..44].copy_from_slice(&be(0));
+        bytes[44..46].copy_from_slice(&be(1));
+        bytes[46..48].copy_from_slice(&be(8));
+        // Subtable
+        bytes[48..head_end].copy_from_slice(&sub);
+        bytes
+    }
+
+    #[test]
+    fn gsub_ligature_subst_end_to_end() {
+        let bytes = build_minimal_ligature_gsub();
+        let g = GsubTable::parse(&bytes).unwrap();
+        assert_eq!(g.lookup_count(), 1);
+        let l0 = g.lookup(0).unwrap();
+        assert_eq!(l0.lookup_type(), GSUB_LOOKUP_TYPE_LIGATURE);
+
+        let ls = g.ligature_subst(0, 0).expect("subtable exists").unwrap();
+        assert_eq!(ls.format(), 1);
+        // Same end-to-end substitution as the standalone test.
+        assert_eq!(ls.substitute(&[5, 20, 21]), Some((100, 3)));
+        assert_eq!(ls.substitute(&[6, 6, 9]), Some((101, 3)));
+        assert_eq!(ls.substitute(&[6, 9]), Some((102, 2)));
+        assert_eq!(ls.substitute(&[7, 7]), None);
+    }
+
+    #[test]
+    fn gsub_ligature_subst_rejects_non_type_4_lookup() {
+        // Reuse the minimal_v10 layout but declare the Lookup as type
+        // = 1 (single), then assert the typed accessor rejects.
+        let mut bytes = vec![0u8; 54];
+        bytes[0..2].copy_from_slice(&be(1));
+        bytes[2..4].copy_from_slice(&be(0));
+        bytes[4..6].copy_from_slice(&be(10));
+        bytes[6..8].copy_from_slice(&be(22));
+        bytes[8..10].copy_from_slice(&be(44));
+        bytes[10..12].copy_from_slice(&be(1));
+        bytes[12..16].copy_from_slice(b"DFLT");
+        bytes[16..18].copy_from_slice(&be(8));
+        bytes[18..20].copy_from_slice(&be(0));
+        bytes[20..22].copy_from_slice(&be(0));
+        bytes[22..24].copy_from_slice(&be(1));
+        bytes[24..28].copy_from_slice(b"liga");
+        bytes[28..30].copy_from_slice(&be(8));
+        bytes[30..32].copy_from_slice(&be(0));
+        bytes[32..34].copy_from_slice(&be(1));
+        bytes[34..36].copy_from_slice(&be(0));
+        bytes[44..46].copy_from_slice(&be(1));
+        bytes[46..48].copy_from_slice(&be(4));
+        // Lookup: declare type = 1 (single), not type 4.
+        bytes[48..50].copy_from_slice(&be(1));
+        bytes[50..52].copy_from_slice(&be(0));
+        bytes[52..54].copy_from_slice(&be(0));
+
+        let g = GsubTable::parse(&bytes).unwrap();
+        assert!(matches!(g.ligature_subst(0, 0), Some(Err(_))));
+    }
+
+    #[test]
+    fn gsub_ligature_subst_out_of_range_indices_return_none() {
+        let bytes = build_minimal_ligature_gsub();
+        let g = GsubTable::parse(&bytes).unwrap();
+        // Subtable index past the lookup's subTableCount.
+        assert!(g.ligature_subst(0, 1).is_none());
+        // Lookup index past the lookupCount.
+        assert!(g.ligature_subst(99, 0).is_none());
     }
 }

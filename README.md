@@ -192,6 +192,39 @@ if let Some(g) = font.gsub() {
             }
         }
     }
+
+    // GSUB Lookup Type 4 — ligature substitution (many → one). The
+    // typed view decodes Coverage + LigatureSet + Ligature tables and
+    // answers `substitute(input)` returning `(ligature_glyph,
+    // components_consumed)` for the first matching Ligature in the
+    // set (spec: array order = preference order).
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != oxideav_otf::GSUB_LOOKUP_TYPE_LIGATURE {
+            continue;
+        }
+        for s in 0..l.subtable_count() {
+            let ls = g.ligature_subst(i, s).unwrap()?;
+            // Walk every (first_component_glyph, LigatureSet) pair.
+            for (first_glyph, set_res) in ls.iter() {
+                let set = set_res?;
+                for j in 0..set.ligature_count() {
+                    let lig = set.ligature(j).unwrap()?;
+                    let _ = lig.ligature_glyph();
+                    let _ = lig.component_count();   // includes first_glyph
+                    let _: Vec<u16> = lig.component_glyphs().collect();
+                    let _ = first_glyph;
+                }
+            }
+            // Apply as a shaper would: feed the current input slice
+            // starting at the candidate first_glyph; on success, advance
+            // the shaper's cursor by `components` glyphs.
+            let input: &[u16] = &[/* current_glyph, next_glyph, ... */];
+            if let Some((out_glyph, components)) = ls.substitute(input) {
+                let _ = (out_glyph, components);
+            }
+        }
+    }
 }
 
 for contour in &outline.contours {
@@ -201,6 +234,73 @@ for contour in &outline.contours {
     }
 }
 ```
+
+## Round-248 additions (this push)
+
+GSUB **Lookup Type 4 (ligature substitution)** is now decoded as a
+typed view, joining Type 1 (single substitution) from the previous
+push. Spec: `docs/text/opentype/otspec-gsub.html` §"Lookup type 4
+subtable: ligature substitution". One on-disk format is defined
+(`LigatureSubstFormat1`); the typed view exposes every field down to
+the per-Ligature `componentGlyphIDs[]` array.
+
+- **`LigatureSubst<'a>`** decodes the subtable header (`format`,
+  `coverageOffset`, `ligatureSetCount`, `ligatureSetOffsets[]`). The
+  Coverage table is re-used from `tables::gdef::Coverage` (the same
+  shared common-layout primitive that GPOS, GDEF, and GSUB types
+  1 / 5 / 6 / 8 read).
+- **`LigatureSet<'a>`** decodes the per-first-component
+  `(ligatureCount, ligatureOffsets[])` pair. Ligature offsets are
+  measured from the start of the LigatureSet, per spec; per-Ligature
+  byte windows are validated when accessed.
+- **`Ligature<'a>`** decodes `(ligatureGlyph, componentCount,
+  componentGlyphIDs[componentCount - 1])`. The first component glyph
+  is implicit — it's the Coverage entry that selected the
+  LigatureSet — so the on-disk `componentGlyphIDs[]` array starts at
+  the *second* component (input glyph sequence index = 1). A
+  `componentCount` of zero is rejected at parse time (the spec count
+  includes the first component; zero leaves the first-component
+  invariant unsatisfiable).
+- **`LigatureSubst::substitute(input: &[u16]) -> Option<(u16, u16)>`**
+  is the shaper-path entrypoint. The first glyph of `input` is looked
+  up in Coverage; the corresponding LigatureSet is walked in spec
+  order (= preference order, "longer / preferred ligatures first");
+  the first Ligature whose `componentGlyphIDs[..]` matches the input
+  tail wins and the call returns `(ligatureGlyph, componentCount)` —
+  the substitute glyph plus the total number of input glyphs the
+  ligature consumed. `None` for: empty input, uncovered first glyph,
+  or no matching Ligature in the selected set.
+- **`LigatureSubst::iter()`** yields every `(coverage_glyph,
+  LigatureSet)` pair in ascending Coverage order; **`LigatureSet
+  ::ligature(i)`** borrows the Ligature at preference index `i`; and
+  **`Ligature::component_glyphs()`** yields the tail glyphs (the
+  second-and-beyond components) in input order.
+- **`GsubTable::ligature_subst(lookup_i, sub_i)`** is the convenience
+  accessor that walks the lookup chain and confirms the lookup type
+  is `GSUB_LOOKUP_TYPE_LIGATURE` (= 4) before parsing. Returns
+  `None` for out-of-range indices and `Some(Err(BadStructure))` when
+  the referenced lookup is the wrong type. Mirrors the existing
+  `single_subst(...)` accessor on the same type.
+
+The `LigatureSubst`, `LigatureSubstIter`, `LigatureSet`, `Ligature`,
+and `LigatureComponentIter` types are re-exported at the crate root.
+The other GSUB lookup types (2 Multiple, 3 Alternate, 5 Contextual,
+6 Chained-context, 7 Extension, 8 Reverse-chained-single) remain raw
+byte slices via `Lookup::subtable_bytes(i)`.
+
+Synthetic-byte unit tests cover the spec's worked Example 6
+(Coverage = `{e, f}`, e-set = `[etc]`, f-set = `[ffi, fi]` with ffi
+preferred), every error path (`format != 1`, out-of-range
+`coverageOffset`, truncated `ligatureSetOffsets[]`, `componentCount
+== 0`), the `substitute()` first-match preference rule, and the
+out-of-range / wrong-type accessor returns. One new integration test
+against the Source Sans 3 fixture walks every type-4 lookup, decodes
+every LigatureSet and Ligature, verifies (a) Coverage iteration is
+ascending, (b) every ligature glyph and every component glyph fits
+inside `maxp.numGlyphs`, (c) `componentCount >= 1`, (d) the tail
+iterator returns exactly `componentCount - 1` entries, and (e) the
+first Ligature in each set round-trips through `substitute()` on its
+own canonical input.
 
 ## Round-229 additions (previous push)
 
