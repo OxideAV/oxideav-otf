@@ -927,6 +927,112 @@ fn gsub_single_subst_decodes_every_type_1_lookup() {
 }
 
 #[test]
+fn gsub_multiple_subst_decodes_every_type_2_lookup() {
+    // Walk every GSUB lookup; for the type-2 lookups (multiple
+    // substitution), decode the subtable through the typed
+    // [`MultipleSubst`] view and verify the spec's invariants:
+    //
+    // * format == 1 (the only defined MultipleSubst format)
+    // * sequenceCount == coverage.len() (parser invariant, but
+    //   re-checked here through the public accessors)
+    // * every Sequence's glyphCount >= 1 (spec prohibits deletion)
+    // * every substitute glyph fits inside maxp.numGlyphs
+    // * iter() walks Coverage in ascending order
+    //
+    // Source Sans 3 historically ships 2 type-2 lookups: one large
+    // subtable (~407 sequences, mark-decomposition for combining
+    // diacritics) and one small subtable (~11 sequences, a small
+    // ligature decomposition). The bounds below are loose enough to
+    // tolerate vendor adjustments across releases.
+    use oxideav_otf::MultipleSubst;
+
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gsub().expect("Source Sans 3 carries a GSUB table");
+    let n = f.glyph_count();
+
+    let mut total_subtables = 0;
+    let mut total_sequences = 0usize;
+    let mut total_substitute_glyphs = 0usize;
+
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != 2 {
+            continue;
+        }
+        for s in 0..l.subtable_count() {
+            let ms: MultipleSubst<'_> = g
+                .multiple_subst(i, s)
+                .unwrap_or_else(|| panic!("lookup {i} sub {s} missing"))
+                .unwrap_or_else(|e| panic!("lookup {i} sub {s} decode: {e:?}"));
+            assert_eq!(ms.format(), 1, "lookup {i} sub {s} format != 1");
+            total_subtables += 1;
+
+            // Coverage iter is sorted ascending; each Coverage glyph
+            // maps to its own Sequence.
+            let mut last_input: Option<u32> = None;
+            for (input, seq_res) in ms.iter() {
+                if let Some(prev) = last_input {
+                    assert!(
+                        (input as u32) > prev,
+                        "Coverage iter not ascending at lookup {i} sub {s}: {prev} -> {input}",
+                    );
+                }
+                last_input = Some(input as u32);
+                assert!(
+                    (input as u32) < n as u32,
+                    "input glyph {input} >= numGlyphs {n} at lookup {i} sub {s}",
+                );
+                let seq = seq_res.unwrap_or_else(|e| {
+                    panic!("Sequence decode at lookup {i} sub {s} input {input}: {e:?}")
+                });
+                let gc = seq.glyph_count();
+                assert!(
+                    gc >= 1,
+                    "glyphCount = 0 (deletion) at lookup {i} sub {s} input {input}",
+                );
+                let outs: Vec<u16> = seq.glyphs().collect();
+                assert_eq!(outs.len(), gc as usize);
+                for (k, &out) in outs.iter().enumerate() {
+                    assert!(
+                        (out as u32) < n as u32,
+                        "substitute glyph {out} >= numGlyphs {n} \
+                         at lookup {i} sub {s} input {input} pos {k}",
+                    );
+                    // glyph(k) point-lookup agrees with the iterator.
+                    assert_eq!(seq.glyph(k as u16), Some(out));
+                }
+                // substitute() returns the same byte window as the
+                // sequence() / iter() path.
+                let via_sub = ms.substitute(input).expect("covered input must substitute");
+                let via_outs: Vec<u16> = via_sub.glyphs().collect();
+                assert_eq!(via_outs, outs);
+                total_substitute_glyphs += outs.len();
+                total_sequences += 1;
+            }
+            // A glyph guaranteed NOT to be in this subtable: the
+            // synthetic glyph ID `n` is past the end of the font.
+            assert!(ms.substitute(n).is_none());
+        }
+    }
+
+    // Source Sans 3 ships at least one type-2 subtable. Loosen the
+    // bounds slightly so a future Adobe re-cut does not regress the
+    // test.
+    assert!(
+        total_subtables >= 1,
+        "expected >=1 type-2 subtables, got {total_subtables}",
+    );
+    // Every Sequence emits at least one glyph; deletion is spec-
+    // prohibited, so the substitute-glyph total must be at least the
+    // sequence count.
+    assert!(
+        total_substitute_glyphs >= total_sequences,
+        "substitute-glyph total {total_substitute_glyphs} \
+         < sequence count {total_sequences}",
+    );
+}
+
+#[test]
 fn gsub_ligature_subst_decodes_every_type_4_lookup() {
     // Walk every GSUB lookup; for the type-4 lookups (ligature
     // substitution), decode the subtable through the typed

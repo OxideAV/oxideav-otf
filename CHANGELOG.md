@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GSUB Lookup Type 2 (multiple substitution) decoded** via a new
+  `MultipleSubst` typed view, joining the round-247 `SingleSubst` and
+  round-254 `LigatureSubst` work. Source:
+  `docs/text/opentype/otspec-gsub.html` §"Lookup type 2 subtable:
+  multiple substitution"; the Coverage table is re-used from
+  `tables::gdef::Coverage` (the shared common-layout primitive, per
+  `otspec-chapter2-common-layout-tables.html`). `MultipleSubst` decodes
+  the one defined on-disk format — `(format, coverageOffset,
+  sequenceCount, sequenceOffsets[sequenceCount])` — and validates the
+  spec's `sequenceCount == coverage.len()` invariant at parse time;
+  `Sequence` decodes the per-input `(glyphCount,
+  substituteGlyphIDs[glyphCount])` payload. A `glyphCount` of zero is
+  rejected as `BadStructure`: the spec explicitly prohibits using
+  multiple substitution as a deletion ("The glyphCount value must
+  always be greater than 0"). `MultipleSubst::substitute(input: u16)
+  -> Option<Sequence>` is the shaper-path entrypoint: the covered
+  input glyph selects a Sequence via Coverage Index, which is returned
+  as a zero-copy view over the on-disk `substituteGlyphIDs[]` bytes.
+  `MultipleSubst::iter()` yields `(coverage_glyph, Sequence)` pairs in
+  ascending Coverage order; `Sequence::glyph(i)` borrows the
+  substitute glyph at output index `i`; `Sequence::glyphs()` yields
+  the full output sequence in order. New convenience accessor
+  `GsubTable::multiple_subst(lookup_i, sub_i)` mirrors
+  `single_subst(...)` / `ligature_subst(...)`: `None` for out-of-range
+  indices, `Some(Err(BadStructure))` when the referenced lookup is not
+  declared as type 2. `MultipleSubst`, `MultipleSubstIter`,
+  `Sequence`, and `SequenceGlyphIter` are re-exported at the crate
+  root. Synthetic-byte unit tests cover the spec's worked Example 4
+  (ffi-ligature glyph `0x00F1` decomposed into `[f=0x1A, f=0x1A,
+  i=0x1D]`), Coverage iteration with two covered glyphs (ascending
+  order), the `format != 1` rejection, out-of-range `coverageOffset`,
+  the `sequenceCount != coverage.len()` rejection, truncated
+  `sequenceOffsets[]`, the `glyphCount == 0` (deletion) rejection,
+  the rejection of a non-type-2 lookup on the accessor, and an
+  end-to-end GSUB byte tower whose only lookup is the same Example-4
+  subtable. A Source Sans 3 integration test walks every type-2
+  lookup (the font ships two — one ~407-sequence mark-decomposition
+  subtable plus a smaller secondary subtable), decodes every
+  `MultipleSubst` and every per-input `Sequence`, verifies Coverage
+  iteration is ascending, every substitute glyph fits inside
+  `maxp.numGlyphs`, every `glyphCount >= 1`, the `glyph(k)`
+  point-lookup agrees with the `glyphs()` iterator, and
+  `substitute(input)` agrees with the iter/sequence path. The other
+  lookup types (3 Alternate, 5 Contextual, 6 Chained-context,
+  7 Extension, 8 Reverse-chained-single) remain raw sub-slices
+  pending dedicated rounds.
+
 - **GSUB Lookup Type 4 (ligature substitution) decoded** via a new
   `LigatureSubst` typed view, joining the round-247 `SingleSubst`
   work. Source: `docs/text/opentype/otspec-gsub.html` §"Lookup type 4

@@ -34,6 +34,20 @@
 //!   * Format 2 — `(format, coverageOffset, glyphCount,
 //!     substituteGlyphIDs[glyphCount])`. Output glyph ID =
 //!     `substituteGlyphIDs[coverage_index_of(input)]`.
+//! * **GsubLookupType 2 — Multiple substitution** (one glyph replaced
+//!   by a sequence of glyphs) via [`MultipleSubst`]. The one on-disk
+//!   format is decoded
+//!   ([`docs/text/opentype/otspec-gsub.html` §"Lookup type 2 subtable:
+//!   multiple substitution"]):
+//!   * Format 1 — `(format, coverageOffset, sequenceCount,
+//!     sequenceOffsets[sequenceCount])`. Each Sequence table is
+//!     `(glyphCount, substituteGlyphIDs[glyphCount])`. The covered
+//!     input glyph at Coverage Index `i` is replaced by the
+//!     `substituteGlyphIDs[]` of the Sequence at offset `i`. Per spec,
+//!     `sequenceCount` must equal the Coverage table's glyph count, and
+//!     every Sequence's `glyphCount` must be greater than zero (the
+//!     spec explicitly prohibits using Multiple substitution as a
+//!     deletion).
 //! * **GsubLookupType 4 — Ligature substitution** (a sequence of glyphs
 //!   replaced by a single ligature glyph) via [`LigatureSubst`]. The
 //!   one on-disk format is decoded
@@ -50,10 +64,10 @@
 //!     order is the preference order — longer / preferred ligatures
 //!     come first.
 //!
-//! Other GSUB subtable types (2 Multiple, 3 Alternate, 5 Contextual,
-//! 6 Chained-context, 7 Extension, 8 Reverse-chained-single) remain
-//! raw sub-slices via [`super::layout::Lookup::subtable_bytes`];
-//! decoding their interiors is deferred to a future round.
+//! Other GSUB subtable types (3 Alternate, 5 Contextual, 6
+//! Chained-context, 7 Extension, 8 Reverse-chained-single) remain raw
+//! sub-slices via [`super::layout::Lookup::subtable_bytes`]; decoding
+//! their interiors is deferred to a future round.
 
 use crate::parser::{read_i16, read_u16};
 use crate::tables::gdef::Coverage;
@@ -297,6 +311,264 @@ impl<'a> Iterator for SingleSubstIter<'a> {
             }
         };
         Some((g, out))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lookup type 2: Multiple substitution (otspec-gsub.html §"Lookup type 2
+// subtable: multiple substitution")
+// ---------------------------------------------------------------------------
+
+/// Parsed `MultipleSubst` subtable — the GSUB `lookupType = 2` payload.
+///
+/// Spec: `docs/text/opentype/otspec-gsub.html` §"Lookup type 2 subtable:
+/// multiple substitution".
+///
+/// One on-disk format is defined. The Coverage table names the input
+/// glyphs; each covered glyph maps (by Coverage Index) to a
+/// per-input-glyph `Sequence` table that carries the output glyph
+/// sequence.
+///
+/// ```text
+/// MultipleSubstFormat1 subtable
+///   0 / 2 / format = 1
+///   2 / 2 / coverageOffset       (Offset16, from start of subtable)
+///   4 / 2 / sequenceCount        (== Coverage.len())
+///   6 / 2 * n / sequenceOffsets[sequenceCount]
+///                                 (Offset16, from start of subtable,
+///                                  ordered by Coverage index)
+///
+/// Sequence table
+///   0 / 2 / glyphCount           (must be > 0; the spec prohibits
+///                                 using MultipleSubst as a deletion)
+///   2 / 2 * n / substituteGlyphIDs[glyphCount]
+/// ```
+///
+/// [`Self::substitute`] returns the replacement glyph sequence (if any)
+/// for an input glyph as a borrowed slice of `u16`-valued bytes; use
+/// [`Self::substitute_iter`] for an iterator over the typed `u16`
+/// outputs.
+#[derive(Debug, Clone, Copy)]
+pub struct MultipleSubst<'a> {
+    /// Raw subtable bytes (offsets in the on-disk records are relative
+    /// to this buffer's start).
+    bytes: &'a [u8],
+    coverage: Coverage<'a>,
+    /// Slice of the `sequenceOffsets[]` array (2 bytes per offset).
+    seq_offsets: &'a [u8],
+}
+
+impl<'a> MultipleSubst<'a> {
+    /// Parse a MultipleSubst subtable from a buffer whose first two
+    /// bytes are the `format` identifier.
+    ///
+    /// Validates the format discriminant (only `1` is defined), the
+    /// `coverageOffset` window, that `sequenceCount` equals the
+    /// Coverage length (spec: "the sequenceOffsets array … must contain
+    /// the same number of offsets as the Coverage table"), and that the
+    /// trailing `sequenceOffsets[]` array fits inside the supplied
+    /// slice. Per-Sequence payloads are validated lazily —
+    /// [`Self::sequence`] re-validates on each call so a malformed
+    /// inner record can't poison the top-level view.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let format = read_u16(bytes, 0)?;
+        if format != 1 {
+            return Err(Error::BadStructure(
+                "GSUB/MultipleSubst: unknown subtable format",
+            ));
+        }
+        let cov_off = read_u16(bytes, 2)? as usize;
+        if cov_off == 0 || cov_off >= bytes.len() {
+            return Err(Error::BadStructure(
+                "GSUB/MultipleSubst: coverageOffset out of range",
+            ));
+        }
+        let coverage = Coverage::parse(&bytes[cov_off..])?;
+        let seq_count = read_u16(bytes, 4)? as usize;
+        // Spec: "the sequenceOffsets array … must contain the same
+        // number of offsets as the Coverage table."
+        if seq_count != coverage.len() {
+            return Err(Error::BadStructure(
+                "GSUB/MultipleSubst: sequenceCount != coverage.len()",
+            ));
+        }
+        let array_start = 6usize;
+        let need = array_start
+            .checked_add(
+                seq_count
+                    .checked_mul(2)
+                    .ok_or(Error::BadStructure("GSUB/MultipleSubst length overflow"))?,
+            )
+            .ok_or(Error::BadStructure("GSUB/MultipleSubst length overflow"))?;
+        if bytes.len() < need {
+            return Err(Error::UnexpectedEof);
+        }
+        Ok(Self {
+            bytes,
+            coverage,
+            seq_offsets: &bytes[array_start..need],
+        })
+    }
+
+    /// Subtable format discriminant (always `1`).
+    pub fn format(&self) -> u16 {
+        1
+    }
+
+    /// The input-side [`Coverage`] table. Each covered glyph maps (by
+    /// Coverage Index) to a per-input-glyph [`Sequence`].
+    pub fn coverage(&self) -> Coverage<'a> {
+        self.coverage
+    }
+
+    /// `sequenceCount` — number of Sequence tables. Equal to
+    /// `coverage().len()` by spec invariant.
+    pub fn sequence_count(&self) -> u16 {
+        (self.seq_offsets.len() / 2) as u16
+    }
+
+    /// Borrow the [`Sequence`] at the given Coverage index. Returns
+    /// `None` for an out-of-range index, `Some(Err(...))` when the
+    /// referenced bytes are malformed or violate the spec's
+    /// "glyphCount > 0" rule.
+    pub fn sequence(&self, seq_i: u16) -> Option<Result<Sequence<'a>, Error>> {
+        let off2 = (seq_i as usize).checked_mul(2)?;
+        if off2 + 2 > self.seq_offsets.len() {
+            return None;
+        }
+        let off = u16::from_be_bytes([self.seq_offsets[off2], self.seq_offsets[off2 + 1]]) as usize;
+        if off == 0 || off >= self.bytes.len() {
+            return Some(Err(Error::BadStructure(
+                "GSUB/MultipleSubst: sequenceOffset out of range",
+            )));
+        }
+        Some(Sequence::parse(&self.bytes[off..]))
+    }
+
+    /// Apply this subtable as a shaper would.
+    ///
+    /// Returns `Some(sequence)` when `input` is in [`Self::coverage`];
+    /// the returned [`Sequence`] carries the substitute glyph sequence.
+    /// Returns `None` when `input` is uncovered or the per-input
+    /// Sequence bytes are unreachable / malformed (the typed accessor
+    /// [`Self::sequence`] is the diagnosis path for the latter).
+    pub fn substitute(&self, input: u16) -> Option<Sequence<'a>> {
+        let i = self.coverage.index_of(input)?;
+        self.sequence(i)?.ok()
+    }
+
+    /// Iterate the `(input_glyph, Sequence)` pairs in this subtable in
+    /// ascending Coverage order. Malformed Sequence references are
+    /// surfaced as `Err`.
+    pub fn iter(&self) -> MultipleSubstIter<'a> {
+        MultipleSubstIter {
+            cov: self.coverage.iter(),
+            outer: *self,
+        }
+    }
+}
+
+/// Iterator yielded by [`MultipleSubst::iter`].
+#[derive(Debug, Clone)]
+pub struct MultipleSubstIter<'a> {
+    cov: crate::tables::gdef::CoverageIter<'a>,
+    outer: MultipleSubst<'a>,
+}
+
+impl<'a> Iterator for MultipleSubstIter<'a> {
+    type Item = (u16, Result<Sequence<'a>, Error>);
+    fn next(&mut self) -> Option<Self::Item> {
+        let (g, idx) = self.cov.next()?;
+        let seq = self.outer.sequence(idx)?;
+        Some((g, seq))
+    }
+}
+
+/// Parsed `Sequence` table — a count + an array of output glyph IDs
+/// (the substitute glyph sequence for one covered input glyph).
+///
+/// The on-disk record is `(glyphCount,
+/// substituteGlyphIDs[glyphCount])`. Per spec, `glyphCount` "must
+/// always be greater than 0" — the prohibition against using
+/// MultipleSubst as a deletion. [`Sequence::parse`] enforces the rule;
+/// a zero `glyphCount` surfaces as `Error::BadStructure`.
+#[derive(Debug, Clone, Copy)]
+pub struct Sequence<'a> {
+    /// Raw `substituteGlyphIDs[]` payload — `2 * glyphCount` bytes,
+    /// big-endian `u16` per entry.
+    glyphs: &'a [u8],
+}
+
+impl<'a> Sequence<'a> {
+    /// Parse a Sequence table from a buffer whose first two bytes are
+    /// `glyphCount`.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let count = read_u16(bytes, 0)? as usize;
+        if count == 0 {
+            // Spec: "The use of multiple substitution for deletion of
+            // an input glyph is prohibited. The glyphCount value must
+            // always be greater than 0."
+            return Err(Error::BadStructure(
+                "GSUB/Sequence: glyphCount must be >= 1",
+            ));
+        }
+        let array_start = 2usize;
+        let need = array_start
+            .checked_add(
+                count
+                    .checked_mul(2)
+                    .ok_or(Error::BadStructure("GSUB/Sequence length overflow"))?,
+            )
+            .ok_or(Error::BadStructure("GSUB/Sequence length overflow"))?;
+        if bytes.len() < need {
+            return Err(Error::UnexpectedEof);
+        }
+        Ok(Self {
+            glyphs: &bytes[array_start..need],
+        })
+    }
+
+    /// `glyphCount` — number of glyph IDs in the substitute sequence.
+    /// Always >= 1 per spec.
+    pub fn glyph_count(&self) -> u16 {
+        (self.glyphs.len() / 2) as u16
+    }
+
+    /// The substitute glyph at output index `i` (`0 .. glyphCount`).
+    pub fn glyph(&self, i: u16) -> Option<u16> {
+        let off = (i as usize).checked_mul(2)?;
+        if off + 2 > self.glyphs.len() {
+            return None;
+        }
+        Some(u16::from_be_bytes([self.glyphs[off], self.glyphs[off + 1]]))
+    }
+
+    /// Iterator over every substitute glyph in output order.
+    pub fn glyphs(&self) -> SequenceGlyphIter<'a> {
+        SequenceGlyphIter {
+            bytes: self.glyphs,
+            pos: 0,
+        }
+    }
+}
+
+/// Iterator over a [`Sequence`]'s `substituteGlyphIDs[]` in output
+/// order.
+#[derive(Debug, Clone)]
+pub struct SequenceGlyphIter<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Iterator for SequenceGlyphIter<'a> {
+    type Item = u16;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos + 2 > self.bytes.len() {
+            return None;
+        }
+        let g = u16::from_be_bytes([self.bytes[self.pos], self.bytes[self.pos + 1]]);
+        self.pos += 2;
+        Some(g)
     }
 }
 
@@ -788,6 +1060,31 @@ impl<'a> GsubTable<'a> {
     }
 
     /// Decode subtable `sub_i` of lookup `lookup_i` as a
+    /// [`MultipleSubst`] (`GsubLookupType = 2`).
+    ///
+    /// Returns:
+    /// * `None` — `lookup_i` or `sub_i` is out of range, or the
+    ///   referenced subtable bytes are unreachable.
+    /// * `Some(Err(Error::BadStructure))` — the lookup is not declared
+    ///   as `GSUB_LOOKUP_TYPE_MULTIPLE`, or the subtable bytes are
+    ///   malformed.
+    /// * `Some(Ok(MultipleSubst))` — the typed subtable view.
+    pub fn multiple_subst(
+        &self,
+        lookup_i: u16,
+        sub_i: u16,
+    ) -> Option<Result<MultipleSubst<'a>, Error>> {
+        let lk = self.lookup(lookup_i)?;
+        if lk.lookup_type() != GSUB_LOOKUP_TYPE_MULTIPLE {
+            return Some(Err(Error::BadStructure(
+                "GSUB/MultipleSubst: lookup is not type 2",
+            )));
+        }
+        let bytes = lk.subtable_bytes(sub_i)?;
+        Some(MultipleSubst::parse(bytes))
+    }
+
+    /// Decode subtable `sub_i` of lookup `lookup_i` as a
     /// [`LigatureSubst`] (`GsubLookupType = 4`).
     ///
     /// Returns:
@@ -1182,6 +1479,332 @@ mod tests {
             GsubTable::parse(&bytes),
             Err(Error::BadStructure(_))
         ));
+    }
+
+    // -------------- MultipleSubst Format 1 -----------------------------
+
+    /// Build the spec's worked Example 4: replace the "ffi" ligature
+    /// glyph (`0x00F1` = 241) with the three-glyph sequence
+    /// `[f=0x1A=26, f=0x1A=26, i=0x1D=29]` (the bytes from §"Example 4:
+    /// MultipleSubstFormat1 subtable"). The layout below uses hand-set
+    /// offsets so the resulting bytes match the spec's hex listing
+    /// exactly through the header + Coverage + Sequence rows.
+    fn build_example_4_subtable() -> Vec<u8> {
+        // Layout plan (matches the spec's Example 4 byte listing):
+        //   off  0 .. 2  / format = 1
+        //   off  2 .. 4  / coverageOffset = 8
+        //   off  4 .. 6  / sequenceCount = 1
+        //   off  6 .. 8  / sequenceOffsets[0] = 14   (→ Sequence @ off 14)
+        //   off  8 .. 10 / coverage format = 1
+        //   off 10 .. 12 / glyphCount = 1
+        //   off 12 .. 14 / glyphArray[0] = 0x00F1 (ffi)
+        //   off 14 .. 16 / glyphCount = 3
+        //   off 16 .. 18 / substituteGlyphIDs[0] = 0x001A (f)
+        //   off 18 .. 20 / substituteGlyphIDs[1] = 0x001A (f)
+        //   off 20 .. 22 / substituteGlyphIDs[2] = 0x001D (i)
+        let mut out = vec![0u8; 22];
+        out[0..2].copy_from_slice(&be(1));
+        out[2..4].copy_from_slice(&be(8));
+        out[4..6].copy_from_slice(&be(1));
+        out[6..8].copy_from_slice(&be(14));
+        // Coverage Format 1
+        out[8..10].copy_from_slice(&be(1));
+        out[10..12].copy_from_slice(&be(1));
+        out[12..14].copy_from_slice(&be(0x00F1));
+        // Sequence
+        out[14..16].copy_from_slice(&be(3));
+        out[16..18].copy_from_slice(&be(0x001A));
+        out[18..20].copy_from_slice(&be(0x001A));
+        out[20..22].copy_from_slice(&be(0x001D));
+        out
+    }
+
+    #[test]
+    fn multiple_subst_example_4_round_trip() {
+        // Replays the spec's Example 4: the "ffi" ligature (glyph 241)
+        // decomposes into [f=26, f=26, i=29].
+        let raw = build_example_4_subtable();
+        let ms = MultipleSubst::parse(&raw).unwrap();
+        assert_eq!(ms.format(), 1);
+        assert_eq!(ms.sequence_count(), 1);
+
+        let seq = ms.sequence(0).unwrap().unwrap();
+        assert_eq!(seq.glyph_count(), 3);
+        assert_eq!(seq.glyph(0), Some(0x001A));
+        assert_eq!(seq.glyph(1), Some(0x001A));
+        assert_eq!(seq.glyph(2), Some(0x001D));
+        assert_eq!(seq.glyph(3), None);
+        let collected: Vec<_> = seq.glyphs().collect();
+        assert_eq!(collected, vec![0x001A, 0x001A, 0x001D]);
+
+        // substitute() routes Coverage → Sequence and yields the same
+        // bytes for the covered input glyph.
+        let out_seq = ms.substitute(0x00F1).expect("ffi is covered");
+        let outputs: Vec<_> = out_seq.glyphs().collect();
+        assert_eq!(outputs, vec![0x001A, 0x001A, 0x001D]);
+        // Uncovered glyphs return None.
+        assert_eq!(
+            ms.substitute(0x00F2).map(|s| s.glyph_count()),
+            None,
+            "uncovered glyph must not substitute",
+        );
+    }
+
+    #[test]
+    fn multiple_subst_iter_walks_coverage_in_order() {
+        // Two covered glyphs `{5, 9}`; their sequences are
+        // `[100, 101]` and `[200]` respectively.
+        //
+        // Layout plan:
+        //   off  0 .. 2  / format = 1
+        //   off  2 .. 4  / coverageOffset = 22
+        //   off  4 .. 6  / sequenceCount = 2
+        //   off  6 .. 8  / sequenceOffsets[0] = 10  (→ seq0 @ off 10)
+        //   off  8 .. 10 / sequenceOffsets[1] = 16  (→ seq1 @ off 16)
+        //   off 10 .. 12 / glyphCount = 2
+        //   off 12 .. 14 / substituteGlyphIDs[0] = 100
+        //   off 14 .. 16 / substituteGlyphIDs[1] = 101
+        //   off 16 .. 18 / glyphCount = 1
+        //   off 18 .. 20 / substituteGlyphIDs[0] = 200
+        //   off 20 .. 22 / padding (Coverage starts at 22)
+        //   off 22 .. 24 / coverage format = 1
+        //   off 24 .. 26 / glyphCount = 2
+        //   off 26 .. 28 / glyphArray[0] = 5
+        //   off 28 .. 30 / glyphArray[1] = 9
+        let mut raw = vec![0u8; 30];
+        raw[0..2].copy_from_slice(&be(1));
+        raw[2..4].copy_from_slice(&be(22));
+        raw[4..6].copy_from_slice(&be(2));
+        raw[6..8].copy_from_slice(&be(10));
+        raw[8..10].copy_from_slice(&be(16));
+        raw[10..12].copy_from_slice(&be(2));
+        raw[12..14].copy_from_slice(&be(100));
+        raw[14..16].copy_from_slice(&be(101));
+        raw[16..18].copy_from_slice(&be(1));
+        raw[18..20].copy_from_slice(&be(200));
+        raw[22..24].copy_from_slice(&be(1));
+        raw[24..26].copy_from_slice(&be(2));
+        raw[26..28].copy_from_slice(&be(5));
+        raw[28..30].copy_from_slice(&be(9));
+
+        let ms = MultipleSubst::parse(&raw).unwrap();
+        assert_eq!(ms.sequence_count(), 2);
+
+        let pairs: Vec<(u16, Vec<u16>)> = ms
+            .iter()
+            .map(|(g, s)| (g, s.unwrap().glyphs().collect()))
+            .collect();
+        assert_eq!(pairs, vec![(5, vec![100, 101]), (9, vec![200])],);
+    }
+
+    #[test]
+    fn multiple_subst_rejects_unknown_format() {
+        // format = 2 is undefined for Lookup Type 2.
+        let mut raw = vec![0u8; 14];
+        raw[0..2].copy_from_slice(&be(2));
+        raw[2..4].copy_from_slice(&be(8));
+        // Plausible coverage payload at offset 8 so the format check
+        // fires before the coverage walk.
+        raw[8..10].copy_from_slice(&be(1));
+        raw[10..12].copy_from_slice(&be(1));
+        raw[12..14].copy_from_slice(&be(5));
+        assert!(matches!(
+            MultipleSubst::parse(&raw),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn multiple_subst_rejects_coverage_offset_out_of_range() {
+        let mut raw = vec![0u8; 10];
+        raw[0..2].copy_from_slice(&be(1));
+        raw[2..4].copy_from_slice(&be(99));
+        raw[4..6].copy_from_slice(&be(0));
+        assert!(matches!(
+            MultipleSubst::parse(&raw),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn multiple_subst_rejects_sequence_count_mismatch() {
+        // Build the Example-4 subtable, then poke sequenceCount to a
+        // value that disagrees with the Coverage's glyphCount = 1.
+        let mut raw = build_example_4_subtable();
+        // sequenceCount lives at offset 4..6. We patch to 7 and the
+        // parser should refuse rather than fall through to a stale
+        // offset.
+        raw[4..6].copy_from_slice(&be(7));
+        assert!(matches!(
+            MultipleSubst::parse(&raw),
+            Err(Error::BadStructure(_) | Error::UnexpectedEof),
+        ));
+    }
+
+    #[test]
+    fn multiple_subst_rejects_truncated_sequence_offsets_array() {
+        // Header claims sequenceCount = 4 (needs 8 bytes of offsets at
+        // offsets 6..14) but the buffer ends mid-array. Coverage is
+        // placed in-range so the coverageOffset check passes; we then
+        // need Coverage.len() to also be 4 so the sequenceCount /
+        // Coverage.len() check passes and the trailing-array length
+        // check actually fires.
+        //
+        //   0  / 2 / format = 1
+        //   2  / 2 / coverageOffset = 8
+        //   4  / 2 / sequenceCount = 4 (needs 8 bytes from off 6 →
+        //                              need = 14; buffer = 12.)
+        //   6  / 2 / sequenceOffsets[0]
+        //   8  / 2 / coverage format = 1
+        //  10  / 2 / glyphCount = 4 (so sequenceCount == coverage.len())
+        let mut raw = vec![0u8; 12];
+        raw[0..2].copy_from_slice(&be(1));
+        raw[2..4].copy_from_slice(&be(8));
+        raw[4..6].copy_from_slice(&be(4));
+        raw[6..8].copy_from_slice(&be(0));
+        raw[8..10].copy_from_slice(&be(1));
+        raw[10..12].copy_from_slice(&be(4));
+        // The Coverage parser also wants room for the 4-glyph array,
+        // which the buffer doesn't have. Either rejection (truncated
+        // sequenceOffsets[] or truncated Coverage) is spec-correct.
+        assert!(matches!(
+            MultipleSubst::parse(&raw),
+            Err(Error::UnexpectedEof) | Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn multiple_subst_rejects_zero_glyph_count_sequence() {
+        // A Sequence with glyphCount = 0 is spec-prohibited
+        // ("The use of multiple substitution for deletion of an input
+        // glyph is prohibited."). The top-level subtable parses, but
+        // walking into the bad Sequence surfaces BadStructure.
+        //
+        // Layout:
+        //   off  0 .. 2 / format = 1
+        //   off  2 .. 4 / coverageOffset = 12
+        //   off  4 .. 6 / sequenceCount = 1
+        //   off  6 .. 8 / sequenceOffsets[0] = 10 (→ Sequence @ off 10)
+        //   off  8 .. 10 / padding (Coverage starts at 12)
+        //   off 10 .. 12 / glyphCount = 0 (Sequence)
+        //   off 12 .. 14 / coverage format = 1
+        //   off 14 .. 16 / glyphCount = 1
+        //   off 16 .. 18 / glyphArray[0] = 7
+        let mut raw = vec![0u8; 18];
+        raw[0..2].copy_from_slice(&be(1));
+        raw[2..4].copy_from_slice(&be(12));
+        raw[4..6].copy_from_slice(&be(1));
+        raw[6..8].copy_from_slice(&be(10));
+        raw[10..12].copy_from_slice(&be(0));
+        raw[12..14].copy_from_slice(&be(1));
+        raw[14..16].copy_from_slice(&be(1));
+        raw[16..18].copy_from_slice(&be(7));
+
+        let ms = MultipleSubst::parse(&raw).unwrap();
+        let bad = ms.sequence(0).unwrap();
+        assert!(matches!(bad, Err(Error::BadStructure(_))));
+        // substitute() returns None when the inner Sequence is bad —
+        // shaper-path callers can't act on a malformed subtable.
+        assert!(ms.substitute(7).is_none());
+    }
+
+    // -------------- GsubTable::multiple_subst integration --------------
+
+    /// Build a minimal v1.0 GSUB table whose only Lookup is a type-2
+    /// MultipleSubst subtable (the spec's Example 4).
+    fn build_minimal_multiple_gsub() -> Vec<u8> {
+        let sub = build_example_4_subtable();
+
+        // GSUB layout (mirrors the LigatureSubst end-to-end fixture):
+        //   0   /  10 / header (script=10, feature=22, lookup=36)
+        //   10  /  12 / ScriptList
+        //   18  /   4 / Script
+        //   22  /  10 / FeatureList ("ccmp" — the canonical Multiple
+        //                            user, though the tag is purely
+        //                            informational here)
+        //   30  /   6 / Feature
+        //   36  /   4 / LookupList
+        //   40  /   8 / Lookup type=2, flag=0, subTableCount=1, subOff=8
+        //   48  /  ?  / MultipleSubstFormat1 subtable (sub.len() bytes)
+        let head_end = 48 + sub.len();
+        let mut bytes = vec![0u8; head_end];
+        bytes[0..2].copy_from_slice(&be(1));
+        bytes[2..4].copy_from_slice(&be(0));
+        bytes[4..6].copy_from_slice(&be(10));
+        bytes[6..8].copy_from_slice(&be(22));
+        bytes[8..10].copy_from_slice(&be(36));
+        bytes[10..12].copy_from_slice(&be(1));
+        bytes[12..16].copy_from_slice(b"DFLT");
+        bytes[16..18].copy_from_slice(&be(8));
+        bytes[18..20].copy_from_slice(&be(0));
+        bytes[20..22].copy_from_slice(&be(0));
+        bytes[22..24].copy_from_slice(&be(1));
+        bytes[24..28].copy_from_slice(b"ccmp");
+        bytes[28..30].copy_from_slice(&be(8));
+        bytes[30..32].copy_from_slice(&be(0));
+        bytes[32..34].copy_from_slice(&be(1));
+        bytes[34..36].copy_from_slice(&be(0));
+        bytes[36..38].copy_from_slice(&be(1));
+        bytes[38..40].copy_from_slice(&be(4));
+        // Lookup: type=2, flag=0, subTableCount=1, subtableOffsets=[8]
+        bytes[40..42].copy_from_slice(&be(2));
+        bytes[42..44].copy_from_slice(&be(0));
+        bytes[44..46].copy_from_slice(&be(1));
+        bytes[46..48].copy_from_slice(&be(8));
+        // Subtable
+        bytes[48..head_end].copy_from_slice(&sub);
+        bytes
+    }
+
+    #[test]
+    fn gsub_multiple_subst_end_to_end() {
+        let bytes = build_minimal_multiple_gsub();
+        let g = GsubTable::parse(&bytes).unwrap();
+        assert_eq!(g.lookup_count(), 1);
+        let l0 = g.lookup(0).unwrap();
+        assert_eq!(l0.lookup_type(), GSUB_LOOKUP_TYPE_MULTIPLE);
+
+        let ms = g.multiple_subst(0, 0).expect("subtable exists").unwrap();
+        let seq = ms.substitute(0x00F1).expect("ffi is covered");
+        let outputs: Vec<_> = seq.glyphs().collect();
+        assert_eq!(outputs, vec![0x001A, 0x001A, 0x001D]);
+
+        // Wrong subtable index -> None.
+        assert!(g.multiple_subst(0, 1).is_none());
+        // Wrong lookup index -> None.
+        assert!(g.multiple_subst(99, 0).is_none());
+    }
+
+    #[test]
+    fn gsub_multiple_subst_rejects_non_type_2_lookup() {
+        // Reuse the minimal_v10 layout but declare the Lookup as
+        // type = 4 (ligature), then assert the typed accessor rejects.
+        let mut bytes = vec![0u8; 54];
+        bytes[0..2].copy_from_slice(&be(1));
+        bytes[2..4].copy_from_slice(&be(0));
+        bytes[4..6].copy_from_slice(&be(10));
+        bytes[6..8].copy_from_slice(&be(22));
+        bytes[8..10].copy_from_slice(&be(44));
+        bytes[10..12].copy_from_slice(&be(1));
+        bytes[12..16].copy_from_slice(b"DFLT");
+        bytes[16..18].copy_from_slice(&be(8));
+        bytes[18..20].copy_from_slice(&be(0));
+        bytes[20..22].copy_from_slice(&be(0));
+        bytes[22..24].copy_from_slice(&be(1));
+        bytes[24..28].copy_from_slice(b"liga");
+        bytes[28..30].copy_from_slice(&be(8));
+        bytes[30..32].copy_from_slice(&be(0));
+        bytes[32..34].copy_from_slice(&be(1));
+        bytes[34..36].copy_from_slice(&be(0));
+        bytes[44..46].copy_from_slice(&be(1));
+        bytes[46..48].copy_from_slice(&be(4));
+        // Lookup: declare type = 4 (ligature), not type 2.
+        bytes[48..50].copy_from_slice(&be(4));
+        bytes[50..52].copy_from_slice(&be(0));
+        bytes[52..54].copy_from_slice(&be(0));
+
+        let g = GsubTable::parse(&bytes).unwrap();
+        assert!(matches!(g.multiple_subst(0, 0), Some(Err(_))));
     }
 
     // -------------- LigatureSubst Format 1 -----------------------------
