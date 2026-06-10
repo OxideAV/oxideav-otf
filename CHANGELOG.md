@@ -9,6 +9,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GSUB Lookup Type 3 (alternate substitution) decoded** via a new
+  `AlternateSubst` typed view, joining the round-247 `SingleSubst`,
+  round-254 `LigatureSubst`, and round-262 `MultipleSubst` work.
+  Source: `docs/text/opentype/otspec-gsub.html` §"Lookup type 3
+  subtable: alternate substitution"; the Coverage table is re-used
+  from `tables::gdef::Coverage` (the shared common-layout primitive,
+  per `otspec-chapter2-common-layout-tables.html`). `AlternateSubst`
+  decodes the one defined on-disk format — `(format, coverageOffset,
+  alternateSetCount, alternateSetOffsets[alternateSetCount])` — and
+  validates the spec's "ordered by Coverage index" invariant
+  (`alternateSetCount == coverage.len()`) at parse time; `AlternateSet`
+  decodes the per-input `(glyphCount, alternateGlyphIDs[glyphCount])`
+  payload. Unlike `MultipleSubst`, the spec sets no lower bound on an
+  AlternateSet's `glyphCount`, so an empty AlternateSet (no
+  alternatives) is accepted rather than rejected. The alternates are
+  "in arbitrary order" per spec — index 0 is not privileged.
+  `AlternateSubst::substitute(input: u16) -> Option<AlternateSet>` is
+  the shaper-path entrypoint: the covered input glyph selects an
+  AlternateSet via Coverage Index, returned as a zero-copy view over
+  the on-disk `alternateGlyphIDs[]` bytes. It does **not** itself
+  choose an alternate — selection is a higher-layer (feature / UI)
+  decision per spec. `AlternateSubst::iter()` yields
+  `(coverage_glyph, AlternateSet)` pairs in ascending Coverage order;
+  `AlternateSet::glyph(i)` borrows the alternate at index `i`;
+  `AlternateSet::glyphs()` yields every alternate in on-disk order.
+  New convenience accessor `GsubTable::alternate_subst(lookup_i,
+  sub_i)` mirrors `single_subst(...)` / `multiple_subst(...)` /
+  `ligature_subst(...)`: `None` for out-of-range indices,
+  `Some(Err(BadStructure))` when the referenced lookup is not declared
+  as type 3. `AlternateSubst`, `AlternateSubstIter`, `AlternateSet`,
+  and `AlternateGlyphIter` are re-exported at the crate root.
+  Synthetic-byte unit tests cover the spec's worked Example 5 (default
+  ampersand glyph `0x003A` mapping to alternatives `[0x00C9,
+  0x00CA]`), Coverage iteration with two covered glyphs (ascending
+  order), the `format != 1` rejection, out-of-range `coverageOffset`,
+  the `alternateSetCount != coverage.len()` rejection, truncated
+  `alternateSetOffsets[]`, the accepted empty-AlternateSet case, the
+  rejection of a non-type-3 lookup on the accessor, and an end-to-end
+  GSUB byte tower whose only lookup is the same Example-5 subtable. A
+  Source Sans 3 integration test walks every type-3 lookup (the font
+  ships one — a single subtable with ~210 AlternateSet tables for its
+  `aalt` feature), decodes every `AlternateSubst` and every per-input
+  `AlternateSet`, verifies Coverage iteration is ascending, every
+  alternate glyph fits inside `maxp.numGlyphs`, the `glyph(k)`
+  point-lookup agrees with the `glyphs()` iterator, and
+  `substitute(input)` agrees with the iter/set path. The remaining
+  lookup types (5 Contextual, 6 Chained-context, 7 Extension,
+  8 Reverse-chained-single) remain raw sub-slices pending dedicated
+  rounds.
+
 - **GSUB Lookup Type 2 (multiple substitution) decoded** via a new
   `MultipleSubst` typed view, joining the round-247 `SingleSubst` and
   round-254 `LigatureSubst` work. Source:

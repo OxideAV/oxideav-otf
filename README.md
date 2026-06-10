@@ -222,6 +222,32 @@ if let Some(g) = font.gsub() {
         }
     }
 
+    // GSUB Lookup Type 3 — alternate substitution (one → choice of
+    // many). The typed view decodes Coverage + AlternateSet tables and
+    // answers `substitute(input)` returning a borrowed `AlternateSet`
+    // whose `glyphs()` iterator yields the aesthetic alternatives (in
+    // arbitrary order per spec — picking one is a higher-layer decision).
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != oxideav_otf::GSUB_LOOKUP_TYPE_ALTERNATE {
+            continue;
+        }
+        for s in 0..l.subtable_count() {
+            let alt = g.alternate_subst(i, s).unwrap()?;
+            for (input, set_res) in alt.iter() {
+                let set = set_res?;
+                let _ = set.glyph_count();
+                let _: Vec<u16> = set.glyphs().collect();
+                let _ = input;
+            }
+            // Apply as a shaper would: the covered input glyph offers a
+            // set of equivalents; the client substitutes one of them.
+            if let Some(set) = alt.substitute(/* current_glyph */ 0u16) {
+                let _ = set.glyphs();
+            }
+        }
+    }
+
     // GSUB Lookup Type 4 — ligature substitution (many → one). The
     // typed view decodes Coverage + LigatureSet + Ligature tables and
     // answers `substitute(input)` returning `(ligature_glyph,
@@ -264,7 +290,71 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-262 additions (this push)
+## Round-270 additions (this push)
+
+GSUB **Lookup Type 3 (alternate substitution)** is now decoded as a
+typed view, joining Type 1 (single substitution, round 247), Type 2
+(multiple substitution, round 262), and Type 4 (ligature
+substitution, round 248). Spec:
+`docs/text/opentype/otspec-gsub.html` §"Lookup type 3 subtable:
+alternate substitution". One on-disk format is defined
+(`AlternateSubstFormat1`); the typed view exposes every field down to
+the per-AlternateSet `alternateGlyphIDs[]` array.
+
+- **`AlternateSubst<'a>`** decodes the subtable header (`format`,
+  `coverageOffset`, `alternateSetCount`, `alternateSetOffsets[]`). The
+  Coverage table is re-used from `tables::gdef::Coverage` (the same
+  shared common-layout primitive that GPOS, GDEF, and GSUB types
+  1 / 2 / 4 / 5 / 6 / 8 read). Parse-time validates the spec's
+  "ordered by Coverage index" rule
+  (`alternateSetCount == coverage.len()`) alongside the usual range
+  checks on `coverageOffset` and `alternateSetOffsets[]`.
+- **`AlternateSet<'a>`** decodes the per-input
+  `(glyphCount, alternateGlyphIDs[glyphCount])` payload. Unlike
+  `Sequence` (Type 2), the spec sets no lower bound on `glyphCount`,
+  so an empty AlternateSet (no alternatives) is accepted, not
+  rejected. The alternatives are "in arbitrary order" per spec —
+  index 0 is not privileged.
+- **`AlternateSubst::substitute(input: u16) -> Option<AlternateSet>`**
+  is the shaper-path entrypoint. The input glyph is looked up in
+  Coverage; the corresponding AlternateSet is returned as a zero-copy
+  view over the on-disk `alternateGlyphIDs[]` bytes. It does **not**
+  itself pick an alternate — selection is a higher-layer (feature /
+  UI) decision per spec.
+- **`AlternateSubst::iter()`** yields every `(input_glyph,
+  AlternateSet)` pair in ascending Coverage order;
+  **`AlternateSet::glyph(i)`** borrows the alternate at index `i`; and
+  **`AlternateSet::glyphs()`** yields every alternate in on-disk order.
+- **`GsubTable::alternate_subst(lookup_i, sub_i)`** is the convenience
+  accessor that walks the lookup chain and confirms the lookup type is
+  `GSUB_LOOKUP_TYPE_ALTERNATE` (= 3) before parsing. Returns `None`
+  for out-of-range indices and `Some(Err(BadStructure))` when the
+  referenced lookup is the wrong type. Mirrors the existing
+  `single_subst(...)` / `multiple_subst(...)` / `ligature_subst(...)`
+  accessors on the same type.
+
+The `AlternateSubst`, `AlternateSubstIter`, `AlternateSet`, and
+`AlternateGlyphIter` types are re-exported at the crate root. The
+remaining GSUB lookup types (5 Contextual, 6 Chained-context,
+7 Extension, 8 Reverse-chained-single) remain raw byte slices via
+`Lookup::subtable_bytes(i)`.
+
+Synthetic-byte unit tests cover the spec's worked Example 5 (default
+ampersand glyph `0x003A` mapping to alternatives `[0x00C9, 0x00CA]`),
+Coverage iteration across two covered glyphs in ascending order, every
+error path (`format != 1`, out-of-range `coverageOffset`,
+`alternateSetCount != coverage.len()`, truncated
+`alternateSetOffsets[]`), the accepted empty-AlternateSet case, and
+the out-of-range / wrong-type accessor returns. One new integration
+test against the Source Sans 3 fixture walks every type-3 lookup (the
+font ships one — a single subtable with ~210 AlternateSet tables for
+its `aalt` feature), decodes every `AlternateSubst` and every
+per-input `AlternateSet`, verifies (a) Coverage iteration is
+ascending, (b) every alternate glyph fits inside `maxp.numGlyphs`,
+(c) the `glyph(k)` point-lookup agrees with the `glyphs()` iterator,
+and (d) `substitute(input)` agrees with the iter/set path.
+
+## Round-262 additions (previous push)
 
 GSUB **Lookup Type 2 (multiple substitution)** is now decoded as a
 typed view, joining Type 1 (single substitution, round 247) and

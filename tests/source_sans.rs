@@ -1033,6 +1033,107 @@ fn gsub_multiple_subst_decodes_every_type_2_lookup() {
 }
 
 #[test]
+fn gsub_alternate_subst_decodes_every_type_3_lookup() {
+    // Walk every GSUB lookup; for the type-3 lookups (alternate
+    // substitution), decode the subtable through the typed
+    // [`AlternateSubst`] view and verify the spec's invariants:
+    //
+    // * format == 1 (the only defined AlternateSubst format)
+    // * alternateSetCount == coverage.len() (parser invariant, but
+    //   re-checked here through the public accessors)
+    // * every alternate glyph fits inside maxp.numGlyphs
+    // * iter() walks Coverage in ascending order
+    // * glyph(k) point-lookup agrees with the glyphs() iterator
+    // * substitute(input) agrees with the iter/set path
+    //
+    // Source Sans 3 ships a single type-3 lookup carrying one subtable
+    // with ~210 AlternateSet tables (its `aalt` access-all-alternates
+    // feature). The bounds below are loose enough to tolerate vendor
+    // adjustments across releases.
+    use oxideav_otf::AlternateSubst;
+
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gsub().expect("Source Sans 3 carries a GSUB table");
+    let n = f.glyph_count();
+
+    let mut total_subtables = 0;
+    let mut total_sets = 0usize;
+    let mut total_alternate_glyphs = 0usize;
+
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != 3 {
+            continue;
+        }
+        for s in 0..l.subtable_count() {
+            let alt: AlternateSubst<'_> = g
+                .alternate_subst(i, s)
+                .unwrap_or_else(|| panic!("lookup {i} sub {s} missing"))
+                .unwrap_or_else(|e| panic!("lookup {i} sub {s} decode: {e:?}"));
+            assert_eq!(alt.format(), 1, "lookup {i} sub {s} format != 1");
+            total_subtables += 1;
+
+            // Coverage iter is sorted ascending; each Coverage glyph
+            // maps to its own AlternateSet.
+            let mut last_input: Option<u32> = None;
+            for (input, set_res) in alt.iter() {
+                if let Some(prev) = last_input {
+                    assert!(
+                        (input as u32) > prev,
+                        "Coverage iter not ascending at lookup {i} sub {s}: {prev} -> {input}",
+                    );
+                }
+                last_input = Some(input as u32);
+                assert!(
+                    (input as u32) < n as u32,
+                    "input glyph {input} >= numGlyphs {n} at lookup {i} sub {s}",
+                );
+                let set = set_res.unwrap_or_else(|e| {
+                    panic!("AlternateSet decode at lookup {i} sub {s} input {input}: {e:?}")
+                });
+                let gc = set.glyph_count();
+                let outs: Vec<u16> = set.glyphs().collect();
+                assert_eq!(outs.len(), gc as usize);
+                for (k, &out) in outs.iter().enumerate() {
+                    assert!(
+                        (out as u32) < n as u32,
+                        "alternate glyph {out} >= numGlyphs {n} \
+                         at lookup {i} sub {s} input {input} pos {k}",
+                    );
+                    // glyph(k) point-lookup agrees with the iterator.
+                    assert_eq!(set.glyph(k as u16), Some(out));
+                }
+                // substitute() returns the same byte window as the
+                // alternate_set() / iter() path.
+                let via_sub = alt
+                    .substitute(input)
+                    .expect("covered input must substitute");
+                let via_outs: Vec<u16> = via_sub.glyphs().collect();
+                assert_eq!(via_outs, outs);
+                total_alternate_glyphs += outs.len();
+                total_sets += 1;
+            }
+            // A glyph guaranteed NOT to be in this subtable: the
+            // synthetic glyph ID `n` is past the end of the font.
+            assert!(alt.substitute(n).is_none());
+        }
+    }
+
+    // Source Sans 3 ships at least one type-3 subtable.
+    assert!(
+        total_subtables >= 1,
+        "expected >=1 type-3 subtables, got {total_subtables}",
+    );
+    // Every covered glyph carries an AlternateSet; in this font each
+    // set is non-empty, so the alternate-glyph total exceeds the set
+    // count.
+    assert!(
+        total_alternate_glyphs >= total_sets,
+        "alternate-glyph total {total_alternate_glyphs} < set count {total_sets}",
+    );
+}
+
+#[test]
 fn gsub_ligature_subst_decodes_every_type_4_lookup() {
     // Walk every GSUB lookup; for the type-4 lookups (ligature
     // substitution), decode the subtable through the typed

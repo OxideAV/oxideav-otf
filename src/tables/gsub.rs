@@ -573,6 +573,259 @@ impl<'a> Iterator for SequenceGlyphIter<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// Lookup type 3: Alternate substitution (otspec-gsub.html §"Lookup type 3
+// subtable: alternate substitution")
+// ---------------------------------------------------------------------------
+
+/// Parsed `AlternateSubst` subtable — the GSUB `lookupType = 3` payload.
+///
+/// Spec: `docs/text/opentype/otspec-gsub.html` §"Lookup type 3 subtable:
+/// alternate substitution".
+///
+/// An alternate substitution identifies any number of functionally
+/// equivalent but different-looking forms (aesthetic alternatives) of a
+/// glyph. The Coverage table names the input glyphs; each covered glyph
+/// maps (by Coverage Index) to an `AlternateSet` table that lists the
+/// alternative glyph IDs the client may choose from. Per spec, the
+/// alternatives "can be in any order in the array" — the choice of which
+/// alternate to use is a higher-level (feature / UI) decision and is not
+/// encoded here.
+///
+/// One on-disk format is defined.
+///
+/// ```text
+/// AlternateSubstFormat1 subtable
+///   0 / 2 / format = 1
+///   2 / 2 / coverageOffset       (Offset16, from start of subtable)
+///   4 / 2 / alternateSetCount    (== Coverage.len())
+///   6 / 2 * n / alternateSetOffsets[alternateSetCount]
+///                                 (Offset16, from start of subtable,
+///                                  ordered by Coverage index)
+///
+/// AlternateSet table
+///   0 / 2 / glyphCount
+///   2 / 2 * n / alternateGlyphIDs[glyphCount]  (arbitrary order)
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct AlternateSubst<'a> {
+    /// Raw subtable bytes (offsets in the on-disk records are relative
+    /// to this buffer's start).
+    bytes: &'a [u8],
+    coverage: Coverage<'a>,
+    /// Slice of the `alternateSetOffsets[]` array (2 bytes per offset).
+    set_offsets: &'a [u8],
+}
+
+impl<'a> AlternateSubst<'a> {
+    /// Parse an AlternateSubst subtable from a buffer whose first two
+    /// bytes are the `format` identifier.
+    ///
+    /// Validates the format discriminant (only `1` is defined), the
+    /// `coverageOffset` window, that `alternateSetCount` equals the
+    /// Coverage length (the `alternateSetOffsets` array is "ordered by
+    /// Coverage index", so the two counts must agree), and that the
+    /// trailing `alternateSetOffsets[]` array fits inside the supplied
+    /// slice. Per-AlternateSet payloads are validated lazily —
+    /// [`Self::alternate_set`] re-validates on each call so a malformed
+    /// inner record can't poison the top-level view.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let format = read_u16(bytes, 0)?;
+        if format != 1 {
+            return Err(Error::BadStructure(
+                "GSUB/AlternateSubst: unknown subtable format",
+            ));
+        }
+        let cov_off = read_u16(bytes, 2)? as usize;
+        if cov_off == 0 || cov_off >= bytes.len() {
+            return Err(Error::BadStructure(
+                "GSUB/AlternateSubst: coverageOffset out of range",
+            ));
+        }
+        let coverage = Coverage::parse(&bytes[cov_off..])?;
+        let set_count = read_u16(bytes, 4)? as usize;
+        // Spec: alternateSetOffsets are "ordered by Coverage index", so
+        // the array must carry exactly one offset per covered glyph.
+        if set_count != coverage.len() {
+            return Err(Error::BadStructure(
+                "GSUB/AlternateSubst: alternateSetCount != coverage.len()",
+            ));
+        }
+        let array_start = 6usize;
+        let need = array_start
+            .checked_add(
+                set_count
+                    .checked_mul(2)
+                    .ok_or(Error::BadStructure("GSUB/AlternateSubst length overflow"))?,
+            )
+            .ok_or(Error::BadStructure("GSUB/AlternateSubst length overflow"))?;
+        if bytes.len() < need {
+            return Err(Error::UnexpectedEof);
+        }
+        Ok(Self {
+            bytes,
+            coverage,
+            set_offsets: &bytes[array_start..need],
+        })
+    }
+
+    /// Subtable format discriminant (always `1`).
+    pub fn format(&self) -> u16 {
+        1
+    }
+
+    /// The input-side [`Coverage`] table. Each covered glyph maps (by
+    /// Coverage Index) to a per-input-glyph [`AlternateSet`].
+    pub fn coverage(&self) -> Coverage<'a> {
+        self.coverage
+    }
+
+    /// `alternateSetCount` — number of AlternateSet tables. Equal to
+    /// `coverage().len()` by spec invariant.
+    pub fn alternate_set_count(&self) -> u16 {
+        (self.set_offsets.len() / 2) as u16
+    }
+
+    /// Borrow the [`AlternateSet`] at the given Coverage index. Returns
+    /// `None` for an out-of-range index, `Some(Err(...))` when the
+    /// referenced bytes are malformed.
+    pub fn alternate_set(&self, set_i: u16) -> Option<Result<AlternateSet<'a>, Error>> {
+        let off2 = (set_i as usize).checked_mul(2)?;
+        if off2 + 2 > self.set_offsets.len() {
+            return None;
+        }
+        let off = u16::from_be_bytes([self.set_offsets[off2], self.set_offsets[off2 + 1]]) as usize;
+        if off == 0 || off >= self.bytes.len() {
+            return Some(Err(Error::BadStructure(
+                "GSUB/AlternateSubst: alternateSetOffset out of range",
+            )));
+        }
+        Some(AlternateSet::parse(&self.bytes[off..]))
+    }
+
+    /// Apply this subtable as a shaper would.
+    ///
+    /// Returns `Some(alternate_set)` when `input` is in
+    /// [`Self::coverage`]; the returned [`AlternateSet`] carries the
+    /// alternative glyph IDs from which a client picks. Returns `None`
+    /// when `input` is uncovered or the per-input AlternateSet bytes are
+    /// unreachable / malformed (the typed accessor
+    /// [`Self::alternate_set`] is the diagnosis path for the latter).
+    ///
+    /// Note: this does **not** itself choose an alternate — the spec
+    /// leaves alternate selection to a higher layer ("the client could
+    /// use the default glyph or substitute any of the alternatives").
+    pub fn substitute(&self, input: u16) -> Option<AlternateSet<'a>> {
+        let i = self.coverage.index_of(input)?;
+        self.alternate_set(i)?.ok()
+    }
+
+    /// Iterate the `(input_glyph, AlternateSet)` pairs in this subtable
+    /// in ascending Coverage order. Malformed AlternateSet references are
+    /// surfaced as `Err`.
+    pub fn iter(&self) -> AlternateSubstIter<'a> {
+        AlternateSubstIter {
+            cov: self.coverage.iter(),
+            outer: *self,
+        }
+    }
+}
+
+/// Iterator yielded by [`AlternateSubst::iter`].
+#[derive(Debug, Clone)]
+pub struct AlternateSubstIter<'a> {
+    cov: crate::tables::gdef::CoverageIter<'a>,
+    outer: AlternateSubst<'a>,
+}
+
+impl<'a> Iterator for AlternateSubstIter<'a> {
+    type Item = (u16, Result<AlternateSet<'a>, Error>);
+    fn next(&mut self) -> Option<Self::Item> {
+        let (g, idx) = self.cov.next()?;
+        let set = self.outer.alternate_set(idx)?;
+        Some((g, set))
+    }
+}
+
+/// Parsed `AlternateSet` table — a count + an array of alternate glyph
+/// IDs (the aesthetic alternatives for one covered input glyph).
+///
+/// The on-disk record is `(glyphCount, alternateGlyphIDs[glyphCount])`.
+/// Per spec the alternates are "in arbitrary order"; the spec sets no
+/// lower bound on `glyphCount`, so an empty AlternateSet (no alternates)
+/// is accepted rather than rejected — it simply yields zero choices.
+#[derive(Debug, Clone, Copy)]
+pub struct AlternateSet<'a> {
+    /// Raw `alternateGlyphIDs[]` payload — `2 * glyphCount` bytes,
+    /// big-endian `u16` per entry.
+    glyphs: &'a [u8],
+}
+
+impl<'a> AlternateSet<'a> {
+    /// Parse an AlternateSet table from a buffer whose first two bytes
+    /// are `glyphCount`.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let count = read_u16(bytes, 0)? as usize;
+        let array_start = 2usize;
+        let need = array_start
+            .checked_add(
+                count
+                    .checked_mul(2)
+                    .ok_or(Error::BadStructure("GSUB/AlternateSet length overflow"))?,
+            )
+            .ok_or(Error::BadStructure("GSUB/AlternateSet length overflow"))?;
+        if bytes.len() < need {
+            return Err(Error::UnexpectedEof);
+        }
+        Ok(Self {
+            glyphs: &bytes[array_start..need],
+        })
+    }
+
+    /// `glyphCount` — number of alternate glyph IDs.
+    pub fn glyph_count(&self) -> u16 {
+        (self.glyphs.len() / 2) as u16
+    }
+
+    /// The alternate glyph at index `i` (`0 .. glyphCount`). The order is
+    /// arbitrary per spec — index `0` is not privileged.
+    pub fn glyph(&self, i: u16) -> Option<u16> {
+        let off = (i as usize).checked_mul(2)?;
+        if off + 2 > self.glyphs.len() {
+            return None;
+        }
+        Some(u16::from_be_bytes([self.glyphs[off], self.glyphs[off + 1]]))
+    }
+
+    /// Iterator over every alternate glyph in on-disk (arbitrary) order.
+    pub fn glyphs(&self) -> AlternateGlyphIter<'a> {
+        AlternateGlyphIter {
+            bytes: self.glyphs,
+            pos: 0,
+        }
+    }
+}
+
+/// Iterator over an [`AlternateSet`]'s `alternateGlyphIDs[]` in on-disk
+/// (arbitrary) order.
+#[derive(Debug, Clone)]
+pub struct AlternateGlyphIter<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Iterator for AlternateGlyphIter<'a> {
+    type Item = u16;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos + 2 > self.bytes.len() {
+            return None;
+        }
+        let g = u16::from_be_bytes([self.bytes[self.pos], self.bytes[self.pos + 1]]);
+        self.pos += 2;
+        Some(g)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Lookup type 4: Ligature substitution (otspec-gsub.html §"Lookup type 4
 // subtable: ligature substitution")
 // ---------------------------------------------------------------------------
@@ -1082,6 +1335,31 @@ impl<'a> GsubTable<'a> {
         }
         let bytes = lk.subtable_bytes(sub_i)?;
         Some(MultipleSubst::parse(bytes))
+    }
+
+    /// Decode subtable `sub_i` of lookup `lookup_i` as an
+    /// [`AlternateSubst`] (`GsubLookupType = 3`).
+    ///
+    /// Returns:
+    /// * `None` — `lookup_i` or `sub_i` is out of range, or the
+    ///   referenced subtable bytes are unreachable.
+    /// * `Some(Err(Error::BadStructure))` — the lookup is not declared
+    ///   as `GSUB_LOOKUP_TYPE_ALTERNATE`, or the subtable bytes are
+    ///   malformed.
+    /// * `Some(Ok(AlternateSubst))` — the typed subtable view.
+    pub fn alternate_subst(
+        &self,
+        lookup_i: u16,
+        sub_i: u16,
+    ) -> Option<Result<AlternateSubst<'a>, Error>> {
+        let lk = self.lookup(lookup_i)?;
+        if lk.lookup_type() != GSUB_LOOKUP_TYPE_ALTERNATE {
+            return Some(Err(Error::BadStructure(
+                "GSUB/AlternateSubst: lookup is not type 3",
+            )));
+        }
+        let bytes = lk.subtable_bytes(sub_i)?;
+        Some(AlternateSubst::parse(bytes))
     }
 
     /// Decode subtable `sub_i` of lookup `lookup_i` as a
@@ -1805,6 +2083,316 @@ mod tests {
 
         let g = GsubTable::parse(&bytes).unwrap();
         assert!(matches!(g.multiple_subst(0, 0), Some(Err(_))));
+    }
+
+    // -------------- AlternateSubst Format 1 ----------------------------
+
+    /// Build the spec's worked Example 5: the default ampersand glyph
+    /// (`0x003A` = 58) maps to an AlternateSet of two alternative
+    /// ampersand glyphs `[0x00C9 = 201, 0x00CA = 202]`. The offsets are
+    /// hand-set to match §"Example 5: AlternateSubstFormat 1 subtable"
+    /// exactly (coverageOffset = 8, alternateSetOffsets[0] = 14).
+    fn build_example_5_subtable() -> Vec<u8> {
+        // Layout plan (matches the spec's Example 5 byte listing):
+        //   off  0 .. 2  / format = 1
+        //   off  2 .. 4  / coverageOffset = 8
+        //   off  4 .. 6  / alternateSetCount = 1
+        //   off  6 .. 8  / alternateSetOffsets[0] = 14 (→ AltSet @ off 14)
+        //   off  8 .. 10 / coverage format = 1
+        //   off 10 .. 12 / glyphCount = 1
+        //   off 12 .. 14 / glyphArray[0] = 0x003A (default ampersand)
+        //   off 14 .. 16 / glyphCount = 2 (AlternateSet)
+        //   off 16 .. 18 / alternateGlyphIDs[0] = 0x00C9
+        //   off 18 .. 20 / alternateGlyphIDs[1] = 0x00CA
+        let mut out = vec![0u8; 20];
+        out[0..2].copy_from_slice(&be(1));
+        out[2..4].copy_from_slice(&be(8));
+        out[4..6].copy_from_slice(&be(1));
+        out[6..8].copy_from_slice(&be(14));
+        // Coverage Format 1
+        out[8..10].copy_from_slice(&be(1));
+        out[10..12].copy_from_slice(&be(1));
+        out[12..14].copy_from_slice(&be(0x003A));
+        // AlternateSet
+        out[14..16].copy_from_slice(&be(2));
+        out[16..18].copy_from_slice(&be(0x00C9));
+        out[18..20].copy_from_slice(&be(0x00CA));
+        out
+    }
+
+    #[test]
+    fn alternate_subst_example_5_round_trip() {
+        let raw = build_example_5_subtable();
+        let alt = AlternateSubst::parse(&raw).unwrap();
+        assert_eq!(alt.format(), 1);
+        assert_eq!(alt.alternate_set_count(), 1);
+
+        let set = alt.alternate_set(0).unwrap().unwrap();
+        assert_eq!(set.glyph_count(), 2);
+        assert_eq!(set.glyph(0), Some(0x00C9));
+        assert_eq!(set.glyph(1), Some(0x00CA));
+        assert_eq!(set.glyph(2), None);
+        let collected: Vec<_> = set.glyphs().collect();
+        assert_eq!(collected, vec![0x00C9, 0x00CA]);
+
+        // substitute() routes Coverage → AlternateSet for the covered
+        // ampersand and yields the same alternatives.
+        let out_set = alt.substitute(0x003A).expect("ampersand is covered");
+        let outputs: Vec<_> = out_set.glyphs().collect();
+        assert_eq!(outputs, vec![0x00C9, 0x00CA]);
+        // Uncovered glyphs return None.
+        assert_eq!(
+            alt.substitute(0x003B).map(|s| s.glyph_count()),
+            None,
+            "uncovered glyph must not substitute",
+        );
+    }
+
+    #[test]
+    fn alternate_subst_iter_walks_coverage_in_order() {
+        // Two covered glyphs `{5, 9}`; their AlternateSets are
+        // `[100, 101]` and `[200]` respectively.
+        //
+        // Layout plan:
+        //   off  0 .. 2  / format = 1
+        //   off  2 .. 4  / coverageOffset = 22
+        //   off  4 .. 6  / alternateSetCount = 2
+        //   off  6 .. 8  / alternateSetOffsets[0] = 10  (→ set0 @ off 10)
+        //   off  8 .. 10 / alternateSetOffsets[1] = 16  (→ set1 @ off 16)
+        //   off 10 .. 12 / glyphCount = 2
+        //   off 12 .. 14 / alternateGlyphIDs[0] = 100
+        //   off 14 .. 16 / alternateGlyphIDs[1] = 101
+        //   off 16 .. 18 / glyphCount = 1
+        //   off 18 .. 20 / alternateGlyphIDs[0] = 200
+        //   off 20 .. 22 / padding (Coverage starts at 22)
+        //   off 22 .. 24 / coverage format = 1
+        //   off 24 .. 26 / glyphCount = 2
+        //   off 26 .. 28 / glyphArray[0] = 5
+        //   off 28 .. 30 / glyphArray[1] = 9
+        let mut raw = vec![0u8; 30];
+        raw[0..2].copy_from_slice(&be(1));
+        raw[2..4].copy_from_slice(&be(22));
+        raw[4..6].copy_from_slice(&be(2));
+        raw[6..8].copy_from_slice(&be(10));
+        raw[8..10].copy_from_slice(&be(16));
+        raw[10..12].copy_from_slice(&be(2));
+        raw[12..14].copy_from_slice(&be(100));
+        raw[14..16].copy_from_slice(&be(101));
+        raw[16..18].copy_from_slice(&be(1));
+        raw[18..20].copy_from_slice(&be(200));
+        raw[22..24].copy_from_slice(&be(1));
+        raw[24..26].copy_from_slice(&be(2));
+        raw[26..28].copy_from_slice(&be(5));
+        raw[28..30].copy_from_slice(&be(9));
+
+        let alt = AlternateSubst::parse(&raw).unwrap();
+        assert_eq!(alt.alternate_set_count(), 2);
+
+        let pairs: Vec<(u16, Vec<u16>)> = alt
+            .iter()
+            .map(|(g, s)| (g, s.unwrap().glyphs().collect()))
+            .collect();
+        assert_eq!(pairs, vec![(5, vec![100, 101]), (9, vec![200])],);
+    }
+
+    #[test]
+    fn alternate_subst_rejects_unknown_format() {
+        // format = 2 is undefined for Lookup Type 3.
+        let mut raw = vec![0u8; 14];
+        raw[0..2].copy_from_slice(&be(2));
+        raw[2..4].copy_from_slice(&be(8));
+        // Plausible coverage payload at offset 8 so the format check
+        // fires before the coverage walk.
+        raw[8..10].copy_from_slice(&be(1));
+        raw[10..12].copy_from_slice(&be(1));
+        raw[12..14].copy_from_slice(&be(5));
+        assert!(matches!(
+            AlternateSubst::parse(&raw),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn alternate_subst_rejects_coverage_offset_out_of_range() {
+        let mut raw = vec![0u8; 10];
+        raw[0..2].copy_from_slice(&be(1));
+        raw[2..4].copy_from_slice(&be(99));
+        raw[4..6].copy_from_slice(&be(0));
+        assert!(matches!(
+            AlternateSubst::parse(&raw),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn alternate_subst_rejects_set_count_mismatch() {
+        // Build the Example-5 subtable, then poke alternateSetCount to a
+        // value that disagrees with the Coverage's glyphCount = 1.
+        let mut raw = build_example_5_subtable();
+        raw[4..6].copy_from_slice(&be(7));
+        assert!(matches!(
+            AlternateSubst::parse(&raw),
+            Err(Error::BadStructure(_) | Error::UnexpectedEof),
+        ));
+    }
+
+    #[test]
+    fn alternate_subst_rejects_truncated_set_offsets_array() {
+        // Header claims alternateSetCount = 4 (needs 8 bytes of offsets
+        // at offsets 6..14) but the buffer ends mid-array. Coverage is
+        // placed in-range with a matching glyphCount = 4 so the count
+        // invariant passes and the trailing-array length check fires.
+        //
+        //   0  / 2 / format = 1
+        //   2  / 2 / coverageOffset = 8
+        //   4  / 2 / alternateSetCount = 4
+        //   6  / 2 / alternateSetOffsets[0]
+        //   8  / 2 / coverage format = 1
+        //  10  / 2 / glyphCount = 4
+        let mut raw = vec![0u8; 12];
+        raw[0..2].copy_from_slice(&be(1));
+        raw[2..4].copy_from_slice(&be(8));
+        raw[4..6].copy_from_slice(&be(4));
+        raw[6..8].copy_from_slice(&be(0));
+        raw[8..10].copy_from_slice(&be(1));
+        raw[10..12].copy_from_slice(&be(4));
+        assert!(matches!(
+            AlternateSubst::parse(&raw),
+            Err(Error::UnexpectedEof) | Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn alternate_subst_accepts_empty_alternate_set() {
+        // The spec sets no lower bound on AlternateSet.glyphCount, so an
+        // empty AlternateSet (no alternatives) is accepted — it simply
+        // yields zero choices. Contrast MultipleSubst, which prohibits a
+        // zero-length Sequence.
+        //
+        // Layout:
+        //   off  0 .. 2 / format = 1
+        //   off  2 .. 4 / coverageOffset = 12
+        //   off  4 .. 6 / alternateSetCount = 1
+        //   off  6 .. 8 / alternateSetOffsets[0] = 10 (→ AltSet @ off 10)
+        //   off  8 .. 10 / padding (Coverage starts at 12)
+        //   off 10 .. 12 / glyphCount = 0 (AlternateSet)
+        //   off 12 .. 14 / coverage format = 1
+        //   off 14 .. 16 / glyphCount = 1
+        //   off 16 .. 18 / glyphArray[0] = 7
+        let mut raw = vec![0u8; 18];
+        raw[0..2].copy_from_slice(&be(1));
+        raw[2..4].copy_from_slice(&be(12));
+        raw[4..6].copy_from_slice(&be(1));
+        raw[6..8].copy_from_slice(&be(10));
+        raw[10..12].copy_from_slice(&be(0));
+        raw[12..14].copy_from_slice(&be(1));
+        raw[14..16].copy_from_slice(&be(1));
+        raw[16..18].copy_from_slice(&be(7));
+
+        let alt = AlternateSubst::parse(&raw).unwrap();
+        let set = alt.alternate_set(0).unwrap().unwrap();
+        assert_eq!(set.glyph_count(), 0);
+        assert_eq!(set.glyph(0), None);
+        assert_eq!(set.glyphs().count(), 0);
+        // substitute() of the covered glyph yields the (empty) set.
+        let out = alt.substitute(7).expect("covered");
+        assert_eq!(out.glyph_count(), 0);
+    }
+
+    // -------------- GsubTable::alternate_subst integration -------------
+
+    /// Build a minimal v1.0 GSUB table whose only Lookup is a type-3
+    /// AlternateSubst subtable (the spec's Example 5).
+    fn build_minimal_alternate_gsub() -> Vec<u8> {
+        let sub = build_example_5_subtable();
+
+        // GSUB layout (mirrors the MultipleSubst end-to-end fixture):
+        //   0   /  10 / header (script=10, feature=22, lookup=36)
+        //   10  /  12 / ScriptList
+        //   22  /  10 / FeatureList ("aalt" — the canonical Alternate
+        //                            user; the tag is informational here)
+        //   36  /   4 / LookupList
+        //   40  /   8 / Lookup type=3, flag=0, subTableCount=1, subOff=8
+        //   48  /  ?  / AlternateSubstFormat1 subtable (sub.len() bytes)
+        let head_end = 48 + sub.len();
+        let mut bytes = vec![0u8; head_end];
+        bytes[0..2].copy_from_slice(&be(1));
+        bytes[2..4].copy_from_slice(&be(0));
+        bytes[4..6].copy_from_slice(&be(10));
+        bytes[6..8].copy_from_slice(&be(22));
+        bytes[8..10].copy_from_slice(&be(36));
+        bytes[10..12].copy_from_slice(&be(1));
+        bytes[12..16].copy_from_slice(b"DFLT");
+        bytes[16..18].copy_from_slice(&be(8));
+        bytes[18..20].copy_from_slice(&be(0));
+        bytes[20..22].copy_from_slice(&be(0));
+        bytes[22..24].copy_from_slice(&be(1));
+        bytes[24..28].copy_from_slice(b"aalt");
+        bytes[28..30].copy_from_slice(&be(8));
+        bytes[30..32].copy_from_slice(&be(0));
+        bytes[32..34].copy_from_slice(&be(1));
+        bytes[34..36].copy_from_slice(&be(0));
+        bytes[36..38].copy_from_slice(&be(1));
+        bytes[38..40].copy_from_slice(&be(4));
+        // Lookup: type=3, flag=0, subTableCount=1, subtableOffsets=[8]
+        bytes[40..42].copy_from_slice(&be(3));
+        bytes[42..44].copy_from_slice(&be(0));
+        bytes[44..46].copy_from_slice(&be(1));
+        bytes[46..48].copy_from_slice(&be(8));
+        // Subtable
+        bytes[48..head_end].copy_from_slice(&sub);
+        bytes
+    }
+
+    #[test]
+    fn gsub_alternate_subst_end_to_end() {
+        let bytes = build_minimal_alternate_gsub();
+        let g = GsubTable::parse(&bytes).unwrap();
+        assert_eq!(g.lookup_count(), 1);
+        let l0 = g.lookup(0).unwrap();
+        assert_eq!(l0.lookup_type(), GSUB_LOOKUP_TYPE_ALTERNATE);
+
+        let alt = g.alternate_subst(0, 0).expect("subtable exists").unwrap();
+        let set = alt.substitute(0x003A).expect("ampersand is covered");
+        let outputs: Vec<_> = set.glyphs().collect();
+        assert_eq!(outputs, vec![0x00C9, 0x00CA]);
+
+        // Wrong subtable index -> None.
+        assert!(g.alternate_subst(0, 1).is_none());
+        // Wrong lookup index -> None.
+        assert!(g.alternate_subst(99, 0).is_none());
+    }
+
+    #[test]
+    fn gsub_alternate_subst_rejects_non_type_3_lookup() {
+        // Reuse the minimal layout but declare the Lookup as type = 4
+        // (ligature), then assert the typed accessor rejects.
+        let mut bytes = vec![0u8; 54];
+        bytes[0..2].copy_from_slice(&be(1));
+        bytes[2..4].copy_from_slice(&be(0));
+        bytes[4..6].copy_from_slice(&be(10));
+        bytes[6..8].copy_from_slice(&be(22));
+        bytes[8..10].copy_from_slice(&be(44));
+        bytes[10..12].copy_from_slice(&be(1));
+        bytes[12..16].copy_from_slice(b"DFLT");
+        bytes[16..18].copy_from_slice(&be(8));
+        bytes[18..20].copy_from_slice(&be(0));
+        bytes[20..22].copy_from_slice(&be(0));
+        bytes[22..24].copy_from_slice(&be(1));
+        bytes[24..28].copy_from_slice(b"liga");
+        bytes[28..30].copy_from_slice(&be(8));
+        bytes[30..32].copy_from_slice(&be(0));
+        bytes[32..34].copy_from_slice(&be(1));
+        bytes[34..36].copy_from_slice(&be(0));
+        bytes[44..46].copy_from_slice(&be(1));
+        bytes[46..48].copy_from_slice(&be(4));
+        // Lookup: declare type = 4 (ligature), not type 3.
+        bytes[48..50].copy_from_slice(&be(4));
+        bytes[50..52].copy_from_slice(&be(0));
+        bytes[52..54].copy_from_slice(&be(0));
+
+        let g = GsubTable::parse(&bytes).unwrap();
+        assert!(matches!(g.alternate_subst(0, 0), Some(Err(_))));
     }
 
     // -------------- LigatureSubst Format 1 -----------------------------
