@@ -280,6 +280,37 @@ if let Some(g) = font.gsub() {
             }
         }
     }
+
+    // GSUB Lookup Type 7 — substitution extension (32-bit-offset
+    // indirection wrapping a subtable of any other lookup type). The
+    // typed view validates the header and resolves the wrapped
+    // subtable; per spec, process as though the extension subtable
+    // replaced the type-7 subtable that referenced it.
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != oxideav_otf::GSUB_LOOKUP_TYPE_EXTENSION {
+            continue;
+        }
+        for s in 0..l.subtable_count() {
+            let ext = g.extension_subst(i, s).unwrap()?;
+            let _ = ext.format();                   // always 1
+            let _ = ext.extension_lookup_type();    // 1..=8, never 7
+            let _ = ext.extension_offset();         // Offset32
+            let _ = ext.extension_subtable_bytes(); // raw wrapped bytes
+            // Typed resolution for the already-decoded wrapped types.
+            match ext.extension_lookup_type() {
+                oxideav_otf::GSUB_LOOKUP_TYPE_SINGLE => {
+                    let ss = ext.as_single_subst()?;
+                    let _ = ss.substitute(42);
+                }
+                oxideav_otf::GSUB_LOOKUP_TYPE_LIGATURE => {
+                    let ls = ext.as_ligature_subst()?;
+                    let _ = ls.substitute(&[1, 2]);
+                }
+                _ => { /* as_multiple_subst / as_alternate_subst, or raw */ }
+            }
+        }
+    }
 }
 
 for contour in &outline.contours {
@@ -290,7 +321,68 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-270 additions (this push)
+## Round-277 additions (this push)
+
+GSUB **Lookup Type 7 (substitution extension)** is now decoded as a
+typed view, joining Type 1 (single, round 247), Type 2 (multiple,
+round 262), Type 3 (alternate, round 270), and Type 4 (ligature,
+round 248). Spec: `docs/text/opentype/otspec-gsub.html` §"Lookup
+type 7 subtable: substitution subtable extension". Type 7 is a
+*format extension mechanism*, not a substitution action: it lets a
+Lookup reach its real subtable through a 32-bit offset, for fonts
+whose accumulated subtable sizes exceed what 16-bit offsets can
+address. One on-disk format is defined (`SubstExtensionFormat1`,
+8 bytes).
+
+- **`ExtensionSubst<'a>`** decodes `(format, extensionLookupType,
+  Offset32 extensionOffset)`. Parse-time validation: `format == 1`;
+  `extensionLookupType` must be a defined GsubLookupType (`1..=8`)
+  **other than 7** — the spec forbids an extension pointing at
+  another extension; and `extensionOffset` (relative to the start of
+  the ExtensionSubstFormat1 subtable, per spec) must be non-NULL and
+  land inside the subtable's byte window.
+- **`ExtensionSubst::extension_subtable_bytes()`** surfaces the
+  wrapped ("extension") subtable as a zero-copy byte window starting
+  at `extensionOffset` — the spec's processing model is to proceed
+  as though each extension subtable replaced the type-7 subtable
+  that referenced it, with the Lookup's effective type being
+  `extensionLookupType`.
+- **Typed resolvers** for the wrapped types this crate already
+  decodes: `as_single_subst()` / `as_multiple_subst()` /
+  `as_alternate_subst()` / `as_ligature_subst()`. Each checks the
+  declared `extensionLookupType` first and rejects a mismatch with
+  `BadStructure`; wrapped types 5 / 6 / 8 stay reachable through the
+  raw-bytes window.
+- **`GsubTable::extension_subst(lookup_i, sub_i)`** is the
+  convenience accessor mirroring the existing type-1..4 accessors:
+  `None` for out-of-range indices, `Some(Err(BadStructure))` when
+  the referenced lookup is not declared as
+  `GSUB_LOOKUP_TYPE_EXTENSION` (= 7).
+
+The `ExtensionSubst` type is re-exported at the crate root. The
+remaining GSUB lookup types (5 Contextual, 6 Chained-context,
+8 Reverse-chained-single) remain raw byte slices via
+`Lookup::subtable_bytes(i)`.
+
+Synthetic-byte unit tests cover round-trips wrapping a
+`SingleSubstFormat1` (delta substitution resolves through the
+indirection) and the spec's Example-6 ligature subtable, the
+raw-bytes path for a not-yet-typed wrapped type (8), every error
+path (`format != 1`, the spec-forbidden `extensionLookupType == 7`,
+out-of-vocabulary types 0 / 9 / 0xFFFF, NULL and out-of-range
+`extensionOffset`, truncated headers), the wrong-type resolver and
+accessor rejections, and an end-to-end GSUB byte tower whose only
+lookup is a type-7 extension wrapping a single substitution. One new
+integration test against the Source Sans 3 fixture walks every
+lookup, decodes any type-7 subtables — validating the spec's "all
+extension subtables of one Lookup must have the same
+extensionLookupType" rule and resolving wrapped types 1..4 through
+the typed views — and pins the accessor semantics on a real
+non-type-7 lookup (the fixture is small enough that its GSUB does
+not need the 32-bit indirection, so the walk also documents that
+absence is legitimate).
+
+## Round-270 additions (previous push)
 
 GSUB **Lookup Type 3 (alternate substitution)** is now decoded as a
 typed view, joining Type 1 (single substitution, round 247), Type 2

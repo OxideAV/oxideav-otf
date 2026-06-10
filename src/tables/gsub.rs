@@ -48,6 +48,16 @@
 //!     every Sequence's `glyphCount` must be greater than zero (the
 //!     spec explicitly prohibits using Multiple substitution as a
 //!     deletion).
+//! * **GsubLookupType 3 — Alternate substitution** (one glyph replaced
+//!   by one of a set of aesthetic alternatives, the choice being a
+//!   higher-layer decision) via [`AlternateSubst`]. The one on-disk
+//!   format is decoded
+//!   ([`docs/text/opentype/otspec-gsub.html` §"Lookup type 3 subtable:
+//!   alternate substitution"]):
+//!   * Format 1 — `(format, coverageOffset, alternateSetCount,
+//!     alternateSetOffsets[alternateSetCount])`. Each AlternateSet is
+//!     `(glyphCount, alternateGlyphIDs[glyphCount])`, in arbitrary
+//!     order per spec.
 //! * **GsubLookupType 4 — Ligature substitution** (a sequence of glyphs
 //!   replaced by a single ligature glyph) via [`LigatureSubst`]. The
 //!   one on-disk format is decoded
@@ -64,12 +74,24 @@
 //!     order is the preference order — longer / preferred ligatures
 //!     come first.
 //!
-//! Other GSUB subtable types (3 Alternate, 5 Contextual, 6
-//! Chained-context, 7 Extension, 8 Reverse-chained-single) remain raw
-//! sub-slices via [`super::layout::Lookup::subtable_bytes`]; decoding
-//! their interiors is deferred to a future round.
+//! * **GsubLookupType 7 — Substitution extension** (a 32-bit-offset
+//!   indirection wrapping a subtable of any other lookup type) via
+//!   [`ExtensionSubst`]. The one on-disk format is decoded
+//!   ([`docs/text/opentype/otspec-gsub.html` §"Lookup type 7 subtable:
+//!   substitution subtable extension"]):
+//!   * Format 1 — `(format, extensionLookupType, extensionOffset)`.
+//!     The `Offset32 extensionOffset` (relative to the start of the
+//!     ExtensionSubstFormat1 subtable) reaches the real subtable, whose
+//!     type is `extensionLookupType` (any GsubLookupType other than 7).
+//!     Typed resolvers wrap the types this crate already decodes
+//!     (1 / 2 / 3 / 4); the rest are reachable as raw bytes.
+//!
+//! Other GSUB subtable types (5 Contextual, 6 Chained-context, 8
+//! Reverse-chained-single) remain raw sub-slices via
+//! [`super::layout::Lookup::subtable_bytes`]; decoding their interiors
+//! is deferred to a future round.
 
-use crate::parser::{read_i16, read_u16};
+use crate::parser::{read_i16, read_u16, read_u32};
 use crate::tables::gdef::Coverage;
 use crate::tables::layout::{FeatureList, LayoutHeader, Lookup, LookupList, Script, ScriptList};
 use crate::Error;
@@ -1194,6 +1216,170 @@ impl<'a> Iterator for LigatureComponentIter<'a> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Lookup type 7: Substitution extension (otspec-gsub.html §"Lookup type 7
+// subtable: substitution subtable extension")
+// ---------------------------------------------------------------------------
+
+/// Parsed `ExtensionSubst` subtable — the GSUB `lookupType = 7` payload.
+///
+/// Spec: `docs/text/opentype/otspec-gsub.html` §"Lookup type 7 subtable:
+/// substitution subtable extension".
+///
+/// This lookup type is a *format extension mechanism*, not a
+/// substitution action: it lets a Lookup reach its real subtable
+/// through a 32-bit offset, for fonts whose accumulated subtable sizes
+/// exceed what the usual 16-bit offsets can address. The spec's
+/// processing model: proceed as though the Lookup's `lookupType` were
+/// the `extensionLookupType` of the subtables, and as though each
+/// extension subtable referenced by `extensionOffset` replaced the
+/// type 7 subtable that referenced it.
+///
+/// One on-disk format is defined.
+///
+/// ```text
+/// SubstExtensionFormat1 subtable (8 bytes)
+///   0 / 2 / format = 1
+///   2 / 2 / extensionLookupType   (any GsubLookupType other than 7)
+///   4 / 4 / extensionOffset       (Offset32, from start of this
+///                                  ExtensionSubstFormat1 subtable)
+/// ```
+///
+/// Parse-time validation: `format == 1`; `extensionLookupType` must be
+/// a defined GsubLookupType (`1..=8`) **other than 7** (the spec
+/// forbids an extension pointing at another extension); and
+/// `extensionOffset` must land inside the supplied byte window. The
+/// wrapped subtable is surfaced both raw
+/// ([`Self::extension_subtable_bytes`]) and through typed resolvers for
+/// the lookup types this crate already decodes
+/// ([`Self::as_single_subst`] / [`Self::as_multiple_subst`] /
+/// [`Self::as_alternate_subst`] / [`Self::as_ligature_subst`]).
+#[derive(Debug, Clone, Copy)]
+pub struct ExtensionSubst<'a> {
+    /// Raw subtable bytes (`extensionOffset` is relative to this
+    /// buffer's start).
+    bytes: &'a [u8],
+    ext_lookup_type: u16,
+    ext_offset: u32,
+}
+
+impl<'a> ExtensionSubst<'a> {
+    /// Parse an ExtensionSubst subtable from a buffer whose first two
+    /// bytes are the `format` identifier.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let format = read_u16(bytes, 0)?;
+        if format != 1 {
+            return Err(Error::BadStructure(
+                "GSUB/ExtensionSubst: unknown subtable format",
+            ));
+        }
+        let ext_lookup_type = read_u16(bytes, 2)?;
+        // Spec: "The extensionLookupType field must be set to any
+        // lookup type other than 7." The GsubLookupType vocabulary is
+        // 1..=8, so anything outside that range is equally undefined.
+        if ext_lookup_type == GSUB_LOOKUP_TYPE_EXTENSION {
+            return Err(Error::BadStructure(
+                "GSUB/ExtensionSubst: extensionLookupType must not be 7",
+            ));
+        }
+        if !(GSUB_LOOKUP_TYPE_SINGLE..=GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE)
+            .contains(&ext_lookup_type)
+        {
+            return Err(Error::BadStructure(
+                "GSUB/ExtensionSubst: extensionLookupType out of range",
+            ));
+        }
+        let ext_offset = read_u32(bytes, 4)?;
+        // "All offsets to extension subtables are set in the usual
+        // way—that is, relative to start of the ExtensionSubstFormat1
+        // subtable." A NULL offset has no defined meaning here, and the
+        // wrapped subtable must start inside the byte window.
+        if ext_offset == 0 || (ext_offset as usize) >= bytes.len() {
+            return Err(Error::BadStructure(
+                "GSUB/ExtensionSubst: extensionOffset out of range",
+            ));
+        }
+        Ok(Self {
+            bytes,
+            ext_lookup_type,
+            ext_offset,
+        })
+    }
+
+    /// Subtable format discriminant (always `1`).
+    pub fn format(&self) -> u16 {
+        1
+    }
+
+    /// `extensionLookupType` — the lookup type of the wrapped subtable.
+    /// Guaranteed to be in `1..=8` and never `7`.
+    pub fn extension_lookup_type(&self) -> u16 {
+        self.ext_lookup_type
+    }
+
+    /// `extensionOffset` — byte offset of the wrapped subtable,
+    /// relative to the start of this ExtensionSubstFormat1 subtable.
+    pub fn extension_offset(&self) -> u32 {
+        self.ext_offset
+    }
+
+    /// Raw bytes of the wrapped ("extension") subtable, starting at
+    /// `extensionOffset`. Feed these to the typed parser matching
+    /// [`Self::extension_lookup_type`] — or use the `as_*` resolvers
+    /// below for the lookup types this crate already decodes.
+    pub fn extension_subtable_bytes(&self) -> &'a [u8] {
+        &self.bytes[self.ext_offset as usize..]
+    }
+
+    /// Resolve the wrapped subtable as a [`SingleSubst`]
+    /// (`extensionLookupType = 1`). `Err(BadStructure)` when the
+    /// declared type disagrees or the wrapped bytes are malformed.
+    pub fn as_single_subst(&self) -> Result<SingleSubst<'a>, Error> {
+        if self.ext_lookup_type != GSUB_LOOKUP_TYPE_SINGLE {
+            return Err(Error::BadStructure(
+                "GSUB/ExtensionSubst: extensionLookupType is not 1",
+            ));
+        }
+        SingleSubst::parse(self.extension_subtable_bytes())
+    }
+
+    /// Resolve the wrapped subtable as a [`MultipleSubst`]
+    /// (`extensionLookupType = 2`). `Err(BadStructure)` when the
+    /// declared type disagrees or the wrapped bytes are malformed.
+    pub fn as_multiple_subst(&self) -> Result<MultipleSubst<'a>, Error> {
+        if self.ext_lookup_type != GSUB_LOOKUP_TYPE_MULTIPLE {
+            return Err(Error::BadStructure(
+                "GSUB/ExtensionSubst: extensionLookupType is not 2",
+            ));
+        }
+        MultipleSubst::parse(self.extension_subtable_bytes())
+    }
+
+    /// Resolve the wrapped subtable as an [`AlternateSubst`]
+    /// (`extensionLookupType = 3`). `Err(BadStructure)` when the
+    /// declared type disagrees or the wrapped bytes are malformed.
+    pub fn as_alternate_subst(&self) -> Result<AlternateSubst<'a>, Error> {
+        if self.ext_lookup_type != GSUB_LOOKUP_TYPE_ALTERNATE {
+            return Err(Error::BadStructure(
+                "GSUB/ExtensionSubst: extensionLookupType is not 3",
+            ));
+        }
+        AlternateSubst::parse(self.extension_subtable_bytes())
+    }
+
+    /// Resolve the wrapped subtable as a [`LigatureSubst`]
+    /// (`extensionLookupType = 4`). `Err(BadStructure)` when the
+    /// declared type disagrees or the wrapped bytes are malformed.
+    pub fn as_ligature_subst(&self) -> Result<LigatureSubst<'a>, Error> {
+        if self.ext_lookup_type != GSUB_LOOKUP_TYPE_LIGATURE {
+            return Err(Error::BadStructure(
+                "GSUB/ExtensionSubst: extensionLookupType is not 4",
+            ));
+        }
+        LigatureSubst::parse(self.extension_subtable_bytes())
+    }
+}
+
 /// Parsed `GSUB` header view.
 #[derive(Debug, Clone, Copy)]
 pub struct GsubTable<'a> {
@@ -1385,6 +1571,34 @@ impl<'a> GsubTable<'a> {
         }
         let bytes = lk.subtable_bytes(sub_i)?;
         Some(LigatureSubst::parse(bytes))
+    }
+
+    /// Decode subtable `sub_i` of lookup `lookup_i` as an
+    /// [`ExtensionSubst`] (`GsubLookupType = 7`).
+    ///
+    /// Returns:
+    /// * `None` — `lookup_i` or `sub_i` is out of range, or the
+    ///   referenced subtable bytes are unreachable.
+    /// * `Some(Err(Error::BadStructure))` — the lookup is not
+    ///   declared as `GSUB_LOOKUP_TYPE_EXTENSION`, or the subtable
+    ///   bytes are malformed.
+    /// * `Some(Ok(ExtensionSubst))` — the typed subtable view; resolve
+    ///   the wrapped subtable through
+    ///   [`ExtensionSubst::extension_subtable_bytes`] or one of the
+    ///   typed `as_*` resolvers.
+    pub fn extension_subst(
+        &self,
+        lookup_i: u16,
+        sub_i: u16,
+    ) -> Option<Result<ExtensionSubst<'a>, Error>> {
+        let lk = self.lookup(lookup_i)?;
+        if lk.lookup_type() != GSUB_LOOKUP_TYPE_EXTENSION {
+            return Some(Err(Error::BadStructure(
+                "GSUB/ExtensionSubst: lookup is not type 7",
+            )));
+        }
+        let bytes = lk.subtable_bytes(sub_i)?;
+        Some(ExtensionSubst::parse(bytes))
     }
 }
 
@@ -2799,5 +3013,259 @@ mod tests {
         assert!(g.ligature_subst(0, 1).is_none());
         // Lookup index past the lookupCount.
         assert!(g.ligature_subst(99, 0).is_none());
+    }
+
+    // -------------- ExtensionSubst (lookup type 7) ----------------------
+
+    /// Build a SubstExtensionFormat1 subtable wrapping `inner` at the
+    /// minimal `extensionOffset = 8` (immediately after the 8-byte
+    /// extension header).
+    fn build_extension_subst(ext_type: u16, inner: &[u8]) -> Vec<u8> {
+        // Layout:
+        //   0 / 2 / format = 1
+        //   2 / 2 / extensionLookupType
+        //   4 / 4 / extensionOffset = 8 (Offset32)
+        //   8 / n / wrapped subtable
+        let mut out = Vec::new();
+        out.extend_from_slice(&be(1)); // format
+        out.extend_from_slice(&be(ext_type)); // extensionLookupType
+        out.extend_from_slice(&8u32.to_be_bytes()); // extensionOffset
+        out.extend_from_slice(inner);
+        out
+    }
+
+    #[test]
+    fn extension_subst_round_trip_wrapping_single_subst() {
+        // Wrap a SingleSubstFormat1 (delta = 100 over {20, 21, 22})
+        // behind a type-7 extension and resolve it through the typed
+        // path. Per spec, the engine proceeds "as though each extension
+        // subtable referenced by extensionOffset replaced the type 7
+        // subtable that referenced it".
+        let inner = build_single_subst_fmt1(100, &[20, 21, 22]);
+        let raw = build_extension_subst(GSUB_LOOKUP_TYPE_SINGLE, &inner);
+        let ext = ExtensionSubst::parse(&raw).unwrap();
+        assert_eq!(ext.format(), 1);
+        assert_eq!(ext.extension_lookup_type(), GSUB_LOOKUP_TYPE_SINGLE);
+        assert_eq!(ext.extension_offset(), 8);
+        // The raw window starts exactly at the wrapped subtable.
+        assert_eq!(ext.extension_subtable_bytes(), &inner[..]);
+
+        let ss = ext.as_single_subst().unwrap();
+        assert_eq!(ss.format(), 1);
+        assert_eq!(ss.substitute(20), Some(120));
+        assert_eq!(ss.substitute(23), None);
+
+        // The declared type gates the other resolvers.
+        assert!(matches!(
+            ext.as_multiple_subst(),
+            Err(Error::BadStructure(_))
+        ));
+        assert!(matches!(
+            ext.as_alternate_subst(),
+            Err(Error::BadStructure(_))
+        ));
+        assert!(matches!(
+            ext.as_ligature_subst(),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn extension_subst_round_trip_wrapping_ligature_subst() {
+        // Same indirection over the spec's Example-6 ligature subtable.
+        let inner = build_example_6_subtable();
+        let raw = build_extension_subst(GSUB_LOOKUP_TYPE_LIGATURE, &inner);
+        let ext = ExtensionSubst::parse(&raw).unwrap();
+        assert_eq!(ext.extension_lookup_type(), GSUB_LOOKUP_TYPE_LIGATURE);
+        let ls = ext.as_ligature_subst().unwrap();
+        assert_eq!(ls.substitute(&[5, 20, 21]), Some((100, 3)));
+        assert!(matches!(ext.as_single_subst(), Err(Error::BadStructure(_))));
+    }
+
+    #[test]
+    fn extension_subst_undecoded_type_exposes_raw_bytes() {
+        // extensionLookupType = 8 (reverse chained single) has no typed
+        // view yet; the parse must still validate the header and expose
+        // the wrapped bytes raw.
+        let inner = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let raw = build_extension_subst(GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE, &inner);
+        let ext = ExtensionSubst::parse(&raw).unwrap();
+        assert_eq!(
+            ext.extension_lookup_type(),
+            GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE
+        );
+        assert_eq!(ext.extension_subtable_bytes(), &inner[..]);
+        // No typed resolver matches type 8.
+        assert!(matches!(ext.as_single_subst(), Err(Error::BadStructure(_))));
+        assert!(matches!(
+            ext.as_ligature_subst(),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn extension_subst_rejects_unknown_format() {
+        let inner = build_single_subst_fmt1(1, &[10]);
+        let mut raw = build_extension_subst(GSUB_LOOKUP_TYPE_SINGLE, &inner);
+        raw[0..2].copy_from_slice(&be(2)); // format = 2 is undefined
+        assert!(matches!(
+            ExtensionSubst::parse(&raw),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn extension_subst_rejects_nested_extension_type() {
+        // Spec: "The extensionLookupType field must be set to any
+        // lookup type other than 7."
+        let inner = build_single_subst_fmt1(1, &[10]);
+        let raw = build_extension_subst(GSUB_LOOKUP_TYPE_EXTENSION, &inner);
+        assert!(matches!(
+            ExtensionSubst::parse(&raw),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn extension_subst_rejects_out_of_vocabulary_lookup_type() {
+        // The GsubLookupType vocabulary is 1..=8; 0 and 9 are undefined.
+        let inner = build_single_subst_fmt1(1, &[10]);
+        for bad in [0u16, 9, 0xFFFF] {
+            let raw = build_extension_subst(bad, &inner);
+            assert!(
+                matches!(ExtensionSubst::parse(&raw), Err(Error::BadStructure(_))),
+                "extensionLookupType = {bad} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn extension_subst_rejects_offset_out_of_range() {
+        let inner = build_single_subst_fmt1(1, &[10]);
+        // NULL offset: no defined meaning for an extension subtable.
+        let mut raw = build_extension_subst(GSUB_LOOKUP_TYPE_SINGLE, &inner);
+        raw[4..8].copy_from_slice(&0u32.to_be_bytes());
+        assert!(matches!(
+            ExtensionSubst::parse(&raw),
+            Err(Error::BadStructure(_))
+        ));
+        // Offset == buffer length: the wrapped subtable would start
+        // past the end of the byte window.
+        let mut raw = build_extension_subst(GSUB_LOOKUP_TYPE_SINGLE, &inner);
+        let len = raw.len() as u32;
+        raw[4..8].copy_from_slice(&len.to_be_bytes());
+        assert!(matches!(
+            ExtensionSubst::parse(&raw),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn extension_subst_rejects_truncated_header() {
+        // The header is 8 bytes (format + extensionLookupType +
+        // Offset32); chopping the Offset32 must surface as EOF.
+        let inner = build_single_subst_fmt1(1, &[10]);
+        let raw = build_extension_subst(GSUB_LOOKUP_TYPE_SINGLE, &inner);
+        assert!(matches!(
+            ExtensionSubst::parse(&raw[..6]),
+            Err(Error::UnexpectedEof)
+        ));
+        assert!(matches!(
+            ExtensionSubst::parse(&raw[..2]),
+            Err(Error::UnexpectedEof)
+        ));
+    }
+
+    // -------------- GsubTable::extension_subst integration --------------
+
+    /// Build a tiny GSUB table whose only lookup is a type-7 extension
+    /// wrapping a SingleSubstFormat1 subtable.
+    fn build_minimal_extension_gsub() -> Vec<u8> {
+        let inner = build_single_subst_fmt1(200, &[50, 51]);
+        let sub = build_extension_subst(GSUB_LOOKUP_TYPE_SINGLE, &inner);
+
+        // GSUB layout (all offsets relative to start of GSUB):
+        //   0   /  10 / header (script=10, feature=22, lookup=36)
+        //   10  /  12 / ScriptList (1 record, DFLT @18)
+        //   18  /   4 / Script (no LangSys)
+        //   22  /  10 / FeatureList (1 record, "calt" @ 30)
+        //   30  /   6 / Feature
+        //   36  /   4 / LookupList (1 entry → 40)
+        //   40  /   8 / Lookup type=7, flag=0, subTableCount=1, subOff=8
+        //   48  /  ?  / SubstExtensionFormat1 subtable (sub.len() bytes)
+        let head_end = 48 + sub.len();
+        let mut bytes = vec![0u8; head_end];
+        // header
+        bytes[0..2].copy_from_slice(&be(1));
+        bytes[2..4].copy_from_slice(&be(0));
+        bytes[4..6].copy_from_slice(&be(10));
+        bytes[6..8].copy_from_slice(&be(22));
+        bytes[8..10].copy_from_slice(&be(36));
+        // ScriptList
+        bytes[10..12].copy_from_slice(&be(1));
+        bytes[12..16].copy_from_slice(b"DFLT");
+        bytes[16..18].copy_from_slice(&be(8));
+        // Script
+        bytes[18..20].copy_from_slice(&be(0));
+        bytes[20..22].copy_from_slice(&be(0));
+        // FeatureList
+        bytes[22..24].copy_from_slice(&be(1));
+        bytes[24..28].copy_from_slice(b"calt");
+        bytes[28..30].copy_from_slice(&be(8));
+        // Feature
+        bytes[30..32].copy_from_slice(&be(0));
+        bytes[32..34].copy_from_slice(&be(1));
+        bytes[34..36].copy_from_slice(&be(0));
+        // LookupList
+        bytes[36..38].copy_from_slice(&be(1));
+        bytes[38..40].copy_from_slice(&be(4));
+        // Lookup: type=7, flag=0, subTableCount=1, subtableOffsets=[8]
+        bytes[40..42].copy_from_slice(&be(7));
+        bytes[42..44].copy_from_slice(&be(0));
+        bytes[44..46].copy_from_slice(&be(1));
+        bytes[46..48].copy_from_slice(&be(8));
+        // Subtable
+        bytes[48..head_end].copy_from_slice(&sub);
+        bytes
+    }
+
+    #[test]
+    fn gsub_extension_subst_end_to_end() {
+        let bytes = build_minimal_extension_gsub();
+        let g = GsubTable::parse(&bytes).unwrap();
+        assert_eq!(g.lookup_count(), 1);
+        let l0 = g.lookup(0).unwrap();
+        assert_eq!(l0.lookup_type(), GSUB_LOOKUP_TYPE_EXTENSION);
+
+        let ext = g.extension_subst(0, 0).expect("subtable exists").unwrap();
+        assert_eq!(ext.format(), 1);
+        assert_eq!(ext.extension_lookup_type(), GSUB_LOOKUP_TYPE_SINGLE);
+        // Resolve the indirection and apply the wrapped substitution.
+        let ss = ext.as_single_subst().unwrap();
+        assert_eq!(ss.substitute(50), Some(250));
+        assert_eq!(ss.substitute(51), Some(251));
+        assert_eq!(ss.substitute(52), None);
+
+        // The type-1 accessor must NOT bypass the declared lookup type:
+        // the Lookup says 7, so single_subst() rejects it.
+        assert!(matches!(g.single_subst(0, 0), Some(Err(_))));
+    }
+
+    #[test]
+    fn gsub_extension_subst_rejects_non_type_7_lookup() {
+        // The ligature GSUB declares its lookup as type 4.
+        let bytes = build_minimal_ligature_gsub();
+        let g = GsubTable::parse(&bytes).unwrap();
+        assert!(matches!(g.extension_subst(0, 0), Some(Err(_))));
+    }
+
+    #[test]
+    fn gsub_extension_subst_out_of_range_indices_return_none() {
+        let bytes = build_minimal_extension_gsub();
+        let g = GsubTable::parse(&bytes).unwrap();
+        // Subtable index past the lookup's subTableCount.
+        assert!(g.extension_subst(0, 1).is_none());
+        // Lookup index past the lookupCount.
+        assert!(g.extension_subst(99, 0).is_none());
     }
 }

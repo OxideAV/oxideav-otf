@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GSUB Lookup Type 7 (substitution extension) decoded** via a new
+  `ExtensionSubst` typed view, joining the round-247 `SingleSubst`,
+  round-254 `LigatureSubst`, round-262 `MultipleSubst`, and round-270
+  `AlternateSubst` work. Source: `docs/text/opentype/otspec-gsub.html`
+  §"Lookup type 7 subtable: substitution subtable extension". This
+  lookup type is a *format extension mechanism*, not a substitution
+  action: it reaches the real subtable through a 32-bit offset for
+  fonts whose accumulated subtable sizes exceed 16-bit offsets.
+  `ExtensionSubst` decodes the one defined on-disk format —
+  `(format, extensionLookupType, Offset32 extensionOffset)` — and
+  validates at parse time that `format == 1`, that
+  `extensionLookupType` is a defined GsubLookupType (`1..=8`) other
+  than 7 (the spec forbids an extension pointing at another
+  extension), and that `extensionOffset` lands inside the subtable's
+  byte window. The wrapped subtable is surfaced raw via
+  `extension_subtable_bytes()` and through typed resolvers for the
+  lookup types this crate already decodes: `as_single_subst()` /
+  `as_multiple_subst()` / `as_alternate_subst()` /
+  `as_ligature_subst()` (each rejects with `BadStructure` when the
+  declared `extensionLookupType` disagrees). New convenience accessor
+  `GsubTable::extension_subst(lookup_i, sub_i)` mirrors the existing
+  type-1..4 accessors: `None` for out-of-range indices,
+  `Some(Err(BadStructure))` when the referenced lookup is not declared
+  as type 7. `ExtensionSubst` is re-exported at the crate root.
+  Synthetic-byte unit tests cover round-trips wrapping a
+  `SingleSubstFormat1` and the Example-6 ligature subtable, the
+  raw-bytes path for a not-yet-typed wrapped type (8), rejection of
+  `format != 1`, of `extensionLookupType == 7`, of out-of-vocabulary
+  types (0 / 9 / 0xFFFF), of NULL and out-of-range `extensionOffset`,
+  truncated headers, the wrong-type accessor rejection, and an
+  end-to-end GSUB byte tower whose only lookup is a type-7 extension
+  wrapping a single substitution. A Source Sans 3 integration test
+  walks every lookup, decodes any type-7 subtables (validating the
+  spec's "all extension subtables of one Lookup share the same
+  extensionLookupType" rule and resolving wrapped types 1..4 through
+  the typed views), and pins the accessor semantics on a real non-7
+  lookup. The remaining lookup types (5 Contextual, 6 Chained-context,
+  8 Reverse-chained-single) remain raw sub-slices pending dedicated
+  rounds.
+
 - **GSUB Lookup Type 3 (alternate substitution) decoded** via a new
   `AlternateSubst` typed view, joining the round-247 `SingleSubst`,
   round-254 `LigatureSubst`, and round-262 `MultipleSubst` work.

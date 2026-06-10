@@ -1276,6 +1276,98 @@ fn gsub_ligature_subst_decodes_every_type_4_lookup() {
 }
 
 #[test]
+fn gsub_extension_subst_decodes_every_type_7_lookup() {
+    // Walk every GSUB lookup; for any type-7 lookups (substitution
+    // extension), decode the subtable through the typed
+    // [`ExtensionSubst`] view and verify the spec's invariants:
+    //
+    // * format == 1 (the only defined SubstExtensionFormat1 format)
+    // * extensionLookupType is in 1..=8 and never 7
+    // * within one Lookup, every extension subtable carries the SAME
+    //   extensionLookupType (spec: "If a lookup table uses extension
+    //   subtables, then all of the extension subtables must have the
+    //   same extensionLookupType")
+    // * for wrapped types this crate already decodes (1..=4), the
+    //   wrapped subtable resolves through the matching typed view
+    //
+    // Source Sans 3 is small enough that its GSUB does not need the
+    // 32-bit indirection (extension subtables exist for fonts whose
+    // accumulated subtable sizes exceed 16-bit offsets), so the loop
+    // body may not run — the accessor semantics below are exercised
+    // either way.
+    use oxideav_otf::{
+        ExtensionSubst, GSUB_LOOKUP_TYPE_ALTERNATE, GSUB_LOOKUP_TYPE_EXTENSION,
+        GSUB_LOOKUP_TYPE_LIGATURE, GSUB_LOOKUP_TYPE_MULTIPLE, GSUB_LOOKUP_TYPE_SINGLE,
+    };
+
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gsub().expect("Source Sans 3 carries a GSUB table");
+
+    let mut first_non_ext_lookup = None;
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != GSUB_LOOKUP_TYPE_EXTENSION {
+            first_non_ext_lookup.get_or_insert(i);
+            continue;
+        }
+        let mut lookup_ext_type: Option<u16> = None;
+        for s in 0..l.subtable_count() {
+            let ext: ExtensionSubst<'_> = g
+                .extension_subst(i, s)
+                .unwrap_or_else(|| panic!("lookup {i} sub {s} missing"))
+                .unwrap_or_else(|e| panic!("lookup {i} sub {s} decode: {e:?}"));
+            assert_eq!(ext.format(), 1, "lookup {i} sub {s} format != 1");
+            let t = ext.extension_lookup_type();
+            assert!(
+                (1..=8).contains(&t) && t != GSUB_LOOKUP_TYPE_EXTENSION,
+                "lookup {i} sub {s} extensionLookupType {t} out of vocabulary",
+            );
+            // All extension subtables of one Lookup share a type.
+            if let Some(prev) = lookup_ext_type {
+                assert_eq!(
+                    prev, t,
+                    "lookup {i} mixes extensionLookupTypes {prev} and {t}",
+                );
+            }
+            lookup_ext_type = Some(t);
+            // Resolve the indirection for the wrapped types this crate
+            // already decodes as typed views.
+            match t {
+                GSUB_LOOKUP_TYPE_SINGLE => {
+                    ext.as_single_subst()
+                        .unwrap_or_else(|e| panic!("lookup {i} sub {s} wrapped type 1: {e:?}"));
+                }
+                GSUB_LOOKUP_TYPE_MULTIPLE => {
+                    ext.as_multiple_subst()
+                        .unwrap_or_else(|e| panic!("lookup {i} sub {s} wrapped type 2: {e:?}"));
+                }
+                GSUB_LOOKUP_TYPE_ALTERNATE => {
+                    ext.as_alternate_subst()
+                        .unwrap_or_else(|e| panic!("lookup {i} sub {s} wrapped type 3: {e:?}"));
+                }
+                GSUB_LOOKUP_TYPE_LIGATURE => {
+                    ext.as_ligature_subst()
+                        .unwrap_or_else(|e| panic!("lookup {i} sub {s} wrapped type 4: {e:?}"));
+                }
+                _ => {
+                    // Types 5 / 6 / 8 stay raw; the window must at
+                    // least be non-empty (parse() guarantees this).
+                    assert!(!ext.extension_subtable_bytes().is_empty());
+                }
+            }
+        }
+    }
+
+    // Accessor semantics on a real (non-type-7) lookup: the typed
+    // accessor must reject with BadStructure rather than None so a
+    // caller can distinguish "missing" from "wrong type".
+    let i = first_non_ext_lookup.expect("font ships at least one non-extension lookup");
+    assert!(matches!(g.extension_subst(i, 0), Some(Err(_))));
+    // Out-of-range lookup index -> None.
+    assert!(g.extension_subst(g.lookup_count(), 0).is_none());
+}
+
+#[test]
 fn gpos_header_and_lookups_walk() {
     let f = Font::from_bytes(FIXTURE).unwrap();
     let g = f.gpos().expect("Source Sans 3 carries a GPOS table");

@@ -55,7 +55,7 @@ pub use crate::tables::gdef::{
 pub use crate::tables::gpos::GposTable as GposView;
 pub use crate::tables::gsub::GsubTable as GsubView;
 pub use crate::tables::gsub::{
-    AlternateGlyphIter, AlternateSet, AlternateSubst, AlternateSubstIter, Ligature,
+    AlternateGlyphIter, AlternateSet, AlternateSubst, AlternateSubstIter, ExtensionSubst, Ligature,
     LigatureComponentIter, LigatureSet, LigatureSubst, LigatureSubstIter, MultipleSubst,
     MultipleSubstIter, Sequence, SequenceGlyphIter, SingleSubst, SingleSubstIter,
     GSUB_LOOKUP_TYPE_ALTERNATE, GSUB_LOOKUP_TYPE_CHAINED_CONTEXT, GSUB_LOOKUP_TYPE_CONTEXT,
