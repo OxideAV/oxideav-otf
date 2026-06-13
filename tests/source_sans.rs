@@ -1392,6 +1392,61 @@ fn gpos_header_and_lookups_walk() {
 }
 
 #[test]
+fn gpos_single_pos_subtables_decode() {
+    use oxideav_otf::GPOS_LOOKUP_TYPE_SINGLE;
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gpos().unwrap();
+
+    let mut type1_lookups = 0usize;
+    let mut covered_glyphs = 0usize;
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != GPOS_LOOKUP_TYPE_SINGLE {
+            // The wrong-type accessor must reject a non-type-1 lookup.
+            assert!(matches!(g.single_pos(i, 0), Some(Err(_)) | None));
+            continue;
+        }
+        type1_lookups += 1;
+        for s in 0..l.subtable_count() {
+            let sp = g
+                .single_pos(i, s)
+                .expect("type-1 subtable in range")
+                .expect("SinglePos parses");
+            // Format is one of the two defined values.
+            assert!(matches!(sp.format(), 1 | 2));
+            // valueFormat declares only defined bits.
+            assert!(sp.value_format().is_valid());
+            // Every covered glyph yields a parseable ValueRecord, and
+            // the record's declared fields agree with the value format.
+            let vf = sp.value_format();
+            for (glyph, rec_res) in sp.iter() {
+                let rec = rec_res.expect("ValueRecord parses");
+                // Undeclared placement/advance fields must be zero.
+                if !vf.has_x_placement() {
+                    assert_eq!(rec.x_placement, 0);
+                }
+                if !vf.has_y_advance() {
+                    assert_eq!(rec.y_advance, 0);
+                }
+                // The same glyph queried directly matches the iterator.
+                let direct = sp.value(glyph).unwrap().unwrap();
+                assert_eq!(direct, rec);
+                covered_glyphs += 1;
+            }
+        }
+    }
+    // Source Sans 3's GPOS uses pair-adjustment (type 2) kerning and
+    // mark attachment rather than single-adjustment positioning, so the
+    // fixture carries no type-1 lookups: this walk documents that the
+    // wrong-type accessor rejects every non-type-1 lookup and that the
+    // absence is legitimate. The SinglePos decode path itself is
+    // exercised by the synthetic byte-tower unit tests in the gpos
+    // module (both formats, every error path).
+    assert_eq!(type1_lookups, 0);
+    assert_eq!(covered_glyphs, 0);
+}
+
+#[test]
 fn gpos_finds_latin_script() {
     let f = Font::from_bytes(FIXTURE).unwrap();
     let g = f.gpos().unwrap();

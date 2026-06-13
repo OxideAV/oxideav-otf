@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GPOS `ValueRecord` / `ValueFormat` primitive and Lookup Type 1
+  (single adjustment positioning) decoded** — the GPOS table's first
+  typed lookup. Source: `docs/text/opentype/otspec-gpos.html`
+  §"ValueRecord" and §"Lookup type 1 subtable: single adjustment
+  positioning". `ValueFormat` exposes predicate accessors for the eight
+  defined flag bits, an `is_valid()` reserved-bit check, and
+  `record_size()` = `2 × popcount(definedBits)`. `ValueRecord` decodes
+  the placement/advance design-unit values plus the four raw
+  Device/VariationIndex `Offset16`s, reading only the fields the
+  `ValueFormat` declares, in the spec's fixed flag-bit order; undeclared
+  fields read back as `0`. `SinglePos` decodes both on-disk formats
+  (format 1 = one shared `ValueRecord`; format 2 = a per-glyph array
+  indexed by Coverage Index), re-uses the shared `Coverage` primitive,
+  and answers `value(glyph)` / iterates `(glyph_id, ValueRecord)`.
+  `GposTable::single_pos(lookup_i, sub_i)` mirrors the GSUB
+  `single_subst` accessor (`None` out of range, `Some(Err)` on a
+  non-type-1 lookup). The full `GPOS_LOOKUP_TYPE_*` constant set (1..9),
+  `ValueFormat`, `ValueRecord`, `SinglePos`, and `SinglePosIter` are
+  re-exported at the crate root. Synthetic byte-tower unit tests cover
+  the format/size math, the field-order/empty-record rules, both
+  `SinglePos` formats, and every error path; one Source Sans 3
+  integration test documents the fixture's (legitimate) absence of
+  type-1 lookups and the accessor's wrong-type rejection.
 - **GSUB Lookup Type 7 (substitution extension) decoded** via a new
   `ExtensionSubst` typed view, joining the round-247 `SingleSubst`,
   round-254 `LigatureSubst`, round-262 `MultipleSubst`, and round-270

@@ -313,6 +313,29 @@ if let Some(g) = font.gsub() {
     }
 }
 
+// GPOS Lookup Type 1 — single adjustment positioning. The typed view
+// decodes the ValueRecord/ValueFormat primitive and answers
+// `value(glyph)` for each covered glyph (format 1 = one shared record;
+// format 2 = a per-glyph array).
+if let Some(g) = font.gpos() {
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != oxideav_otf::GPOS_LOOKUP_TYPE_SINGLE {
+            continue;
+        }
+        for s in 0..l.subtable_count() {
+            let sp = g.single_pos(i, s).unwrap()?;
+            let _ = sp.format();              // 1 or 2
+            let _ = sp.value_format().bits();  // which fields are present
+            for (glyph, rec_res) in sp.iter() {
+                let rec = rec_res?;
+                // Apply as a shaper would: shift placement + advance.
+                let _ = (glyph, rec.x_placement, rec.x_advance);
+            }
+        }
+    }
+}
+
 for contour in &outline.contours {
     for seg in &contour.segments {
         // CubicSegment::MoveTo / LineTo / CurveTo / ClosePath
@@ -321,7 +344,63 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-277 additions (this push)
+## Round-288 additions (this push)
+
+The **GPOS positioning surface gains its first typed lookup**: **Lookup
+Type 1 (single adjustment positioning)** is now decoded, together with
+the shared **`ValueRecord` / `ValueFormat`** primitive on which every
+GPOS adjustment lookup depends. Spec:
+`docs/text/opentype/otspec-gpos.html` §"ValueRecord" and §"Lookup
+type 1 subtable: single adjustment positioning". Prior to this round
+GPOS exposed only its header / ScriptList / FeatureList / LookupList
+views with every lookup left as raw bytes.
+
+- **`ValueFormat`** wraps the 16-bit flags field, with predicate
+  accessors for each of the eight defined bits (`X_PLACEMENT` …
+  `Y_ADVANCE_DEVICE`), an `is_valid()` reserved-bit check
+  (`0xFF00` must be zero), and `record_size()` =
+  `2 × popcount(definedBits)` — the per-record on-disk size, since each
+  defined bit contributes one 2-byte field.
+- **`ValueRecord`** decodes the placement/advance design-unit values
+  (`xPlacement`, `yPlacement`, `xAdvance`, `yAdvance`) plus the four
+  raw Device/VariationIndex `Offset16`s, reading **only** the fields
+  the originating `ValueFormat` declares, in the spec's fixed flag-bit
+  order. Undeclared fields read back as `0` (an empty `ValueFormat` is
+  a no-op record). Device-table interiors stay raw offsets pending a
+  later round.
+- **`SinglePos`** decodes both on-disk formats: format 1 (one shared
+  `ValueRecord` for every covered glyph) and format 2 (a parallel
+  `ValueRecord` array indexed by Coverage Index, validated against
+  `valueCount`). It re-uses the shared `Coverage` primitive (same one
+  GDEF / GSUB / GPOS read) and answers `value(glyph)` /
+  iterates `(glyph_id, ValueRecord)` pairs.
+- **`GposTable::single_pos(lookup_i, sub_i)`** is the convenience
+  accessor mirroring the GSUB `single_subst` family: `None` for
+  out-of-range indices, `Some(Err(BadStructure))` when the referenced
+  lookup is not declared `GPOS_LOOKUP_TYPE_SINGLE` (= 1). The full
+  `GPOS_LOOKUP_TYPE_*` constant set (1..9) is exported.
+
+`ValueFormat`, `ValueRecord`, `SinglePos`, `SinglePosIter`, and the
+lookup-type constants are re-exported at the crate root. The remaining
+GPOS lookup types (2 Pair, 3 Cursive, 4–6 Mark attachment, 7–8
+Context/Chained, 9 Extension) remain raw byte slices via
+`Lookup::subtable_bytes(i)` — Type 2 (PairPos), which reuses
+`ValueRecord`, is the natural next step.
+
+Synthetic byte-tower unit tests cover the `ValueFormat` bit/size math,
+the `ValueRecord` "read only declared fields in flag order" rule (mixed
+value + device format) and the empty-record case, both `SinglePos`
+formats (shared vs per-glyph values, iterator + direct lookup),
+uncovered-glyph `None`, every error path (reserved valueFormat bit,
+NULL/out-of-range coverage offset, truncated format-2 value array,
+unknown format), and an end-to-end GPOS table whose only lookup is a
+type-1 single-adjustment resolved through `single_pos`. One
+integration test walks the Source Sans 3 GPOS: its kerning is
+pair-adjustment (type 2) plus mark attachment, so it carries no type-1
+lookups — the walk documents that the accessor rejects every non-type-1
+lookup and that the absence is legitimate.
+
+## Round-277 additions (previous push)
 
 GSUB **Lookup Type 7 (substitution extension)** is now decoded as a
 typed view, joining Type 1 (single, round 247), Type 2 (multiple,
