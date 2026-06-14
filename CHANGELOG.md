@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CFF2 `ItemVariationStore` (§12) parsed for variable fonts** — the
+  `VariationStore` block pointed at by the Top DICT
+  `VariationStoreOffset` operator is now decoded into a typed
+  `ItemVariationStore`: the `VariationRegionList` (every
+  `VariationRegion`'s per-axis `RegionAxisCoordinates` `start`/`peak`/
+  `end`, each an F2DOT14 value normalized to `[-1.0, 1.0]`) plus the
+  array of `ItemVariationData` subtables (`itemCount`,
+  `shortDeltaCount`, and the `regionIndexes` array that gives a
+  `blend`'s active-region count `k`). The format-1 check, declared IVS
+  `length` extent confinement, and `regionIndex < regionCount` bounds
+  are enforced. Source: `docs/text/opentype/otspec-cff2.html` §12
+  "VariationStore data contents" + the worked "Example CFF2 table" byte
+  trace (CFF2 offsets 0x10–0x37). Exposed via `Cff2::variation_store()`
+  and `Font::variation_store()`; the spec's worked example round-trips
+  bit-exactly. The per-glyph `blend`/`vsindex` charstring math (which
+  combines these regions with instance axis settings via the per-region
+  scalar algorithm) remains deferred — that algorithm lives in the
+  OpenType *Font Variations Common Table Formats* chapter, not in the
+  staged CFF2 doc.
 - **GPOS `ValueRecord` / `ValueFormat` primitive and Lookup Type 1
   (single adjustment positioning) decoded** — the GPOS table's first
   typed lookup. Source: `docs/text/opentype/otspec-gpos.html`

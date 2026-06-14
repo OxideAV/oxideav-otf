@@ -19,23 +19,29 @@
 //!    (§7) and the **CharString operator set** adds `blend` (16) and
 //!    `vsindex` (15) for variable-font outlines (§9).
 //!
-//! This module currently implements points (1)–(4): header, INDEX, and
-//! Top DICT parsing, plus the GlobalSubrINDEX + CharStringINDEX +
-//! FontDICTINDEX walks they reference. The Type 2 charstring decoder
-//! (§9), the ItemVariationStore (§12), and the per-glyph blend
-//! resolution are deferred — calling `Font::glyph_outline` on a CFF2
-//! font still surfaces `Error::Cff2NotImplemented`, but metadata and
-//! structural inspection are now first-class.
+//! This module implements points (1)–(4): header, INDEX, and Top DICT
+//! parsing, plus the GlobalSubrINDEX + CharStringINDEX + FontDICTINDEX
+//! walks they reference, and the ItemVariationStore (§12) for variable
+//! fonts (`VariationRegionList` + `ItemVariationData` subtables; see
+//! [`varstore`]). The Type 2 charstring decoder (§9) and the per-glyph
+//! `blend`/`vsindex` resolution against the variation store are still
+//! deferred — calling `Font::glyph_outline` on a CFF2 font surfaces
+//! `Error::Cff2NotImplemented` — but the variation-region geometry the
+//! blend math will need is now parsed and exposed.
 //!
 //! Spec: `docs/text/opentype/otspec-cff2.html`.
 
 pub mod header;
 pub mod index;
 pub mod top_dict;
+pub mod varstore;
 
 pub use self::header::Cff2Header;
 pub use self::index::Cff2Index;
 pub use self::top_dict::{Cff2Op, Cff2TopDict, DEFAULT_FONT_MATRIX};
+pub use self::varstore::{
+    ItemVariationData, ItemVariationStore, RegionAxisCoordinates, VariationRegion,
+};
 
 use crate::Error;
 
@@ -67,6 +73,11 @@ pub struct Cff2<'a> {
     /// At least one Font DICT; multiple are allowed (spec §7.2
     /// "FontDICTINDEX").
     font_dicts: Cff2Index<'a>,
+    /// Parsed ItemVariationStore (§12), present iff the Top DICT
+    /// carried a `VariationStoreOffset` operator. `None` for
+    /// non-variable CFF2 fonts (where `blend`/`vsindex` must not
+    /// appear, per §12).
+    variation_store: Option<ItemVariationStore>,
 }
 
 impl<'a> Cff2<'a> {
@@ -102,6 +113,16 @@ impl<'a> Cff2<'a> {
             ));
         }
 
+        // ItemVariationStore — present iff VariationStoreOffset is set
+        // (§12). Offsets are relative to byte 0 of the CFF2 table.
+        let variation_store = match top.variation_store_offset {
+            Some(off) => Some(ItemVariationStore::parse_variation_store(
+                bytes,
+                off as usize,
+            )?),
+            None => None,
+        };
+
         Ok(Self {
             bytes,
             header,
@@ -109,6 +130,7 @@ impl<'a> Cff2<'a> {
             global_subrs,
             charstrings,
             font_dicts,
+            variation_store,
         })
     }
 
@@ -147,6 +169,14 @@ impl<'a> Cff2<'a> {
     /// ItemVariationStore.
     pub fn is_variable(&self) -> bool {
         self.top.is_variable()
+    }
+
+    /// The parsed ItemVariationStore (§12), or `None` for a
+    /// non-variable CFF2 font. Exposes the `VariationRegionList` and
+    /// `ItemVariationData` subtables a future `blend`/`vsindex`
+    /// charstring pass will consume.
+    pub fn variation_store(&self) -> Option<&ItemVariationStore> {
+        self.variation_store.as_ref()
     }
 
     /// Raw bytes for the CharString at glyph index `gid`. Returned
@@ -319,9 +349,44 @@ mod tests {
         v.extend_from_slice(&[0, 0, 0, 1, 1, 1, 2, b'C']);
         assert_eq!(v.len(), fd_off as usize);
         v.extend_from_slice(&[0, 0, 0, 1, 1, 1, 2, b'F']);
+        // FontDICTINDEX ends at byte 32. Pad to byte 50, where the Top
+        // DICT's VariationStoreOffset points, then place the CFF2
+        // spec's worked-example VariationStore (2-byte length wrapper +
+        // ItemVariationStore) so the IVS parse succeeds.
+        v.resize(50, 0);
+        v.extend_from_slice(&[0x00, 0x26]); // VariationStore length = 38
+        v.extend_from_slice(&[0x00, 0x01]); // format = 1
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x0C]); // regionListOffset = 12
+        v.extend_from_slice(&[0x00, 0x01]); // itemVariationDataCount = 1
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x1C]); // ivdOffsets[0] = 28
+        v.extend_from_slice(&[0x00, 0x01]); // axisCount = 1
+        v.extend_from_slice(&[0x00, 0x02]); // regionCount = 2
+        v.extend_from_slice(&[0xC0, 0x00, 0xE0, 0x00, 0x00, 0x00]); // region0
+        v.extend_from_slice(&[0xC0, 0x00, 0xC0, 0x00, 0xE0, 0x00]); // region1
+        v.extend_from_slice(&[0x00, 0x00]); // itemCount = 0
+        v.extend_from_slice(&[0x00, 0x00]); // shortDeltaCount = 0
+        v.extend_from_slice(&[0x00, 0x02]); // regionIndexCount = 2
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // regionIndexes = {0,1}
+
         let c = Cff2::parse(&v).expect("parse");
         assert!(c.is_variable());
         assert_eq!(c.top.variation_store_offset, Some(50));
+        let ivs = c.variation_store().expect("variation store parsed");
+        assert_eq!(ivs.axis_count, 1);
+        assert_eq!(ivs.regions.len(), 2);
+        assert_eq!(ivs.item_variation_data_count(), 1);
+        assert_eq!(
+            ivs.item_variation_data_at(0).unwrap().region_indexes,
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn non_variable_font_has_no_variation_store() {
+        let v = build_minimal_cff2();
+        let c = Cff2::parse(&v).expect("parse");
+        assert!(!c.is_variable());
+        assert!(c.variation_store().is_none());
     }
 
     #[test]

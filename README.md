@@ -1107,6 +1107,44 @@ CharString offset rejection. Four new integration tests in
 OpenType/CFF2 font (`head` / `hhea` / `cmap` / `hmtx` / `maxp` /
 `name` / `CFF2`) and exercise every new `Font` accessor end-to-end.
 
+### CFF2 ItemVariationStore (§12)
+
+For a variable CFF2 font (one whose Top DICT carries a
+`VariationStoreOffset` operator), the embedded `VariationStore` is now
+parsed into a typed `ItemVariationStore`. Spec:
+`docs/text/opentype/otspec-cff2.html` §12 "VariationStore data
+contents" + the worked "Example CFF2 table" byte trace.
+
+- **`VariationStore` wrapper** — the `uint16 length` field is consumed
+  and the following `length`-byte `ItemVariationStore` is parsed within
+  its declared extent (a lying / truncated `length` can never read into
+  adjacent CFF2 structures).
+- **`ItemVariationStore`** — `format` (must be `1`),
+  `variationRegionListOffset`, `itemVariationDataCount`, and the
+  `itemVariationDataOffsets[]` array.
+- **`VariationRegionList`** — `axisCount`, `regionCount`, then per
+  region one `RegionAxisCoordinates` per axis. Each holds `start` /
+  `peak` / `end`, decoded from F2DOT14 to `f32` normalized to
+  `[-1.0, 1.0]` (`0xC000` = -1.0, `0xE000` = -0.5, `0x4000` = 1.0).
+- **`ItemVariationData`** — `itemCount`, `shortDeltaCount`, and the
+  `regionIndexes[]` array (each bounds-checked against the region
+  list). The `regionIndexes` length is the active-region count `k` a
+  `blend` operator's operand math depends on; CFF2 mandates `itemCount`
+  and `shortDeltaCount` be `0` (no stored delta sets).
+- **Exposed via** `Cff2::variation_store()` and
+  `Font::variation_store()`. The per-glyph `blend`/`vsindex` charstring
+  interpreter (combining these regions with instance axis settings) is
+  still deferred — the per-region scalar algorithm it needs lives in
+  the OpenType *Font Variations Common Table Formats* chapter, not in
+  the staged CFF2 doc.
+
+Seven new unit tests in `src/cff2/varstore.rs` plus two in
+`src/cff2/mod.rs` cover: the spec worked-example bit-exact round-trip
+(via the wrapper and bare), F2DOT14 decode, bad-format rejection,
+region-index-out-of-range rejection, declared-length-past-EOF
+rejection, multi-`ItemVariationData` subtable layouts, and the
+non-variable-font (`None`) path.
+
 ## Round-204 additions (previous push)
 
 The OpenType **`name` table** is now version-1 aware, with full

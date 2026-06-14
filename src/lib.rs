@@ -37,7 +37,10 @@ pub mod parser;
 pub mod tables;
 
 pub use cff::{PrivateHints, RegistryOrdering, TopMetadata};
-pub use cff2::{Cff2, Cff2Header, Cff2Op, Cff2TopDict, DEFAULT_FONT_MATRIX};
+pub use cff2::{
+    Cff2, Cff2Header, Cff2Op, Cff2TopDict, ItemVariationData, ItemVariationStore,
+    RegionAxisCoordinates, VariationRegion, DEFAULT_FONT_MATRIX,
+};
 pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
 
 use crate::cff::Cff;
@@ -438,10 +441,11 @@ impl<'a> Font<'a> {
 
     /// Borrow the parsed CFF2 table, or `None` for CFF1 fonts. The
     /// returned view exposes the CFF2 header, Top DICT, CharString
-    /// count, FontDICT INDEX, and per-glyph CharString bytes;
-    /// per-glyph outline decoding (with `blend` and `vsindex`
-    /// resolution against the `VariationStore`) is deferred to a
-    /// future round and currently surfaces as
+    /// count, FontDICT INDEX, per-glyph CharString bytes, and (for
+    /// variable fonts) the parsed `ItemVariationStore`
+    /// ([`Font::variation_store`]); per-glyph outline decoding (the
+    /// `blend`/`vsindex` charstring math against the store) is deferred
+    /// to a future round and currently surfaces as
     /// [`Error::Cff2NotImplemented`] from [`Font::glyph_outline`].
     pub fn cff2(&self) -> Option<&Cff2<'a>> {
         self.cff2_view()
@@ -468,6 +472,17 @@ impl<'a> Font<'a> {
     /// fonts (CFF1 has no variation mechanism).
     pub fn is_variable(&self) -> bool {
         self.cff2_view().is_some_and(Cff2::is_variable)
+    }
+
+    /// Borrow the CFF2 `ItemVariationStore` (§12) for a variable CFF2
+    /// font, or `None` for non-variable CFF2 fonts and all CFF1 fonts.
+    /// The store exposes the `VariationRegionList` (each region's
+    /// per-axis `start`/`peak`/`end` F2DOT14 intervals) and the
+    /// `ItemVariationData` subtables (`regionIndexes` selecting the
+    /// active regions for `vsindex`); these are the inputs a future
+    /// `blend` charstring pass needs.
+    pub fn variation_store(&self) -> Option<&ItemVariationStore> {
+        self.cff2_view().and_then(Cff2::variation_store)
     }
 
     // ---- glyph lookup ------------------------------------------------------
