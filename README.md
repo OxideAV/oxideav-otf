@@ -334,6 +334,37 @@ if let Some(g) = font.gpos() {
             }
         }
     }
+
+    // GPOS Lookup Type 2 — pair adjustment positioning (kerning). The
+    // typed view decodes both formats: format 1 (per-glyph PairSet
+    // records) and format 2 (a class-pair matrix). `pair(first, second)`
+    // returns the `PairValue { first, second }` adjustment for an ordered
+    // glyph pair; `class_pair(c1, c2)` probes the format-2 matrix; and
+    // `iter()` enumerates every `(first, second, PairValue)` of a
+    // format-1 subtable.
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != oxideav_otf::GPOS_LOOKUP_TYPE_PAIR {
+            continue;
+        }
+        for s in 0..l.subtable_count() {
+            let pp = g.pair_pos(i, s).unwrap()?;
+            let _ = pp.format();               // 1 or 2
+            let _ = pp.value_format1().bits();  // first-glyph fields
+            let _ = pp.value_format2().bits();  // second-glyph fields
+            // Apply as a shaper would: adjust the cursor between a glyph
+            // pair by the looked-up PairValue.
+            if let Some(res) = pp.pair(/* first */ 0u16, /* second */ 0u16) {
+                let pv = res?;
+                let _ = (pv.first.x_advance, pv.second.x_advance);
+            }
+            // Format-1 subtables also enumerate their explicit pairs.
+            for (first, second, val_res) in pp.iter() {
+                let pv = val_res?;
+                let _ = (first, second, pv.first.x_advance);
+            }
+        }
+    }
 }
 
 for contour in &outline.contours {
@@ -344,7 +375,68 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-288 additions (this push)
+## Round-303 additions (this push)
+
+GPOS **Lookup Type 2 (pair adjustment positioning)** is now decoded as
+a typed view, joining Type 1 (single adjustment, round 288). Spec:
+`docs/text/opentype/otspec-gpos.html` §"Lookup type 2 subtable: pair
+adjustment positioning". Type 2 is the kerning workhorse — the pair-wise
+advance/placement adjustment that carries most of a font's kerning data.
+Both on-disk formats are decoded, sharing the round-288 `ValueRecord` /
+`ValueFormat` primitive and the `Coverage` / `ClassDef` common-layout
+tables.
+
+- **`PairPos<'a>`** decodes both formats from one `parse()` entrypoint.
+  The two `valueFormat` fields (`valueFormat1` for the first glyph,
+  `valueFormat2` for the second) are validated for reserved bits; a zero
+  `valueFormat` means the corresponding `ValueRecord` is absent on disk
+  and reads back as the all-zero record (the spec's "glyph not
+  repositioned").
+- **Format 1** (`PairPosFormat1`) — pairs identified individually by
+  glyph index. The Coverage table lists each first glyph; a parallel
+  `pairSetOffsets[pairSetCount]` array points at `PairSet` tables, each
+  holding `(secondGlyph, valueRecord1, valueRecord2)` records **sorted
+  by `secondGlyph`**. `pair(first, second)` binary-searches the selected
+  PairSet; parse enforces `pairSetCount == coverage length`.
+- **Format 2** (`PairPosFormat2`) — pairs identified by glyph *class*.
+  Two `ClassDef` tables map first/second glyph to a class value; a
+  row-major `class1Count × class2Count` matrix of
+  `(valueRecord1, valueRecord2)` cells holds every class-pair
+  adjustment. `pair(first, second)` resolves both classes then indexes
+  the cell; `class_pair(c1, c2)` probes the matrix directly. A covered
+  first glyph always yields a cell (possibly the all-zero default);
+  classes outside the matrix dimensions yield `None`.
+- **`PairValue`** bundles the decoded `{ first, second }` `ValueRecord`
+  pair. **`PairPos::iter()`** enumerates every explicit
+  `(first_glyph, second_glyph, PairValue)` triple of a format-1 subtable
+  in ascending `(first, second)` order; it is empty for format 2 (a
+  dense class matrix, not an enumeration — use `pair` / `class_pair`).
+- **`GposTable::pair_pos(lookup_i, sub_i)`** mirrors the `single_pos`
+  accessor: `None` for out-of-range indices, `Some(Err(BadStructure))`
+  when the referenced lookup is not declared `GPOS_LOOKUP_TYPE_PAIR`
+  (= 2), `Some(Ok(PairPos))` otherwise.
+
+`PairPos`, `PairPosIter`, and `PairValue` are re-exported at the crate
+root. The remaining GPOS lookup types (3 Cursive, 4–6 Mark attachment,
+7–8 Context/Chained, 9 Extension) stay raw byte slices via
+`Lookup::subtable_bytes(i)`.
+
+Synthetic byte-tower unit tests cover both formats (format-1 lookup +
+ascending iterator, format-2 class matrix + direct `class_pair`), the
+empty-second-`ValueRecord` case, every error path (reserved valueFormat
+bit, NULL/out-of-range coverage and classDef offsets,
+`pairSetCount`-vs-Coverage mismatch, truncated class matrix, unknown
+format), and an end-to-end GPOS table whose only lookup is a type-2 pair
+adjustment resolved through `pair_pos`. Two integration tests walk the
+Source Sans 3 GPOS: the first documents that the fixture exposes **no
+direct type-2 lookup** (its kerning sits behind a type-9 extension) and
+that the accessor rejects every non-type-2 lookup; the second resolves
+that type-9 extension by hand and decodes the wrapped `PairPos`,
+verifying Coverage is strictly ascending, every glyph fits inside
+`maxp.numGlyphs`, and the direct `pair()` query agrees with the
+iterator.
+
+## Round-288 additions (previous push)
 
 The **GPOS positioning surface gains its first typed lookup**: **Lookup
 Type 1 (single adjustment positioning)** is now decoded, together with

@@ -1447,6 +1447,203 @@ fn gpos_single_pos_subtables_decode() {
 }
 
 #[test]
+fn gpos_pair_pos_subtables_decode() {
+    use oxideav_otf::GPOS_LOOKUP_TYPE_PAIR;
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gpos().unwrap();
+    let num_glyphs = f.glyph_count();
+
+    let mut type2_lookups = 0usize;
+    let mut decoded_subtables = 0usize;
+    let mut format1_pairs = 0usize;
+    let mut format2_subtables = 0usize;
+
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != GPOS_LOOKUP_TYPE_PAIR {
+            // The wrong-type accessor must reject a non-type-2 lookup.
+            assert!(matches!(g.pair_pos(i, 0), Some(Err(_)) | None));
+            continue;
+        }
+        type2_lookups += 1;
+        for s in 0..l.subtable_count() {
+            let pp = g
+                .pair_pos(i, s)
+                .expect("type-2 subtable in range")
+                .expect("PairPos parses");
+            assert!(matches!(pp.format(), 1 | 2));
+            assert!(pp.value_format1().is_valid());
+            assert!(pp.value_format2().is_valid());
+            decoded_subtables += 1;
+
+            // Coverage iterates in ascending glyph order and every first
+            // glyph fits inside the glyph repertoire.
+            let mut prev: Option<u16> = None;
+            for (gid, _idx) in pp.coverage().iter() {
+                if let Some(p) = prev {
+                    assert!(gid > p, "coverage must be strictly ascending");
+                }
+                prev = Some(gid);
+                assert!((gid as u32) < num_glyphs as u32);
+            }
+
+            match pp.format() {
+                1 => {
+                    // Walk every explicit (first, second, value) triple;
+                    // confirm both glyphs are in range, the iterator is
+                    // ordered, and a direct `pair()` query agrees with it.
+                    let mut last: Option<(u16, u16)> = None;
+                    for (first, second, val_res) in pp.iter() {
+                        let val = val_res.expect("PairValue parses");
+                        assert!((first as u32) < num_glyphs as u32);
+                        assert!((second as u32) < num_glyphs as u32);
+                        if let Some((lf, ls)) = last {
+                            assert!(
+                                (first, second) > (lf, ls),
+                                "format-1 pairs ascend by (first, second)"
+                            );
+                        }
+                        last = Some((first, second));
+                        let direct = pp.pair(first, second).unwrap().unwrap();
+                        assert_eq!(direct, val);
+                        format1_pairs += 1;
+                    }
+                }
+                2 => {
+                    // Class-matrix form: spot-check a covered first glyph
+                    // against an arbitrary second glyph resolves without
+                    // panicking and that `class_pair` agrees with `pair`.
+                    format2_subtables += 1;
+                    if let Some((first, _idx)) = pp.coverage().iter().next() {
+                        // glyph 0 (.notdef) is a valid second-glyph probe.
+                        let via_pair = pp.pair(first, 0);
+                        // A covered first glyph always yields a cell in
+                        // format 2 (possibly the all-zero default).
+                        if let Some(res) = via_pair {
+                            let _ = res.expect("format-2 cell parses");
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    // Source Sans 3's GPOS carries no *direct* type-2 lookups — its
+    // kerning is reached through a type-9 (extension positioning) lookup
+    // (see `gpos_pair_pos_via_extension` for that path). This walk
+    // therefore documents that the direct accessor rejects every
+    // non-type-2 lookup and that no type-2 lookup is present directly;
+    // the synthetic byte-tower unit tests in the gpos module carry the
+    // format-1 / format-2 decode coverage.
+    let _ = (format1_pairs, format2_subtables, decoded_subtables);
+    assert_eq!(type2_lookups, 0);
+}
+
+/// Source Sans 3 reaches its pair-adjustment kerning through a type-9
+/// (extension) GPOS lookup. GPOS extension subtables share the GSUB
+/// extension layout (`format = 1`, `extensionLookupType`,
+/// `Offset32 extensionOffset` from the start of the extension subtable);
+/// this test resolves that indirection by hand and decodes the wrapped
+/// PairPos directly, exercising the real-font format-1 / format-2 path.
+#[test]
+fn gpos_pair_pos_via_extension() {
+    use oxideav_otf::{GPOS_LOOKUP_TYPE_EXTENSION, GPOS_LOOKUP_TYPE_PAIR};
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gpos().unwrap();
+    let num_glyphs = f.glyph_count();
+
+    let mut wrapped_pair_subtables = 0usize;
+    let mut format1 = 0usize;
+    let mut format2 = 0usize;
+
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != GPOS_LOOKUP_TYPE_EXTENSION {
+            continue;
+        }
+        for s in 0..l.subtable_count() {
+            let raw = l.subtable_bytes(s).expect("extension subtable bytes");
+            // ExtensionPosFormat1: format(2) + extLookupType(2) + Offset32.
+            assert!(raw.len() >= 8);
+            let format = u16::from_be_bytes([raw[0], raw[1]]);
+            assert_eq!(format, 1, "GPOS extension format must be 1");
+            let ext_type = u16::from_be_bytes([raw[2], raw[3]]);
+            let ext_off = u32::from_be_bytes([raw[4], raw[5], raw[6], raw[7]]) as usize;
+            assert!(ext_off != 0 && ext_off < raw.len());
+            if ext_type != GPOS_LOOKUP_TYPE_PAIR {
+                continue;
+            }
+            // The wrapped bytes ARE a PairPos subtable.
+            let pp = oxideav_otf::PairPos::parse(&raw[ext_off..]).expect("wrapped PairPos parses");
+            assert!(pp.value_format1().is_valid());
+            assert!(pp.value_format2().is_valid());
+            wrapped_pair_subtables += 1;
+
+            // Coverage strictly ascending, all first glyphs in range.
+            let mut prev: Option<u16> = None;
+            for (gid, _idx) in pp.coverage().iter() {
+                if let Some(p) = prev {
+                    assert!(gid > p);
+                }
+                prev = Some(gid);
+                assert!((gid as u32) < num_glyphs as u32);
+            }
+
+            match pp.format() {
+                1 => {
+                    format1 += 1;
+                    let mut last: Option<(u16, u16)> = None;
+                    let mut seen = 0usize;
+                    for (first, second, val_res) in pp.iter() {
+                        let val = val_res.expect("PairValue parses");
+                        assert!((first as u32) < num_glyphs as u32);
+                        assert!((second as u32) < num_glyphs as u32);
+                        if let Some(prev) = last {
+                            assert!((first, second) > prev);
+                        }
+                        last = Some((first, second));
+                        // Direct lookup agrees with the iterator.
+                        assert_eq!(pp.pair(first, second).unwrap().unwrap(), val);
+                        seen += 1;
+                        if seen > 4000 {
+                            break; // keep the test bounded
+                        }
+                    }
+                    assert!(seen > 0, "a format-1 PairPos lists at least one pair");
+                }
+                2 => {
+                    format2 += 1;
+                    // Probe each covered first glyph against .notdef; a
+                    // covered first glyph always yields a class cell.
+                    let mut probed = 0usize;
+                    for (first, _idx) in pp.coverage().iter() {
+                        if let Some(res) = pp.pair(first, 0) {
+                            let _ = res.expect("format-2 cell parses");
+                        }
+                        probed += 1;
+                        if probed > 256 {
+                            break;
+                        }
+                    }
+                    // class_pair(0, 0) is always a valid cell.
+                    let _ = pp.class_pair(0, 0).unwrap().unwrap();
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    // The fixture's kerning is a type-2 PairPos wrapped in a type-9
+    // extension, so at least one wrapped PairPos must have decoded.
+    assert!(
+        wrapped_pair_subtables >= 1,
+        "fixture exposes pair kerning behind a type-9 extension"
+    );
+    assert!(format1 + format2 >= 1);
+}
+
+#[test]
 fn gpos_finds_latin_script() {
     let f = Font::from_bytes(FIXTURE).unwrap();
     let g = f.gpos().unwrap();

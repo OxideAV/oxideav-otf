@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GPOS Lookup Type 2 (pair adjustment positioning) decoded** — the
+  `PairPos` typed view joins the existing `SinglePos` (type 1). Both
+  on-disk formats are supported: format 1 (per-glyph `PairSet` /
+  `PairValue` records, binary-searched by `secondGlyph`) and format 2
+  (the `class1Count × class2Count` matrix keyed through two `ClassDef`
+  tables). `PairPos::pair(first, second)` returns the
+  `PairValue { first, second }` adjustment; `class_pair(c1, c2)` is the
+  direct format-2 matrix probe; `iter()` enumerates every explicit
+  `(first, second, PairValue)` triple of a format-1 subtable.
+  `GposTable::pair_pos(lookup_i, sub_i)` mirrors the `single_pos`
+  accessor (wrong-type lookups → `BadStructure`). Both `valueFormat1` /
+  `valueFormat2` reserved-bit, range, count-mismatch, and matrix-overrun
+  checks are enforced at parse time. Source:
+  `docs/text/opentype/otspec-gpos.html` §"Lookup type 2 subtable: pair
+  adjustment positioning" (+ the shared `ValueRecord` / `Coverage` /
+  `ClassDef` primitives). `PairPos`, `PairPosIter`, and `PairValue` are
+  re-exported at the crate root.
+
 - **CFF2 `ItemVariationStore` (§12) parsed for variable fonts** — the
   `VariationStore` block pointed at by the Top DICT
   `VariationStoreOffset` operator is now decoded into a typed
