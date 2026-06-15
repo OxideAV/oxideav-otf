@@ -375,7 +375,63 @@ for contour in &outline.contours {
 }
 ```
 
-## Round-303 additions (this push)
+## Round-312 additions (this push)
+
+GPOS **Lookup Type 9 (positioning subtable extension)** is now decoded
+as a typed view, joining Type 1 (single adjustment, round 288) and
+Type 2 (pair adjustment, round 303). Spec:
+`docs/text/opentype/otspec-gpos.html` §"Lookup type 9 subtable:
+positioning subtable extension". Type 9 is the GPOS counterpart of the
+GSUB type-7 extension (round 277): a *format-extension mechanism*, not a
+positioning action, letting a Lookup reach its real subtable through a
+32-bit offset when accumulated subtable sizes exceed the 16-bit offset
+limits elsewhere in the GPOS table. One on-disk format is defined
+(`PosExtensionFormat1`, 8 bytes).
+
+- **`ExtensionPos<'a>`** decodes `(format, extensionLookupType,
+  Offset32 extensionOffset)`. Parse-time validation: `format == 1`;
+  `extensionLookupType` must be a defined GposLookupType (`1..=8`)
+  **other than 9** — the spec forbids an extension pointing at another
+  extension; and `extensionOffset` (relative to the start of the
+  PosExtensionFormat1 subtable, per spec) must be non-NULL and land
+  inside the subtable's byte window.
+- **`ExtensionPos::extension_subtable_bytes()`** surfaces the wrapped
+  ("extension") subtable as a zero-copy byte window starting at
+  `extensionOffset` — the spec's processing model is to proceed as
+  though each extension subtable replaced the type-9 subtable that
+  referenced it, with the Lookup's effective type being
+  `extensionLookupType`.
+- **Typed resolvers** for the wrapped positioning types this crate
+  already decodes: `as_single_pos()` (type 1) / `as_pair_pos()`
+  (type 2). Each checks the declared `extensionLookupType` first and
+  rejects a mismatch with `BadStructure`; wrapped types 3–8 stay
+  reachable through the raw-bytes window.
+- **`GposTable::extension_pos(lookup_i, sub_i)`** is the convenience
+  accessor mirroring the `single_pos` / `pair_pos` family: `None` for
+  out-of-range indices, `Some(Err(BadStructure))` when the referenced
+  lookup is not declared `GPOS_LOOKUP_TYPE_EXTENSION` (= 9),
+  `Some(Ok(ExtensionPos))` otherwise.
+
+`ExtensionPos` is re-exported at the crate root. The remaining GPOS
+lookup types (3 Cursive, 4–6 Mark attachment, 7–8 Context/Chained) stay
+raw byte slices via `Lookup::subtable_bytes(i)`.
+
+Synthetic byte-tower unit tests cover round-trips wrapping a
+`SinglePos` and a `PairPos` (both resolve through the indirection), the
+raw-bytes path for a not-yet-typed wrapped type (3 Cursive), every
+error path (`format != 1`, the spec-forbidden `extensionLookupType ==
+9`, out-of-vocabulary types 0 / 10 / 0xFFFF, NULL and out-of-range
+`extensionOffset`, truncated headers), the wrong-type resolver and
+accessor rejections, and an end-to-end GPOS byte tower whose only
+lookup is a type-9 extension wrapping a single adjustment resolved
+through `extension_pos`. One new integration test against Source Sans 3
+resolves the font's kerning — a type-2 PairPos wrapped behind a type-9
+extension — through the typed `extension_pos` + `as_pair_pos` path,
+verifies the typed window agrees byte-for-byte with the by-hand raw
+slice, and pins the accessor's wrong-type rejection on every non-type-9
+lookup.
+
+## Round-303 additions (previous push)
 
 GPOS **Lookup Type 2 (pair adjustment positioning)** is now decoded as
 a typed view, joining Type 1 (single adjustment, round 288). Spec:

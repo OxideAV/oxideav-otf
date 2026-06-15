@@ -20,15 +20,16 @@
 //!  10 / 4 / featureVariationsOffset    (Offset32; may be NULL)
 //! ```
 //!
-//! The lookup-subtable enumeration for GPOS (lookup types 1–9: Single,
-//! Pair, Cursive, MarkToBase, MarkToLig, MarkToMark, Context,
-//! ChainContext, Extension) is left as raw sub-slices via
-//! [`super::layout::Lookup::subtable_bytes`]; decoding the
-//! Anchor / MarkArray interiors are deferred to a future round; the
-//! ValueRecord primitive and Lookup Type 1 (single adjustment
-//! positioning) are now decoded as typed views (this round).
+//! Typed lookup-subtable views are decoded for Lookup Type 1 (single
+//! adjustment), Type 2 (pair adjustment), and Type 9 (positioning
+//! extension), the last wrapping any of the already-decoded types via a
+//! 32-bit indirection. The remaining lookup types (3 Cursive,
+//! 4–6 Mark attachment, 7–8 Context/Chained) are left as raw sub-slices
+//! via [`super::layout::Lookup::subtable_bytes`]; the Anchor / MarkArray
+//! interiors are deferred to a future round. The shared ValueRecord
+//! primitive is also decoded.
 
-use crate::parser::{read_i16, read_u16};
+use crate::parser::{read_i16, read_u16, read_u32};
 use crate::tables::gdef::{ClassDef, Coverage};
 use crate::tables::layout::{FeatureList, LayoutHeader, Lookup, LookupList, Script, ScriptList};
 use crate::Error;
@@ -755,6 +756,140 @@ impl<'a> Iterator for PairPosIter<'a> {
     }
 }
 
+/// Parsed `ExtensionPos` subtable — the GPOS `lookupType = 9` payload.
+///
+/// Spec: `docs/text/opentype/otspec-gpos.html` §"Lookup type 9 subtable:
+/// positioning subtable extension".
+///
+/// Like the GSUB type-7 extension, this lookup type is a *format
+/// extension mechanism*, not a positioning action: it lets a Lookup
+/// reach its real subtable through a 32-bit offset, for fonts whose
+/// accumulated subtable sizes exceed what the usual 16-bit offsets can
+/// address. The spec's processing model: proceed as though the Lookup's
+/// `lookupType` were the `extensionLookupType` of the subtables, and as
+/// though each extension subtable referenced by `extensionOffset`
+/// replaced the type-9 subtable that referenced it.
+///
+/// One on-disk format is defined.
+///
+/// ```text
+/// PosExtensionFormat1 subtable (8 bytes)
+///   0 / 2 / format = 1
+///   2 / 2 / extensionLookupType   (any GposLookupType other than 9)
+///   4 / 4 / extensionOffset       (Offset32, from start of this
+///                                  PosExtensionFormat1 subtable)
+/// ```
+///
+/// Parse-time validation: `format == 1`; `extensionLookupType` must be a
+/// defined GposLookupType (`1..=8`) **other than 9** (the spec forbids an
+/// extension pointing at another extension); and `extensionOffset`
+/// (relative to the start of the PosExtensionFormat1 subtable) must be
+/// non-NULL and land inside the supplied byte window. The wrapped
+/// subtable is surfaced both raw ([`Self::extension_subtable_bytes`]) and
+/// through typed resolvers for the positioning lookup types this crate
+/// already decodes ([`Self::as_single_pos`] / [`Self::as_pair_pos`]).
+#[derive(Debug, Clone, Copy)]
+pub struct ExtensionPos<'a> {
+    /// Raw subtable bytes (`extensionOffset` is relative to this
+    /// buffer's start).
+    bytes: &'a [u8],
+    ext_lookup_type: u16,
+    ext_offset: u32,
+}
+
+impl<'a> ExtensionPos<'a> {
+    /// Parse a PosExtensionFormat1 subtable from a buffer whose first two
+    /// bytes are the `format` identifier.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let format = read_u16(bytes, 0)?;
+        if format != 1 {
+            return Err(Error::BadStructure(
+                "GPOS/ExtensionPos: unknown subtable format",
+            ));
+        }
+        let ext_lookup_type = read_u16(bytes, 2)?;
+        // Spec: "The extensionLookupType field must be set to any lookup
+        // type other than 9." The GposLookupType vocabulary is 1..=8 (9
+        // being the extension itself), so anything outside that range is
+        // equally undefined.
+        if ext_lookup_type == GPOS_LOOKUP_TYPE_EXTENSION {
+            return Err(Error::BadStructure(
+                "GPOS/ExtensionPos: extensionLookupType must not be 9",
+            ));
+        }
+        if !(GPOS_LOOKUP_TYPE_SINGLE..=GPOS_LOOKUP_TYPE_CHAINED_CONTEXT).contains(&ext_lookup_type)
+        {
+            return Err(Error::BadStructure(
+                "GPOS/ExtensionPos: extensionLookupType out of range",
+            ));
+        }
+        let ext_offset = read_u32(bytes, 4)?;
+        // "All offsets to extension subtables are set in the usual
+        // way—that is, relative to the start of the PosExtensionFormat1
+        // subtable." A NULL offset has no defined meaning here, and the
+        // wrapped subtable must start inside the byte window.
+        if ext_offset == 0 || (ext_offset as usize) >= bytes.len() {
+            return Err(Error::BadStructure(
+                "GPOS/ExtensionPos: extensionOffset out of range",
+            ));
+        }
+        Ok(Self {
+            bytes,
+            ext_lookup_type,
+            ext_offset,
+        })
+    }
+
+    /// Subtable format discriminant (always `1`).
+    pub fn format(&self) -> u16 {
+        1
+    }
+
+    /// `extensionLookupType` — the lookup type of the wrapped subtable.
+    /// Guaranteed to be in `1..=8` and never `9`.
+    pub fn extension_lookup_type(&self) -> u16 {
+        self.ext_lookup_type
+    }
+
+    /// `extensionOffset` — byte offset of the wrapped subtable, relative
+    /// to the start of this PosExtensionFormat1 subtable.
+    pub fn extension_offset(&self) -> u32 {
+        self.ext_offset
+    }
+
+    /// Raw bytes of the wrapped ("extension") subtable, starting at
+    /// `extensionOffset`. Feed these to the typed parser matching
+    /// [`Self::extension_lookup_type`] — or use the `as_*` resolvers
+    /// below for the lookup types this crate already decodes.
+    pub fn extension_subtable_bytes(&self) -> &'a [u8] {
+        &self.bytes[self.ext_offset as usize..]
+    }
+
+    /// Resolve the wrapped subtable as a [`SinglePos`]
+    /// (`extensionLookupType = 1`). `Err(BadStructure)` when the declared
+    /// type disagrees or the wrapped bytes are malformed.
+    pub fn as_single_pos(&self) -> Result<SinglePos<'a>, Error> {
+        if self.ext_lookup_type != GPOS_LOOKUP_TYPE_SINGLE {
+            return Err(Error::BadStructure(
+                "GPOS/ExtensionPos: extensionLookupType is not 1",
+            ));
+        }
+        SinglePos::parse(self.extension_subtable_bytes())
+    }
+
+    /// Resolve the wrapped subtable as a [`PairPos`]
+    /// (`extensionLookupType = 2`). `Err(BadStructure)` when the declared
+    /// type disagrees or the wrapped bytes are malformed.
+    pub fn as_pair_pos(&self) -> Result<PairPos<'a>, Error> {
+        if self.ext_lookup_type != GPOS_LOOKUP_TYPE_PAIR {
+            return Err(Error::BadStructure(
+                "GPOS/ExtensionPos: extensionLookupType is not 2",
+            ));
+        }
+        PairPos::parse(self.extension_subtable_bytes())
+    }
+}
+
 /// Parsed `GPOS` header view.
 #[derive(Debug, Clone, Copy)]
 pub struct GposTable<'a> {
@@ -882,6 +1017,34 @@ impl<'a> GposTable<'a> {
         }
         let bytes = lk.subtable_bytes(sub_i)?;
         Some(PairPos::parse(bytes))
+    }
+
+    /// Decode subtable `sub_i` of lookup `lookup_i` as an
+    /// [`ExtensionPos`] (`GposLookupType = 9`, positioning extension).
+    ///
+    /// Returns:
+    /// * `None` — `lookup_i` or `sub_i` is out of range, or the
+    ///   referenced subtable bytes are unreachable.
+    /// * `Some(Err(Error::BadStructure))` — the lookup is not declared
+    ///   as `GPOS_LOOKUP_TYPE_EXTENSION`, or the subtable bytes are
+    ///   malformed.
+    /// * `Some(Ok(ExtensionPos))` — the typed subtable view; resolve the
+    ///   wrapped subtable through
+    ///   [`ExtensionPos::extension_subtable_bytes`] or one of the typed
+    ///   `as_*` resolvers.
+    pub fn extension_pos(
+        &self,
+        lookup_i: u16,
+        sub_i: u16,
+    ) -> Option<Result<ExtensionPos<'a>, Error>> {
+        let lk = self.lookup(lookup_i)?;
+        if lk.lookup_type() != GPOS_LOOKUP_TYPE_EXTENSION {
+            return Some(Err(Error::BadStructure(
+                "GPOS/ExtensionPos: lookup is not type 9",
+            )));
+        }
+        let bytes = lk.subtable_bytes(sub_i)?;
+        Some(ExtensionPos::parse(bytes))
     }
 }
 
@@ -1436,5 +1599,154 @@ mod tests {
 
         // Out-of-range lookup → None.
         assert!(g.pair_pos(5, 0).is_none());
+    }
+
+    // -- ExtensionPos (lookup type 9) ------------------------------------
+
+    /// Build a standalone PosExtensionFormat1 subtable (8-byte header
+    /// followed by the wrapped subtable bytes) wrapping `inner`, which is
+    /// declared as `ext_type`.
+    fn build_extension_pos(ext_type: u16, inner: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&be(1)); // format
+        b.extend_from_slice(&be(ext_type)); // extensionLookupType
+        b.extend_from_slice(&8u32.to_be_bytes()); // extensionOffset = 8
+        b.extend_from_slice(inner); // wrapped subtable at offset 8
+        b
+    }
+
+    #[test]
+    fn extension_pos_round_trip_wrapping_single_pos() {
+        let inner = singlepos_f1_subtable();
+        let b = build_extension_pos(GPOS_LOOKUP_TYPE_SINGLE, &inner);
+        let ext = ExtensionPos::parse(&b).unwrap();
+        assert_eq!(ext.format(), 1);
+        assert_eq!(ext.extension_lookup_type(), GPOS_LOOKUP_TYPE_SINGLE);
+        assert_eq!(ext.extension_offset(), 8);
+        assert_eq!(ext.extension_subtable_bytes(), &inner[..]);
+
+        // Typed resolver decodes the wrapped SinglePos.
+        let sp = ext.as_single_pos().unwrap();
+        assert_eq!(sp.value(11).unwrap().unwrap().x_advance, -50);
+        // Wrong-type resolver rejects.
+        assert!(ext.as_pair_pos().is_err());
+    }
+
+    #[test]
+    fn extension_pos_round_trip_wrapping_pair_pos() {
+        let inner = pairpos_f1_subtable();
+        let b = build_extension_pos(GPOS_LOOKUP_TYPE_PAIR, &inner);
+        let ext = ExtensionPos::parse(&b).unwrap();
+        assert_eq!(ext.extension_lookup_type(), GPOS_LOOKUP_TYPE_PAIR);
+        let pp = ext.as_pair_pos().unwrap();
+        assert_eq!(pp.pair(9, 40).unwrap().unwrap().first.x_advance, -50);
+        assert!(ext.as_single_pos().is_err());
+    }
+
+    #[test]
+    fn extension_pos_raw_bytes_for_untyped_wrapped_type() {
+        // Wrap a cursive (type-3) subtable this crate does not yet decode;
+        // the header still parses and the raw window is reachable.
+        let inner = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let b = build_extension_pos(GPOS_LOOKUP_TYPE_CURSIVE, &inner);
+        let ext = ExtensionPos::parse(&b).unwrap();
+        assert_eq!(ext.extension_lookup_type(), GPOS_LOOKUP_TYPE_CURSIVE);
+        assert_eq!(ext.extension_subtable_bytes(), &inner[..]);
+        // Typed resolvers reject a non-matching declared type.
+        assert!(ext.as_single_pos().is_err());
+        assert!(ext.as_pair_pos().is_err());
+    }
+
+    #[test]
+    fn extension_pos_rejects_unknown_format() {
+        let mut b = build_extension_pos(GPOS_LOOKUP_TYPE_SINGLE, &singlepos_f1_subtable());
+        b[0..2].copy_from_slice(&be(2)); // format != 1
+        assert!(ExtensionPos::parse(&b).is_err());
+    }
+
+    #[test]
+    fn extension_pos_rejects_extension_pointing_at_extension() {
+        // The spec forbids extensionLookupType == 9.
+        let inner = singlepos_f1_subtable();
+        let b = build_extension_pos(GPOS_LOOKUP_TYPE_EXTENSION, &inner);
+        assert!(ExtensionPos::parse(&b).is_err());
+    }
+
+    #[test]
+    fn extension_pos_rejects_out_of_range_type() {
+        for bad in [0u16, 10, 0xFFFF] {
+            let b = build_extension_pos(bad, &singlepos_f1_subtable());
+            assert!(ExtensionPos::parse(&b).is_err(), "type {bad} should reject");
+        }
+    }
+
+    #[test]
+    fn extension_pos_rejects_null_and_oob_offset() {
+        // NULL offset.
+        let mut b = build_extension_pos(GPOS_LOOKUP_TYPE_SINGLE, &singlepos_f1_subtable());
+        b[4..8].copy_from_slice(&0u32.to_be_bytes());
+        assert!(ExtensionPos::parse(&b).is_err());
+        // Offset past the end of the byte window.
+        let mut b = build_extension_pos(GPOS_LOOKUP_TYPE_SINGLE, &singlepos_f1_subtable());
+        let len = b.len() as u32;
+        b[4..8].copy_from_slice(&len.to_be_bytes());
+        assert!(ExtensionPos::parse(&b).is_err());
+    }
+
+    #[test]
+    fn extension_pos_rejects_truncated_header() {
+        let full = build_extension_pos(GPOS_LOOKUP_TYPE_SINGLE, &singlepos_f1_subtable());
+        // Anything shorter than the 8-byte header must fail.
+        for len in 0..8 {
+            assert!(
+                ExtensionPos::parse(&full[..len]).is_err(),
+                "len {len} should reject"
+            );
+        }
+    }
+
+    #[test]
+    fn gpos_table_extension_pos_accessor() {
+        // Same GPOS byte tower shape as `gpos_table_single_pos_accessor`,
+        // but the single lookup is declared type 9 and its subtable is a
+        // PosExtensionFormat1 wrapping a SinglePos.
+        let sub = build_extension_pos(GPOS_LOOKUP_TYPE_SINGLE, &singlepos_f1_subtable());
+        let mut bytes = vec![0u8; 54];
+        bytes[0..2].copy_from_slice(&be(1));
+        bytes[2..4].copy_from_slice(&be(0));
+        bytes[4..6].copy_from_slice(&be(10));
+        bytes[6..8].copy_from_slice(&be(22));
+        bytes[8..10].copy_from_slice(&be(44));
+        bytes[10..12].copy_from_slice(&be(1));
+        bytes[12..16].copy_from_slice(b"DFLT");
+        bytes[16..18].copy_from_slice(&be(8));
+        bytes[18..20].copy_from_slice(&be(0));
+        bytes[20..22].copy_from_slice(&be(0));
+        bytes[22..24].copy_from_slice(&be(1));
+        bytes[24..28].copy_from_slice(b"kern");
+        bytes[28..30].copy_from_slice(&be(8));
+        bytes[30..32].copy_from_slice(&be(0));
+        bytes[32..34].copy_from_slice(&be(1));
+        bytes[34..36].copy_from_slice(&be(0));
+        bytes[44..46].copy_from_slice(&be(1)); // LookupList count
+        bytes[46..48].copy_from_slice(&be(4)); // lookupOffset
+        bytes[48..50].copy_from_slice(&be(9)); // lookupType = 9
+        bytes[50..52].copy_from_slice(&be(0)); // lookupFlag
+        bytes[52..54].copy_from_slice(&be(1)); // subTableCount
+        bytes.extend_from_slice(&be(8)); // subtableOffset (56 - 48)
+        bytes.extend_from_slice(&sub);
+
+        let g = GposTable::parse(&bytes).unwrap();
+        assert_eq!(g.lookup(0).map(|l| l.lookup_type()), Some(9));
+        let ext = g.extension_pos(0, 0).unwrap().unwrap();
+        assert_eq!(ext.extension_lookup_type(), GPOS_LOOKUP_TYPE_SINGLE);
+        let sp = ext.as_single_pos().unwrap();
+        assert_eq!(sp.value(11).unwrap().unwrap().x_advance, -50);
+
+        // Out-of-range lookup → None.
+        assert!(g.extension_pos(5, 0).is_none());
+        // Wrong-type accessors on the type-9 lookup → Some(Err).
+        assert!(g.single_pos(0, 0).unwrap().is_err());
+        assert!(g.pair_pos(0, 0).unwrap().is_err());
     }
 }

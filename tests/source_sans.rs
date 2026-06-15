@@ -1643,6 +1643,70 @@ fn gpos_pair_pos_via_extension() {
     assert!(format1 + format2 >= 1);
 }
 
+/// Same indirection as `gpos_pair_pos_via_extension`, but resolved
+/// through the typed `GposTable::extension_pos(...)` accessor +
+/// `ExtensionPos::as_pair_pos()` rather than by hand. The two paths must
+/// agree on the wrapped PairPos.
+#[test]
+fn gpos_pair_pos_via_typed_extension_accessor() {
+    use oxideav_otf::{GPOS_LOOKUP_TYPE_EXTENSION, GPOS_LOOKUP_TYPE_PAIR};
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gpos().unwrap();
+    let num_glyphs = f.glyph_count();
+
+    let mut wrapped_pair_subtables = 0usize;
+
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        // Accessor rejects any non-type-9 lookup with Some(Err).
+        if l.lookup_type() != GPOS_LOOKUP_TYPE_EXTENSION {
+            assert!(matches!(g.extension_pos(i, 0), Some(Err(_)) | None));
+            continue;
+        }
+        for s in 0..l.subtable_count() {
+            let ext = g
+                .extension_pos(i, s)
+                .expect("subtable in range")
+                .expect("ExtensionPos parses");
+            assert_eq!(ext.format(), 1);
+            let t = ext.extension_lookup_type();
+            assert!((1..=8).contains(&t) && t != GPOS_LOOKUP_TYPE_EXTENSION);
+
+            if t != GPOS_LOOKUP_TYPE_PAIR {
+                // A non-pair wrapped type rejects the pair resolver.
+                assert!(ext.as_pair_pos().is_err());
+                continue;
+            }
+
+            let pp = ext.as_pair_pos().expect("wrapped PairPos decodes");
+            assert!(pp.value_format1().is_valid());
+            assert!(pp.value_format2().is_valid());
+            wrapped_pair_subtables += 1;
+
+            // The typed path and the by-hand raw slice agree byte-for-byte
+            // on the wrapped subtable window.
+            let raw = l.subtable_bytes(s).expect("extension subtable bytes");
+            let ext_off = ext.extension_offset() as usize;
+            assert_eq!(ext.extension_subtable_bytes(), &raw[ext_off..]);
+
+            // Spot-check a covered first glyph resolves to a cell/pair.
+            if let Some((first, _idx)) = pp.coverage().iter().next() {
+                assert!((first as u32) < num_glyphs as u32);
+                // A format-2 covered first always yields a cell; format-1
+                // may or may not pair with .notdef — either way no panic.
+                if pp.format() == 2 {
+                    let _ = pp.pair(first, 0).unwrap().expect("format-2 cell");
+                }
+            }
+        }
+    }
+
+    assert!(
+        wrapped_pair_subtables >= 1,
+        "fixture exposes pair kerning behind a type-9 extension"
+    );
+}
+
 #[test]
 fn gpos_finds_latin_script() {
     let f = Font::from_bytes(FIXTURE).unwrap();

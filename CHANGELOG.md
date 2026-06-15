@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GPOS Lookup Type 9 (positioning subtable extension) decoded** — the
+  `ExtensionPos` typed view, mirroring the GSUB type-7 extension. It
+  decodes the 8-byte `PosExtensionFormat1` header (`format`,
+  `extensionLookupType`, `Offset32 extensionOffset`) and resolves the
+  32-bit indirection to the wrapped subtable. `extension_subtable_bytes()`
+  surfaces the wrapped bytes raw; `as_single_pos()` / `as_pair_pos()`
+  decode the wrapped positioning types this crate already handles (1 / 2).
+  `GposTable::extension_pos(lookup_i, sub_i)` mirrors the `single_pos` /
+  `pair_pos` accessors (wrong-type lookups → `BadStructure`). Parse-time
+  validation enforces `format == 1`, `extensionLookupType` in `1..=8`
+  (never 9 — the spec forbids an extension pointing at another
+  extension), and a non-NULL in-range `extensionOffset`. This is the
+  format-extension mechanism behind Source Sans 3's kerning, which is now
+  reachable through the typed path. `ExtensionPos` is re-exported at the
+  crate root. Source: `docs/text/opentype/otspec-gpos.html` §"Lookup
+  type 9 subtable: positioning subtable extension".
+
 - **GPOS Lookup Type 2 (pair adjustment positioning) decoded** — the
   `PairPos` typed view joins the existing `SinglePos` (type 1). Both
   on-disk formats are supported: format 1 (per-glyph `PairSet` /
