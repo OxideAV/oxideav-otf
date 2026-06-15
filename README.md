@@ -392,8 +392,12 @@ views over:
   (type 7) lookup formats; remaining lookup types are reachable as raw
   subtable byte windows.
 - **`GPOS`** — the same header enumeration plus typed decoders for
-  single adjustment (type 1), pair adjustment (type 2), and the
-  extension (type 9) lookups; remaining types stay raw byte slices.
+  single adjustment (type 1), pair adjustment (type 2), mark-to-base
+  attachment (type 4), and the extension (type 9) lookups; remaining
+  types stay raw byte slices. Mark-to-base decodes the shared `Anchor`
+  (formats 1/2/3) and MarkArray/MarkRecord primitives and answers
+  `attachment(mark, base)` with the `(mark_anchor, base_anchor)` pair a
+  shaper aligns to position a combining mark over its base glyph.
 - **`cmap`** formats 0 / 4 / 6 / 12, `name`, `post` (every version, with
   the non-standard Pascal-string name half), and `OS/2` versions 0–5.
 - **AGL** — the static Adobe Glyph List 2.0 table for glyph-name
@@ -418,7 +422,13 @@ views over:
   document is not staged). `agl::name_to_codepoints` can absorb it
   without an API change once the spec is available.
 - GSUB / GPOS lookup types not yet given typed decoders (reachable as
-  raw subtable byte windows) and the `kern` table.
+  raw subtable byte windows) — GPOS cursive (type 3), mark-to-ligature
+  (type 5), mark-to-mark (type 6), and context/chained (types 7/8); GSUB
+  context/chained (types 5/6) and reverse-chain (type 8) — and the
+  `kern` table. The `Anchor` and MarkArray/MarkRecord primitives the
+  mark-to-base decoder uses are reusable by the other mark-attachment
+  types. Anchor format-3 Device/VariationIndex tables are surfaced as
+  raw offsets only (Device-table decoding is deferred).
 - Format-1.0 / 2.0 / 2.5 standard-Macintosh 258-entry glyph-name
   lookups in `post` (the list is not staged). The non-standard
   Pascal-string half is fully resolvable through `post_glyph_name` and

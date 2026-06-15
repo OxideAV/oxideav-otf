@@ -21,13 +21,15 @@
 //! ```
 //!
 //! Typed lookup-subtable views are decoded for Lookup Type 1 (single
-//! adjustment), Type 2 (pair adjustment), and Type 9 (positioning
-//! extension), the last wrapping any of the already-decoded types via a
-//! 32-bit indirection. The remaining lookup types (3 Cursive,
-//! 4–6 Mark attachment, 7–8 Context/Chained) are left as raw sub-slices
-//! via [`super::layout::Lookup::subtable_bytes`]; the Anchor / MarkArray
-//! interiors are deferred to a future round. The shared ValueRecord
-//! primitive is also decoded.
+//! adjustment), Type 2 (pair adjustment), Type 4 (mark-to-base
+//! attachment), and Type 9 (positioning extension), the last wrapping
+//! any of the already-decoded types via a 32-bit indirection. The
+//! remaining lookup types (3 Cursive, 5–6 Mark-to-ligature /
+//! Mark-to-mark, 7–8 Context/Chained) are left as raw sub-slices via
+//! [`super::layout::Lookup::subtable_bytes`]; their MarkArray interiors
+//! are deferred to a future round. The shared ValueRecord, Anchor, and
+//! MarkArray/MarkRecord primitives are decoded (the last two by the
+//! mark-to-base path; mark-to-ligature / mark-to-mark reuse them).
 
 use crate::parser::{read_i16, read_u16, read_u32};
 use crate::tables::gdef::{ClassDef, Coverage};
@@ -888,6 +890,384 @@ impl<'a> ExtensionPos<'a> {
         }
         PairPos::parse(self.extension_subtable_bytes())
     }
+
+    /// Resolve the wrapped subtable as a [`MarkBasePos`]
+    /// (`extensionLookupType = 4`). `Err(BadStructure)` when the declared
+    /// type disagrees or the wrapped bytes are malformed.
+    pub fn as_mark_base_pos(&self) -> Result<MarkBasePos<'a>, Error> {
+        if self.ext_lookup_type != GPOS_LOOKUP_TYPE_MARK_TO_BASE {
+            return Err(Error::BadStructure(
+                "GPOS/ExtensionPos: extensionLookupType is not 4",
+            ));
+        }
+        MarkBasePos::parse(self.extension_subtable_bytes())
+    }
+}
+
+/// A decoded `Anchor` table — one attachment point used by the GPOS
+/// mark-attachment and cursive lookups.
+///
+/// Spec: `docs/text/opentype/otspec-gpos.html` §"Anchor Tables". Three
+/// on-disk formats share the `(xCoordinate, yCoordinate)` design-unit
+/// pair; the later two add refinement data:
+///
+/// * **Format 1** — design units only.
+/// * **Format 2** — design units plus an `anchorPoint` index into the
+///   glyph's contour points (a hinting refinement). The contour-point
+///   index is surfaced via [`Anchor::contour_point`].
+/// * **Format 3** — design units plus `Offset16` references to Device /
+///   VariationIndex tables for X and Y (each may be NULL). Device-table
+///   decoding is deferred, so the raw offsets are surfaced via
+///   [`Anchor::x_device_offset`] / [`Anchor::y_device_offset`] exactly as
+///   the [`ValueRecord`] device offsets are.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Anchor {
+    /// Subtable format discriminant (1, 2, or 3).
+    pub format: u16,
+    /// Horizontal anchor coordinate, design units.
+    pub x: i16,
+    /// Vertical anchor coordinate, design units.
+    pub y: i16,
+    /// Format-2 `anchorPoint` — index of the on-outline contour point
+    /// the anchor is pinned to. `None` for formats 1 and 3.
+    pub anchor_point: Option<u16>,
+    /// Format-3 raw `xDeviceOffset` (`0` = NULL; always `0` for formats
+    /// 1 and 2). Relative to the start of the Anchor table.
+    pub x_device_offset: u16,
+    /// Format-3 raw `yDeviceOffset` (`0` = NULL; always `0` for formats
+    /// 1 and 2). Relative to the start of the Anchor table.
+    pub y_device_offset: u16,
+}
+
+impl Anchor {
+    /// Parse an Anchor table from `data` starting at byte `off`.
+    ///
+    /// The format identifier is validated against the three defined
+    /// values; an unknown format is rejected as `BadStructure`.
+    pub fn parse(data: &[u8], off: usize) -> Result<Self, Error> {
+        let format = read_u16(data, off)?;
+        let x = read_i16(data, off + 2)?;
+        let y = read_i16(data, off + 4)?;
+        match format {
+            1 => Ok(Anchor {
+                format,
+                x,
+                y,
+                ..Anchor::default()
+            }),
+            2 => {
+                let anchor_point = read_u16(data, off + 6)?;
+                Ok(Anchor {
+                    format,
+                    x,
+                    y,
+                    anchor_point: Some(anchor_point),
+                    ..Anchor::default()
+                })
+            }
+            3 => {
+                let x_device_offset = read_u16(data, off + 6)?;
+                let y_device_offset = read_u16(data, off + 8)?;
+                Ok(Anchor {
+                    format,
+                    x,
+                    y,
+                    anchor_point: None,
+                    x_device_offset,
+                    y_device_offset,
+                })
+            }
+            _ => Err(Error::BadStructure("GPOS/Anchor: unknown format")),
+        }
+    }
+
+    /// Format-2 contour-point refinement index, if present.
+    pub fn contour_point(&self) -> Option<u16> {
+        self.anchor_point
+    }
+
+    /// Raw format-3 `xDeviceOffset` (`0` = NULL).
+    pub fn x_device_offset(&self) -> u16 {
+        self.x_device_offset
+    }
+
+    /// Raw format-3 `yDeviceOffset` (`0` = NULL).
+    pub fn y_device_offset(&self) -> u16 {
+        self.y_device_offset
+    }
+}
+
+/// A decoded `MarkRecord` — the class and anchor of one mark glyph.
+///
+/// Spec: `docs/text/opentype/otspec-gpos.html` §"Mark array table". A
+/// MarkRecord is `{ uint16 markClass; Offset16 markAnchorOffset }`; the
+/// offset is resolved to a fully-decoded [`Anchor`] at parse time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarkRecord {
+    /// Mark-class index this mark belongs to (`0..markClassCount`).
+    pub mark_class: u16,
+    /// The mark's attachment-point [`Anchor`].
+    pub anchor: Anchor,
+}
+
+/// The attachment geometry a [`MarkBasePos`] subtable computes for a
+/// `(mark, base)` glyph pair: the mark's own anchor and the base anchor
+/// for that mark's class.
+///
+/// A text-processing client aligns `mark_anchor` over `base_anchor`,
+/// positioning the mark relative to the base glyph's final pen point
+/// (spec §"Lookup type 4 subtable"). Either anchor may carry a
+/// format-2/3 refinement; see [`Anchor`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarkAttachment {
+    /// The mark glyph's class (`0..markClassCount`).
+    pub mark_class: u16,
+    /// The mark glyph's attachment anchor.
+    pub mark_anchor: Anchor,
+    /// The base glyph's anchor for the mark's class.
+    pub base_anchor: Anchor,
+}
+
+/// GPOS Lookup Type 4 — mark-to-base attachment positioning subtable.
+///
+/// Spec: `docs/text/opentype/otspec-gpos.html` §"Lookup type 4 subtable:
+/// mark-to-base attachment positioning". One on-disk format,
+/// `MarkBasePosFormat1`:
+///
+/// ```text
+/// MarkBasePosFormat1 subtable (12 bytes)
+///   0 / 2 / format = 1
+///   2 / 2 / markCoverageOffset  (Offset16, from start of subtable)
+///   4 / 2 / baseCoverageOffset  (Offset16, from start of subtable)
+///   6 / 2 / markClassCount
+///   8 / 2 / markArrayOffset     (Offset16, from start of subtable)
+///  10 / 2 / baseArrayOffset     (Offset16, from start of subtable)
+/// ```
+///
+/// The MarkArray holds one [`MarkRecord`] per mark-Coverage glyph (in
+/// Coverage order); the BaseArray holds, per base-Coverage glyph, an
+/// array of `markClassCount` [`Anchor`] offsets (the BaseRecord). To
+/// attach a mark to a base, the mark's class selects which base anchor
+/// aligns with the mark's anchor — see [`Self::attachment`].
+#[derive(Debug, Clone, Copy)]
+pub struct MarkBasePos<'a> {
+    bytes: &'a [u8],
+    mark_coverage: Coverage<'a>,
+    base_coverage: Coverage<'a>,
+    mark_class_count: u16,
+    mark_array_off: usize,
+    base_array_off: usize,
+    base_count: u16,
+}
+
+impl<'a> MarkBasePos<'a> {
+    /// Parse a MarkBasePosFormat1 subtable from its raw `bytes`.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let format = read_u16(bytes, 0)?;
+        if format != 1 {
+            return Err(Error::BadStructure("GPOS/MarkBasePos: unknown format"));
+        }
+        let mark_coverage_off = read_u16(bytes, 2)? as usize;
+        let base_coverage_off = read_u16(bytes, 4)? as usize;
+        let mark_class_count = read_u16(bytes, 6)?;
+        let mark_array_off = read_u16(bytes, 8)? as usize;
+        let base_array_off = read_u16(bytes, 10)? as usize;
+        if mark_coverage_off == 0
+            || mark_coverage_off >= bytes.len()
+            || base_coverage_off == 0
+            || base_coverage_off >= bytes.len()
+        {
+            return Err(Error::BadStructure(
+                "GPOS/MarkBasePos: coverageOffset out of range",
+            ));
+        }
+        if mark_array_off == 0
+            || mark_array_off >= bytes.len()
+            || base_array_off == 0
+            || base_array_off >= bytes.len()
+        {
+            return Err(Error::BadStructure(
+                "GPOS/MarkBasePos: arrayOffset out of range",
+            ));
+        }
+        if mark_class_count == 0 {
+            return Err(Error::BadStructure(
+                "GPOS/MarkBasePos: markClassCount is zero",
+            ));
+        }
+        let mark_coverage = Coverage::parse(&bytes[mark_coverage_off..])?;
+        let base_coverage = Coverage::parse(&bytes[base_coverage_off..])?;
+        // baseCount is the first uint16 of the BaseArray table; each
+        // BaseRecord is `markClassCount` Offset16 anchor offsets.
+        let base_count = read_u16(bytes, base_array_off)?;
+        // Validate the BaseArray extent: baseCount records of
+        // markClassCount Offset16s each, following the 2-byte baseCount.
+        let record_size = (mark_class_count as usize)
+            .checked_mul(2)
+            .ok_or(Error::BadStructure(
+                "GPOS/MarkBasePos: record size overflow",
+            ))?;
+        let base_array_bytes =
+            (base_count as usize)
+                .checked_mul(record_size)
+                .ok_or(Error::BadStructure(
+                    "GPOS/MarkBasePos: BaseArray size overflow",
+                ))?;
+        let need = base_array_off
+            .checked_add(2)
+            .and_then(|v| v.checked_add(base_array_bytes))
+            .ok_or(Error::BadStructure(
+                "GPOS/MarkBasePos: BaseArray extent overflow",
+            ))?;
+        if need > bytes.len() {
+            return Err(Error::UnexpectedEof);
+        }
+        Ok(Self {
+            bytes,
+            mark_coverage,
+            base_coverage,
+            mark_class_count,
+            mark_array_off,
+            base_array_off,
+            base_count,
+        })
+    }
+
+    /// Subtable format discriminant (always `1`).
+    pub fn format(&self) -> u16 {
+        1
+    }
+
+    /// `markClassCount` — number of distinct mark classes.
+    pub fn mark_class_count(&self) -> u16 {
+        self.mark_class_count
+    }
+
+    /// The mark [`Coverage`] table (lists every mark glyph).
+    pub fn mark_coverage(&self) -> Coverage<'a> {
+        self.mark_coverage
+    }
+
+    /// The base [`Coverage`] table (lists every base glyph).
+    pub fn base_coverage(&self) -> Coverage<'a> {
+        self.base_coverage
+    }
+
+    /// The decoded [`MarkRecord`] for `mark_glyph`, or `None` if the
+    /// glyph is not in the mark Coverage table.
+    ///
+    /// The MarkArray's `markCount` is required by the spec to equal the
+    /// mark-Coverage glyph count, so the Coverage Index directly indexes
+    /// the record array.
+    pub fn mark_record(&self, mark_glyph: u16) -> Option<Result<MarkRecord, Error>> {
+        let idx = self.mark_coverage.index_of(mark_glyph)?;
+        Some(self.mark_record_at(idx))
+    }
+
+    /// Resolve MarkRecord at mark-Coverage index `idx`.
+    fn mark_record_at(&self, idx: u16) -> Result<MarkRecord, Error> {
+        // MarkArray: uint16 markCount, then markCount MarkRecords of
+        // 4 bytes each (uint16 markClass + Offset16 markAnchorOffset),
+        // the offset being from the start of the MarkArray table.
+        let mark_count = read_u16(self.bytes, self.mark_array_off)?;
+        if idx >= mark_count {
+            return Err(Error::BadStructure(
+                "GPOS/MarkBasePos: mark coverage index >= markCount",
+            ));
+        }
+        let rec_off = self.mark_array_off + 2 + idx as usize * 4;
+        let mark_class = read_u16(self.bytes, rec_off)?;
+        if mark_class >= self.mark_class_count {
+            return Err(Error::BadStructure(
+                "GPOS/MarkBasePos: markClass >= markClassCount",
+            ));
+        }
+        let anchor_off = read_u16(self.bytes, rec_off + 2)? as usize;
+        // A NULL markAnchorOffset is not meaningful for a mark (the spec
+        // requires every mark to have an anchor).
+        if anchor_off == 0 {
+            return Err(Error::BadStructure(
+                "GPOS/MarkBasePos: NULL mark anchor offset",
+            ));
+        }
+        let anchor = Anchor::parse(self.bytes, self.mark_array_off + anchor_off)?;
+        Ok(MarkRecord { mark_class, anchor })
+    }
+
+    /// The base [`Anchor`] for base glyph `base_glyph` and mark class
+    /// `mark_class`.
+    ///
+    /// Returns:
+    /// * `None` — `base_glyph` is not in the base Coverage table.
+    /// * `Some(Ok(None))` — the BaseRecord's anchor offset for that class
+    ///   is NULL (the spec permits a base to omit an anchor for a class,
+    ///   in which case no adjustment is applied for marks of that class).
+    /// * `Some(Ok(Some(Anchor)))` — the decoded base anchor.
+    pub fn base_anchor(
+        &self,
+        base_glyph: u16,
+        mark_class: u16,
+    ) -> Option<Result<Option<Anchor>, Error>> {
+        let idx = self.base_coverage.index_of(base_glyph)?;
+        Some(self.base_anchor_at(idx, mark_class))
+    }
+
+    /// Resolve the base anchor at base-Coverage index `idx` for
+    /// `mark_class`.
+    fn base_anchor_at(&self, idx: u16, mark_class: u16) -> Result<Option<Anchor>, Error> {
+        if idx >= self.base_count {
+            return Err(Error::BadStructure(
+                "GPOS/MarkBasePos: base coverage index >= baseCount",
+            ));
+        }
+        if mark_class >= self.mark_class_count {
+            return Err(Error::BadStructure(
+                "GPOS/MarkBasePos: markClass >= markClassCount",
+            ));
+        }
+        // BaseArray: uint16 baseCount, then baseCount BaseRecords; each
+        // BaseRecord is markClassCount Offset16 anchor offsets, the
+        // offsets being from the start of the BaseArray table.
+        let record_size = self.mark_class_count as usize * 2;
+        let rec_off = self.base_array_off + 2 + idx as usize * record_size;
+        let anchor_off = read_u16(self.bytes, rec_off + mark_class as usize * 2)? as usize;
+        if anchor_off == 0 {
+            return Ok(None);
+        }
+        let anchor = Anchor::parse(self.bytes, self.base_array_off + anchor_off)?;
+        Ok(Some(anchor))
+    }
+
+    /// Compute the attachment geometry for the ordered pair
+    /// `(mark_glyph, base_glyph)`.
+    ///
+    /// Returns:
+    /// * `None` — the mark is not covered, the base is not covered, or
+    ///   the base has no (non-NULL) anchor for the mark's class (no
+    ///   adjustment applies).
+    /// * `Some(Err(_))` — the on-disk records are malformed.
+    /// * `Some(Ok(MarkAttachment))` — the mark + base anchors a shaper
+    ///   aligns to position the mark over the base.
+    pub fn attachment(
+        &self,
+        mark_glyph: u16,
+        base_glyph: u16,
+    ) -> Option<Result<MarkAttachment, Error>> {
+        let mark = match self.mark_record(mark_glyph)? {
+            Ok(m) => m,
+            Err(e) => return Some(Err(e)),
+        };
+        let base = match self.base_anchor(base_glyph, mark.mark_class)? {
+            Ok(Some(a)) => a,
+            Ok(None) => return None,
+            Err(e) => return Some(Err(e)),
+        };
+        Some(Ok(MarkAttachment {
+            mark_class: mark.mark_class,
+            mark_anchor: mark.anchor,
+            base_anchor: base,
+        }))
+    }
 }
 
 /// Parsed `GPOS` header view.
@@ -1045,6 +1425,31 @@ impl<'a> GposTable<'a> {
         }
         let bytes = lk.subtable_bytes(sub_i)?;
         Some(ExtensionPos::parse(bytes))
+    }
+
+    /// Decode subtable `sub_i` of lookup `lookup_i` as a [`MarkBasePos`]
+    /// (`GposLookupType = 4`, mark-to-base attachment positioning).
+    ///
+    /// Returns:
+    /// * `None` — `lookup_i` or `sub_i` is out of range, or the
+    ///   referenced subtable bytes are unreachable.
+    /// * `Some(Err(Error::BadStructure))` — the lookup is not declared
+    ///   as `GPOS_LOOKUP_TYPE_MARK_TO_BASE`, or the subtable bytes are
+    ///   malformed.
+    /// * `Some(Ok(MarkBasePos))` — the typed subtable view.
+    pub fn mark_base_pos(
+        &self,
+        lookup_i: u16,
+        sub_i: u16,
+    ) -> Option<Result<MarkBasePos<'a>, Error>> {
+        let lk = self.lookup(lookup_i)?;
+        if lk.lookup_type() != GPOS_LOOKUP_TYPE_MARK_TO_BASE {
+            return Some(Err(Error::BadStructure(
+                "GPOS/MarkBasePos: lookup is not type 4",
+            )));
+        }
+        let bytes = lk.subtable_bytes(sub_i)?;
+        Some(MarkBasePos::parse(bytes))
     }
 }
 
@@ -1748,5 +2153,270 @@ mod tests {
         // Wrong-type accessors on the type-9 lookup → Some(Err).
         assert!(g.single_pos(0, 0).unwrap().is_err());
         assert!(g.pair_pos(0, 0).unwrap().is_err());
+    }
+
+    // -- Anchor tables ---------------------------------------------------
+
+    #[test]
+    fn anchor_format1_design_units() {
+        // format=1, x=100, y=-200.
+        let mut b = Vec::new();
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&(100i16).to_be_bytes());
+        b.extend_from_slice(&(-200i16).to_be_bytes());
+        let a = Anchor::parse(&b, 0).unwrap();
+        assert_eq!(a.format, 1);
+        assert_eq!(a.x, 100);
+        assert_eq!(a.y, -200);
+        assert_eq!(a.contour_point(), None);
+        assert_eq!(a.x_device_offset(), 0);
+    }
+
+    #[test]
+    fn anchor_format2_contour_point() {
+        // format=2, x=5, y=6, anchorPoint=42.
+        let mut b = Vec::new();
+        b.extend_from_slice(&be(2));
+        b.extend_from_slice(&(5i16).to_be_bytes());
+        b.extend_from_slice(&(6i16).to_be_bytes());
+        b.extend_from_slice(&be(42));
+        let a = Anchor::parse(&b, 0).unwrap();
+        assert_eq!(a.format, 2);
+        assert_eq!(a.contour_point(), Some(42));
+    }
+
+    #[test]
+    fn anchor_format3_device_offsets() {
+        // format=3, x=1, y=2, xDeviceOffset=0x10, yDeviceOffset=0 (NULL).
+        let mut b = Vec::new();
+        b.extend_from_slice(&be(3));
+        b.extend_from_slice(&(1i16).to_be_bytes());
+        b.extend_from_slice(&(2i16).to_be_bytes());
+        b.extend_from_slice(&be(0x10));
+        b.extend_from_slice(&be(0));
+        let a = Anchor::parse(&b, 0).unwrap();
+        assert_eq!(a.format, 3);
+        assert_eq!(a.x_device_offset(), 0x10);
+        assert_eq!(a.y_device_offset(), 0);
+        assert_eq!(a.contour_point(), None);
+    }
+
+    #[test]
+    fn anchor_rejects_unknown_format() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&be(4));
+        b.extend_from_slice(&[0, 0, 0, 0]);
+        assert!(matches!(Anchor::parse(&b, 0), Err(Error::BadStructure(_))));
+    }
+
+    // -- MarkBasePos -----------------------------------------------------
+
+    /// Build a standalone MarkBasePosFormat1 subtable.
+    ///
+    /// Marks: glyph 10 → class 0 anchor (10,200); glyph 11 → class 1
+    /// anchor (15,-50). Bases: glyph 20 with class-0 anchor (30,210) and
+    /// class-1 anchor (32,-40); glyph 21 with a NULL class-1 anchor.
+    /// markClassCount = 2.
+    fn markbasepos_subtable() -> Vec<u8> {
+        // Layout (offsets from subtable start):
+        //   0   /  12 / MarkBasePosFormat1 header
+        //   12  /   X / markCoverage (format 1, glyphs {10,11})
+        //   ..  /   X / baseCoverage (format 1, glyphs {20,21})
+        //   ..  /   X / MarkArray
+        //   ..  /   X / BaseArray
+        //   then the Anchor tables, referenced from Mark/Base arrays.
+        //
+        // We compute offsets as we append.
+        let mut b: Vec<u8> = Vec::new();
+
+        // Header placeholder (12 bytes); fill offsets after layout.
+        b.extend_from_slice(&be(1)); // format
+        b.extend_from_slice(&be(0)); // markCoverageOffset (patch)
+        b.extend_from_slice(&be(0)); // baseCoverageOffset (patch)
+        b.extend_from_slice(&be(2)); // markClassCount = 2
+        b.extend_from_slice(&be(0)); // markArrayOffset (patch)
+        b.extend_from_slice(&be(0)); // baseArrayOffset (patch)
+
+        // markCoverage (format 1: {10, 11}).
+        let mark_cov_off = b.len();
+        b.extend_from_slice(&be(1)); // coverage format
+        b.extend_from_slice(&be(2)); // glyphCount
+        b.extend_from_slice(&be(10));
+        b.extend_from_slice(&be(11));
+
+        // baseCoverage (format 1: {20, 21}).
+        let base_cov_off = b.len();
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(2));
+        b.extend_from_slice(&be(20));
+        b.extend_from_slice(&be(21));
+
+        // MarkArray: markCount=2, two MarkRecords (4 bytes each), then
+        // two Anchor tables (format 1, 6 bytes each) appended after.
+        let mark_array_off = b.len();
+        b.extend_from_slice(&be(2)); // markCount
+                                     // markRecords start at mark_array_off+2.
+                                     // anchors will sit right after the 2 records:
+                                     //   records: 2 + 2*4 = 10 bytes from array start
+                                     //   anchor0 at array-relative offset 10
+                                     //   anchor1 at array-relative offset 16
+        b.extend_from_slice(&be(0)); // markRecord0.markClass = 0
+        b.extend_from_slice(&be(10)); // markRecord0.markAnchorOffset (rel array)
+        b.extend_from_slice(&be(1)); // markRecord1.markClass = 1
+        b.extend_from_slice(&be(16)); // markRecord1.markAnchorOffset (rel array)
+                                      // anchor0 (format1, 10,200)
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&(10i16).to_be_bytes());
+        b.extend_from_slice(&(200i16).to_be_bytes());
+        // anchor1 (format1, 15,-50)
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&(15i16).to_be_bytes());
+        b.extend_from_slice(&(-50i16).to_be_bytes());
+
+        // BaseArray: baseCount=2, two BaseRecords (markClassCount=2
+        // Offset16s = 4 bytes each), then anchors.
+        let base_array_off = b.len();
+        b.extend_from_slice(&be(2)); // baseCount
+                                     // BaseRecords start at base_array_off+2.
+                                     //   2 + 2*4 = 10 bytes of records
+                                     //   anchors after: base0c0 @10, base0c1 @16, base1c0 @22
+        b.extend_from_slice(&be(10)); // base0, class0 anchorOffset (rel array)
+        b.extend_from_slice(&be(16)); // base0, class1 anchorOffset
+        b.extend_from_slice(&be(22)); // base1, class0 anchorOffset
+        b.extend_from_slice(&be(0)); // base1, class1 anchorOffset = NULL
+                                     // base0 class0 anchor (30,210)
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&(30i16).to_be_bytes());
+        b.extend_from_slice(&(210i16).to_be_bytes());
+        // base0 class1 anchor (32,-40)
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&(32i16).to_be_bytes());
+        b.extend_from_slice(&(-40i16).to_be_bytes());
+        // base1 class0 anchor (33,205)
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&(33i16).to_be_bytes());
+        b.extend_from_slice(&(205i16).to_be_bytes());
+
+        // Patch header offsets.
+        b[2..4].copy_from_slice(&be(mark_cov_off as u16));
+        b[4..6].copy_from_slice(&be(base_cov_off as u16));
+        b[8..10].copy_from_slice(&be(mark_array_off as u16));
+        b[10..12].copy_from_slice(&be(base_array_off as u16));
+        b
+    }
+
+    #[test]
+    fn markbasepos_parses_and_resolves_anchors() {
+        let sub = markbasepos_subtable();
+        let mbp = MarkBasePos::parse(&sub).unwrap();
+        assert_eq!(mbp.format(), 1);
+        assert_eq!(mbp.mark_class_count(), 2);
+        assert!(mbp.mark_coverage().contains(10));
+        assert!(mbp.base_coverage().contains(20));
+
+        // Mark records.
+        let m0 = mbp.mark_record(10).unwrap().unwrap();
+        assert_eq!(m0.mark_class, 0);
+        assert_eq!((m0.anchor.x, m0.anchor.y), (10, 200));
+        let m1 = mbp.mark_record(11).unwrap().unwrap();
+        assert_eq!(m1.mark_class, 1);
+        assert_eq!((m1.anchor.x, m1.anchor.y), (15, -50));
+        // Uncovered mark.
+        assert!(mbp.mark_record(99).is_none());
+
+        // Base anchors per class.
+        let b0c0 = mbp.base_anchor(20, 0).unwrap().unwrap().unwrap();
+        assert_eq!((b0c0.x, b0c0.y), (30, 210));
+        let b0c1 = mbp.base_anchor(20, 1).unwrap().unwrap().unwrap();
+        assert_eq!((b0c1.x, b0c1.y), (32, -40));
+        // base1 class1 is a NULL offset → Ok(None).
+        assert!(mbp.base_anchor(21, 1).unwrap().unwrap().is_none());
+        let b1c0 = mbp.base_anchor(21, 0).unwrap().unwrap().unwrap();
+        assert_eq!((b1c0.x, b1c0.y), (33, 205));
+        // Uncovered base.
+        assert!(mbp.base_anchor(99, 0).is_none());
+    }
+
+    #[test]
+    fn markbasepos_attachment_pairs_mark_class_to_base_anchor() {
+        let sub = markbasepos_subtable();
+        let mbp = MarkBasePos::parse(&sub).unwrap();
+
+        // Mark 10 (class 0) on base 20 → mark anchor (10,200), base
+        // class-0 anchor (30,210).
+        let at = mbp.attachment(10, 20).unwrap().unwrap();
+        assert_eq!(at.mark_class, 0);
+        assert_eq!((at.mark_anchor.x, at.mark_anchor.y), (10, 200));
+        assert_eq!((at.base_anchor.x, at.base_anchor.y), (30, 210));
+
+        // Mark 11 (class 1) on base 20 → base class-1 anchor (32,-40).
+        let at = mbp.attachment(11, 20).unwrap().unwrap();
+        assert_eq!((at.base_anchor.x, at.base_anchor.y), (32, -40));
+
+        // Mark 11 (class 1) on base 21 → base has NULL class-1 anchor →
+        // no attachment (None).
+        assert!(mbp.attachment(11, 21).is_none());
+
+        // Uncovered mark → None.
+        assert!(mbp.attachment(99, 20).is_none());
+    }
+
+    #[test]
+    fn markbasepos_rejects_bad_format() {
+        let mut sub = markbasepos_subtable();
+        sub[0..2].copy_from_slice(&be(2)); // format = 2 (undefined)
+        assert!(matches!(
+            MarkBasePos::parse(&sub),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn markbasepos_via_gpos_accessor_and_extension() {
+        // Build a GPOS table whose single lookup is type 4 with the
+        // synthetic MarkBasePos subtable, then resolve via mark_base_pos.
+        let sub = markbasepos_subtable();
+        let mut bytes = vec![0u8; 54];
+        bytes[0..2].copy_from_slice(&be(1));
+        bytes[2..4].copy_from_slice(&be(0));
+        bytes[4..6].copy_from_slice(&be(10));
+        bytes[6..8].copy_from_slice(&be(22));
+        bytes[8..10].copy_from_slice(&be(44));
+        bytes[10..12].copy_from_slice(&be(1));
+        bytes[12..16].copy_from_slice(b"DFLT");
+        bytes[16..18].copy_from_slice(&be(8));
+        bytes[18..20].copy_from_slice(&be(0));
+        bytes[20..22].copy_from_slice(&be(0));
+        bytes[22..24].copy_from_slice(&be(1));
+        bytes[24..28].copy_from_slice(b"mark");
+        bytes[28..30].copy_from_slice(&be(8));
+        bytes[30..32].copy_from_slice(&be(0));
+        bytes[32..34].copy_from_slice(&be(1));
+        bytes[34..36].copy_from_slice(&be(0));
+        bytes[44..46].copy_from_slice(&be(1)); // LookupList count
+        bytes[46..48].copy_from_slice(&be(4)); // lookupOffset
+        bytes[48..50].copy_from_slice(&be(4)); // lookupType = 4
+        bytes[50..52].copy_from_slice(&be(0)); // lookupFlag
+        bytes[52..54].copy_from_slice(&be(1)); // subTableCount
+        bytes.extend_from_slice(&be(8)); // subtableOffset (56 - 48)
+        bytes.extend_from_slice(&sub);
+
+        let g = GposTable::parse(&bytes).unwrap();
+        assert_eq!(g.lookup(0).map(|l| l.lookup_type()), Some(4));
+        let mbp = g.mark_base_pos(0, 0).unwrap().unwrap();
+        let at = mbp.attachment(10, 20).unwrap().unwrap();
+        assert_eq!((at.base_anchor.x, at.base_anchor.y), (30, 210));
+        // Wrong-type accessor on a type-4 lookup → Some(Err).
+        assert!(g.single_pos(0, 0).unwrap().is_err());
+
+        // Extension wrapping a type-4 subtable resolves via as_mark_base_pos.
+        let ext = build_extension_pos(GPOS_LOOKUP_TYPE_MARK_TO_BASE, &sub);
+        let ep = ExtensionPos::parse(&ext).unwrap();
+        assert_eq!(ep.extension_lookup_type(), GPOS_LOOKUP_TYPE_MARK_TO_BASE);
+        let mbp2 = ep.as_mark_base_pos().unwrap();
+        let at2 = mbp2.attachment(11, 20).unwrap().unwrap();
+        assert_eq!((at2.base_anchor.x, at2.base_anchor.y), (32, -40));
+        // Wrong as_* resolver → Err.
+        assert!(ep.as_single_pos().is_err());
     }
 }

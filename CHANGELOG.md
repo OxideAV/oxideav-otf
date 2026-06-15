@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Other
+
+- decode GPOS Lookup Type 4 (mark-to-base attachment positioning) as a
+  typed `MarkBasePos` view, with the shared `Anchor` (formats 1/2/3) and
+  MarkArray/MarkRecord primitives; `attachment(mark, base)` returns the
+  `(mark_anchor, base_anchor)` pair for combining-mark placement.
+  Reachable directly and through the type-9 positioning extension
+  (`ExtensionPos::as_mark_base_pos`).
+
 ## [0.1.3](https://github.com/OxideAV/oxideav-otf/compare/v0.1.2...v0.1.3) - 2026-06-15
 
 ### Other

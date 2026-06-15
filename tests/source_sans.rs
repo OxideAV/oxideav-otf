@@ -1708,6 +1708,123 @@ fn gpos_pair_pos_via_typed_extension_accessor() {
 }
 
 #[test]
+fn gpos_mark_to_base_subtables_decode() {
+    use oxideav_otf::GPOS_LOOKUP_TYPE_MARK_TO_BASE;
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    let g = f.gpos().unwrap();
+    let num_glyphs = f.glyph_count();
+
+    let mut type4_lookups = 0usize;
+    let mut total_marks = 0usize;
+    let mut total_bases = 0usize;
+    let mut resolved_attachments = 0usize;
+
+    for i in 0..g.lookup_count() {
+        let l = g.lookup(i).unwrap();
+        if l.lookup_type() != GPOS_LOOKUP_TYPE_MARK_TO_BASE {
+            // The wrong-type accessor must reject a non-type-4 lookup.
+            assert!(matches!(g.mark_base_pos(i, 0), Some(Err(_)) | None));
+            continue;
+        }
+        type4_lookups += 1;
+        for s in 0..l.subtable_count() {
+            let mbp = g
+                .mark_base_pos(i, s)
+                .expect("type-4 subtable in range")
+                .expect("MarkBasePos parses");
+            assert_eq!(mbp.format(), 1);
+            let class_count = mbp.mark_class_count();
+            assert!(class_count >= 1);
+
+            // Every mark glyph resolves to a record whose class is in
+            // range and whose anchor decodes; the iterator over mark
+            // Coverage and the direct lookup agree.
+            let mut marks: Vec<u16> = Vec::new();
+            for (mg, _idx) in mbp.mark_coverage().iter() {
+                let rec = mbp.mark_record(mg).unwrap().expect("mark record decodes");
+                assert!(rec.mark_class < class_count);
+                assert!(matches!(rec.anchor.format, 1..=3));
+                marks.push(mg);
+                total_marks += 1;
+            }
+
+            // Every base glyph resolves a (possibly NULL) anchor for each
+            // mark class; non-NULL ones decode to a valid anchor format.
+            let mut bases: Vec<u16> = Vec::new();
+            for (bg, _idx) in mbp.base_coverage().iter() {
+                for c in 0..class_count {
+                    if let Some(a) = mbp
+                        .base_anchor(bg, c)
+                        .unwrap()
+                        .expect("base anchor decodes")
+                    {
+                        assert!(matches!(a.format, 1..=3));
+                    }
+                }
+                bases.push(bg);
+                total_bases += 1;
+            }
+
+            // Glyph IDs stay within the font.
+            for &mg in &marks {
+                assert!(mg < num_glyphs);
+            }
+            for &bg in &bases {
+                assert!(bg < num_glyphs);
+            }
+
+            // Pairing a real mark with a real base either yields a typed
+            // attachment (mark anchor + the base's class anchor) or None
+            // when the base omits that class. When present, the
+            // attachment's mark anchor matches the standalone mark record.
+            if let (Some(&mg), Some(&bg)) = (marks.first(), bases.first()) {
+                let mrec = mbp.mark_record(mg).unwrap().unwrap();
+                match mbp.attachment(mg, bg) {
+                    Some(res) => {
+                        let at = res.expect("attachment decodes");
+                        assert_eq!(at.mark_class, mrec.mark_class);
+                        assert_eq!(at.mark_anchor, mrec.anchor);
+                        let base = mbp
+                            .base_anchor(bg, mrec.mark_class)
+                            .unwrap()
+                            .unwrap()
+                            .expect("non-NULL base anchor when attachment present");
+                        assert_eq!(at.base_anchor, base);
+                        resolved_attachments += 1;
+                    }
+                    None => {
+                        // The base must indeed lack an anchor for this class.
+                        assert!(mbp
+                            .base_anchor(bg, mrec.mark_class)
+                            .unwrap()
+                            .unwrap()
+                            .is_none());
+                    }
+                }
+            }
+
+            // An uncovered glyph yields no mark record / no attachment.
+            let uncovered = num_glyphs; // one past the last GID
+            assert!(mbp.mark_record(uncovered).is_none());
+            assert!(mbp.base_anchor(uncovered, 0).is_none());
+        }
+    }
+
+    // The fixture carries mark-to-base attachment lookups; confirm we
+    // decoded real anchor data through them.
+    assert!(
+        type4_lookups >= 1,
+        "Source Sans 3 carries GPOS mark-to-base lookups"
+    );
+    assert!(total_marks >= 1, "mark Coverage yields mark records");
+    assert!(total_bases >= 1, "base Coverage yields base records");
+    assert!(
+        resolved_attachments >= 1,
+        "at least one (mark, base) pair resolves a full attachment"
+    );
+}
+
+#[test]
 fn gpos_finds_latin_script() {
     let f = Font::from_bytes(FIXTURE).unwrap();
     let g = f.gpos().unwrap();
