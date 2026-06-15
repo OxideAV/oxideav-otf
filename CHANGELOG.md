@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/OxideAV/oxideav-otf/compare/v0.1.2...v0.1.3) - 2026-06-15
+
+### Other
+
+- GPOS Lookup Type 9 (positioning subtable extension) decoded
+- decode Lookup Type 2 (pair adjustment positioning)
+- parse CFF2 ItemVariationStore (§12) for variable fonts
+- decode ValueRecord/ValueFormat + Lookup Type 1 single adjustment
+- decode Lookup Type 7 (substitution extension) as typed ExtensionSubst view
+- decode Lookup Type 3 (alternate substitution) as typed AlternateSubst view
+- decode Lookup Type 2 (multiple substitution) as typed MultipleSubst view
+- drop release-plz.toml — use release-plz defaults across the workspace
+- decode Lookup Type 4 (ligature substitution) as a typed LigatureSubst view
+- GSUB Lookup Type 1 (single substitution) decoded as typed SingleSubst view
+- decode headers + ScriptList/FeatureList/LookupList primitives
+- decode GDEF + Coverage + ClassDef common-layout primitives
+- ship Adobe Glyph List 2.0 + Font name↔gid accessors
+- avoid clippy 1.96 doc_lazy_continuation in module-level CFF2 line
+- parse header, Top DICT, GlobalSubrINDEX, CharStringINDEX, FontDICTINDEX
+- parse table version 1 + langTagRecord array + NameId enum
+- decode OS/2 and Windows Metrics table — versions 0..5
+
 ### Added
 
 - **GPOS Lookup Type 9 (positioning subtable extension) decoded** — the
