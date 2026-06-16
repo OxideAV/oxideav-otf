@@ -48,7 +48,6 @@ use crate::parser::TableDirectory;
 use crate::tables::{
     cmap::CmapTable, gdef::GdefTable, gpos::GposTable, gsub::GsubTable, head::HeadTable,
     hhea::HheaTable, hmtx::HmtxTable, maxp::MaxpTable, name::NameTable, os2::Os2Table,
-    post::PostTable,
 };
 
 pub use crate::tables::gdef::{
@@ -84,7 +83,9 @@ pub use crate::tables::os2::{
     FS_TYPE_BITMAP_EMBEDDING_ONLY, FS_TYPE_EDITABLE, FS_TYPE_NO_SUBSETTING,
     FS_TYPE_PREVIEW_AND_PRINT, FS_TYPE_RESTRICTED_LICENSE, FS_TYPE_USAGE_MASK,
 };
-pub use crate::tables::post::PostFormat;
+pub use crate::tables::post::{
+    standard_mac_glyph_name, PostFormat, PostGlyphName, PostTable, STANDARD_MAC_GLYPH_NAMES,
+};
 
 /// Errors emitted during font parsing or glyph lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -957,24 +958,26 @@ impl<'a> Font<'a> {
         self.post.as_ref().map(PostTable::is_fixed_pitch)
     }
 
-    /// Glyph name for `glyph_id` from the `post` table, if the table
-    /// is present in format 2.0 *and* the glyph maps to a non-
-    /// standard Pascal string. For format-2.0 glyphs that map to the
-    /// 258-entry standard Macintosh set (`glyphNameIndex < 258`),
-    /// this returns `None` because the standard-Macintosh glyph-name
-    /// list is not yet staged in `docs/text/opentype/` — see the
-    /// module-level docs in `tables::post` and the round-187 report
-    /// for the docs gap. Callers wanting names that work for every
-    /// CFF1 glyph should prefer [`Font::glyph_name`] (CFF charset
-    /// → strings, which has no docs gap).
+    /// Glyph name for `glyph_id` from the `post` table, as raw bytes.
+    ///
+    /// Resolves all three name-bearing `post` formats via
+    /// [`PostTable::glyph_name`]: format 1.0 (glyph ID → standard
+    /// Macintosh name), format 2.0 (`glyphNameIndex < 258` → standard
+    /// name; `>= 258` → custom Pascal string), and format 2.5
+    /// (`glyph_id + offset` → standard name). Standard names are
+    /// returned as their UTF-8 byte view; custom names are the raw
+    /// on-disk Pascal-string bytes (ASCII by convention, but not
+    /// guaranteed UTF-8 by the spec).
+    ///
+    /// `None` for format 3.0 / `Other` `post` tables, when the table is
+    /// absent, or when the glyph has no resolvable name. Callers
+    /// wanting a typed split between standard and custom names should
+    /// use [`Font::post`] + [`PostTable::glyph_name`].
     pub fn post_glyph_name(&self, glyph_id: u16) -> Option<&'a [u8]> {
-        let post = self.post.as_ref()?;
-        let idx = post.name_index(glyph_id)?;
-        if idx < 258 {
-            // Standard-Mac name — table not staged. See module docs.
-            return None;
-        }
-        post.name_string(idx - 258)
+        self.post
+            .as_ref()?
+            .glyph_name(glyph_id)
+            .map(|n| n.as_bytes())
     }
 
     // ---- `OS/2` table ------------------------------------------------------

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- ship the 258-entry standard-Macintosh glyph-name set
+  (`STANDARD_MAC_GLYPH_NAMES` / `standard_mac_glyph_name`) and apply it
+  in `post`: `PostTable::glyph_name` now resolves format 1.0 (glyph ID
+  → standard name), 2.0 (`glyphNameIndex < 258` → standard; `>= 258` →
+  custom Pascal string), and 2.5 (`glyph_id + offset` → standard) via
+  the new `PostGlyphName { Standard, Custom }` view. `Font::post_glyph_name`
+  now resolves standard names for every format instead of returning
+  `None` for `glyphNameIndex < 258`.
 - decode GPOS Lookup Type 4 (mark-to-base attachment positioning) as a
   typed `MarkBasePos` view, with the shared `Anchor` (formats 1/2/3) and
   MarkArray/MarkRecord primitives; `attachment(mark, base)` returns the

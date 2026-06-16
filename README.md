@@ -398,8 +398,10 @@ views over:
   (formats 1/2/3) and MarkArray/MarkRecord primitives and answers
   `attachment(mark, base)` with the `(mark_anchor, base_anchor)` pair a
   shaper aligns to position a combining mark over its base glyph.
-- **`cmap`** formats 0 / 4 / 6 / 12, `name`, `post` (every version, with
-  the non-standard Pascal-string name half), and `OS/2` versions 0–5.
+- **`cmap`** formats 0 / 4 / 6 / 12, `name`, `post` (every version,
+  including the full 258-entry standard-Macintosh glyph-name set, so
+  formats 1.0 / 2.0 / 2.5 resolve names end-to-end), and `OS/2`
+  versions 0–5.
 - **AGL** — the static Adobe Glyph List 2.0 table for glyph-name
   resolution (`agl_glyph_name`).
 - **CFF2** — header, Top DICT, Global Subr / CharString / Font DICT
@@ -429,10 +431,11 @@ views over:
   mark-to-base decoder uses are reusable by the other mark-attachment
   types. Anchor format-3 Device/VariationIndex tables are surfaced as
   raw offsets only (Device-table decoding is deferred).
-- Format-1.0 / 2.0 / 2.5 standard-Macintosh 258-entry glyph-name
-  lookups in `post` (the list is not staged). The non-standard
-  Pascal-string half is fully resolvable through `post_glyph_name` and
-  the AGL fallback.
+- (none for `post` — the 258-entry standard-Macintosh glyph-name set is
+  now staged and applied: `PostTable::glyph_name` resolves formats 1.0
+  (glyph ID → standard name), 2.0 (`glyphNameIndex < 258` → standard,
+  `>= 258` → custom Pascal string), and 2.5 (`glyph_id + offset` →
+  standard); `Font::post_glyph_name` and the AGL fallback consume it.)
 
 ## Test fixture
 
