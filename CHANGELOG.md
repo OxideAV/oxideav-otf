@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- decode GPOS Lookup Type 3 (cursive attachment positioning) as a typed
+  `CursivePos` view over CursivePosFormat1. `entry_exit(glyph)` returns
+  the glyph's `EntryExit` record (entry / exit `Anchor`, either of which
+  may be NULL), and `attachment(first, second)` returns the
+  `CursiveAttachment { exit_anchor, entry_anchor }` pair a shaper aligns
+  to join adjacent cursive glyphs (the first glyph's exit anchor onto the
+  second glyph's entry anchor); a NULL exit or entry anchor yields no
+  adjustment. Reachable directly via `GposTable::cursive_pos` and through
+  the type-9 positioning extension (`ExtensionPos::as_cursive_pos`).
+
 - ship the 258-entry standard-Macintosh glyph-name set
   (`STANDARD_MAC_GLYPH_NAMES` / `standard_mac_glyph_name`) and apply it
   in `post`: `PostTable::glyph_name` now resolves format 1.0 (glyph ID

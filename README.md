@@ -392,12 +392,17 @@ views over:
   (type 7) lookup formats; remaining lookup types are reachable as raw
   subtable byte windows.
 - **`GPOS`** — the same header enumeration plus typed decoders for
-  single adjustment (type 1), pair adjustment (type 2), mark-to-base
-  attachment (type 4), and the extension (type 9) lookups; remaining
-  types stay raw byte slices. Mark-to-base decodes the shared `Anchor`
-  (formats 1/2/3) and MarkArray/MarkRecord primitives and answers
-  `attachment(mark, base)` with the `(mark_anchor, base_anchor)` pair a
-  shaper aligns to position a combining mark over its base glyph.
+  single adjustment (type 1), pair adjustment (type 2), cursive
+  attachment (type 3), mark-to-base attachment (type 4), and the
+  extension (type 9) lookups; remaining types stay raw byte slices.
+  Mark-to-base decodes the shared `Anchor` (formats 1/2/3) and
+  MarkArray/MarkRecord primitives and answers `attachment(mark, base)`
+  with the `(mark_anchor, base_anchor)` pair a shaper aligns to position
+  a combining mark over its base glyph. Cursive attachment decodes the
+  CursivePosFormat1 EntryExit records (reusing the `Anchor` primitive)
+  and answers `attachment(first, second)` with the `(exit_anchor,
+  entry_anchor)` pair a shaper aligns to join adjacent cursive glyphs;
+  either anchor of an EntryExit record may be NULL.
 - **`cmap`** formats 0 / 4 / 6 / 12, `name`, `post` (every version,
   including the full 258-entry standard-Macintosh glyph-name set, so
   formats 1.0 / 2.0 / 2.5 resolve names end-to-end), and `OS/2`
@@ -424,8 +429,8 @@ views over:
   document is not staged). `agl::name_to_codepoints` can absorb it
   without an API change once the spec is available.
 - GSUB / GPOS lookup types not yet given typed decoders (reachable as
-  raw subtable byte windows) — GPOS cursive (type 3), mark-to-ligature
-  (type 5), mark-to-mark (type 6), and context/chained (types 7/8); GSUB
+  raw subtable byte windows) — GPOS mark-to-ligature (type 5),
+  mark-to-mark (type 6), and context/chained (types 7/8); GSUB
   context/chained (types 5/6) and reverse-chain (type 8) — and the
   `kern` table. The `Anchor` and MarkArray/MarkRecord primitives the
   mark-to-base decoder uses are reusable by the other mark-attachment

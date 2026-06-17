@@ -21,15 +21,16 @@
 //! ```
 //!
 //! Typed lookup-subtable views are decoded for Lookup Type 1 (single
-//! adjustment), Type 2 (pair adjustment), Type 4 (mark-to-base
-//! attachment), and Type 9 (positioning extension), the last wrapping
-//! any of the already-decoded types via a 32-bit indirection. The
-//! remaining lookup types (3 Cursive, 5–6 Mark-to-ligature /
+//! adjustment), Type 2 (pair adjustment), Type 3 (cursive attachment),
+//! Type 4 (mark-to-base attachment), and Type 9 (positioning extension),
+//! the last wrapping any of the already-decoded types via a 32-bit
+//! indirection. The remaining lookup types (5–6 Mark-to-ligature /
 //! Mark-to-mark, 7–8 Context/Chained) are left as raw sub-slices via
 //! [`super::layout::Lookup::subtable_bytes`]; their MarkArray interiors
 //! are deferred to a future round. The shared ValueRecord, Anchor, and
 //! MarkArray/MarkRecord primitives are decoded (the last two by the
-//! mark-to-base path; mark-to-ligature / mark-to-mark reuse them).
+//! mark-to-base path; mark-to-ligature / mark-to-mark reuse them); the
+//! cursive path reuses the Anchor primitive for its EntryExit records.
 
 use crate::parser::{read_i16, read_u16, read_u32};
 use crate::tables::gdef::{ClassDef, Coverage};
@@ -902,6 +903,18 @@ impl<'a> ExtensionPos<'a> {
         }
         MarkBasePos::parse(self.extension_subtable_bytes())
     }
+
+    /// Resolve the wrapped subtable as a [`CursivePos`]
+    /// (`extensionLookupType = 3`). `Err(BadStructure)` when the declared
+    /// type disagrees or the wrapped bytes are malformed.
+    pub fn as_cursive_pos(&self) -> Result<CursivePos<'a>, Error> {
+        if self.ext_lookup_type != GPOS_LOOKUP_TYPE_CURSIVE {
+            return Err(Error::BadStructure(
+                "GPOS/ExtensionPos: extensionLookupType is not 3",
+            ));
+        }
+        CursivePos::parse(self.extension_subtable_bytes())
+    }
 }
 
 /// A decoded `Anchor` table — one attachment point used by the GPOS
@@ -1270,6 +1283,195 @@ impl<'a> MarkBasePos<'a> {
     }
 }
 
+/// A decoded `EntryExit` record — the entry and exit attachment
+/// anchors of one glyph in a [`CursivePos`] subtable.
+///
+/// Spec: `docs/text/opentype/otspec-gpos.html` §"Lookup type 3 subtable:
+/// cursive attachment positioning". Each record is two `Offset16`s, each
+/// to an [`Anchor`] table (either of which may be NULL). The exit anchor
+/// of one glyph aligns with the entry anchor of the following glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntryExit {
+    /// The glyph's entry [`Anchor`] (`None` when `entryAnchorOffset` is
+    /// NULL — the glyph cannot be joined to a preceding glyph).
+    pub entry_anchor: Option<Anchor>,
+    /// The glyph's exit [`Anchor`] (`None` when `exitAnchorOffset` is
+    /// NULL — the glyph cannot be joined to a following glyph).
+    pub exit_anchor: Option<Anchor>,
+}
+
+/// The attachment geometry a [`CursivePos`] subtable computes for an
+/// ordered glyph pair `(first, second)`: the exit anchor of the first
+/// glyph and the entry anchor of the second glyph, which a shaper aligns
+/// so the two glyphs join cursively.
+///
+/// Per spec, the line-layout-direction adjustment is applied to the
+/// advance of the *first* glyph, while the cross-stream placement of
+/// whichever glyph the parent lookup's `RIGHT_TO_LEFT` flag designates
+/// is shifted; this view only surfaces the two anchors a client needs to
+/// compute that, leaving the flag-dependent direction logic to the
+/// caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursiveAttachment {
+    /// The exit [`Anchor`] of the first (leading) glyph.
+    pub exit_anchor: Anchor,
+    /// The entry [`Anchor`] of the second (following) glyph.
+    pub entry_anchor: Anchor,
+}
+
+/// GPOS Lookup Type 3 — cursive attachment positioning subtable.
+///
+/// Spec: `docs/text/opentype/otspec-gpos.html` §"Lookup type 3 subtable:
+/// cursive attachment positioning". One on-disk format,
+/// `CursivePosFormat1`:
+///
+/// ```text
+/// CursivePosFormat1 subtable
+///   0 / 2 / format = 1
+///   2 / 2 / coverageOffset   (Offset16, from start of subtable)
+///   4 / 2 / entryExitCount
+///   6 / 4·n / entryExitRecords[entryExitCount]
+///             each = { Offset16 entryAnchorOffset; Offset16 exitAnchorOffset }
+///             (offsets from start of subtable; either may be NULL)
+/// ```
+///
+/// The EntryExit records are stored in Coverage index order: the
+/// Coverage index of a glyph selects its record. To join glyph *A* to a
+/// following glyph *B*, a client aligns *A*'s exit anchor with *B*'s
+/// entry anchor — see [`Self::attachment`].
+#[derive(Debug, Clone, Copy)]
+pub struct CursivePos<'a> {
+    bytes: &'a [u8],
+    coverage: Coverage<'a>,
+    entry_exit_count: u16,
+}
+
+impl<'a> CursivePos<'a> {
+    /// Parse a CursivePosFormat1 subtable from its raw `bytes`.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let format = read_u16(bytes, 0)?;
+        if format != 1 {
+            return Err(Error::BadStructure("GPOS/CursivePos: unknown format"));
+        }
+        let coverage_off = read_u16(bytes, 2)? as usize;
+        let entry_exit_count = read_u16(bytes, 4)?;
+        if coverage_off == 0 || coverage_off >= bytes.len() {
+            return Err(Error::BadStructure(
+                "GPOS/CursivePos: coverageOffset out of range",
+            ));
+        }
+        // The EntryExit array follows the 6-byte header: entryExitCount
+        // records of 4 bytes each. Validate the extent up front so that
+        // record accessors can index without further bounds anxiety.
+        let array_bytes = (entry_exit_count as usize)
+            .checked_mul(4)
+            .ok_or(Error::BadStructure(
+                "GPOS/CursivePos: EntryExit array size overflow",
+            ))?;
+        let need = 6usize.checked_add(array_bytes).ok_or(Error::BadStructure(
+            "GPOS/CursivePos: EntryExit extent overflow",
+        ))?;
+        if need > bytes.len() {
+            return Err(Error::UnexpectedEof);
+        }
+        let coverage = Coverage::parse(&bytes[coverage_off..])?;
+        Ok(Self {
+            bytes,
+            coverage,
+            entry_exit_count,
+        })
+    }
+
+    /// Subtable format discriminant (always `1`).
+    pub fn format(&self) -> u16 {
+        1
+    }
+
+    /// `entryExitCount` — the number of EntryExit records, equal to the
+    /// Coverage glyph count.
+    pub fn entry_exit_count(&self) -> u16 {
+        self.entry_exit_count
+    }
+
+    /// The [`Coverage`] table listing every glyph with cursive data.
+    pub fn coverage(&self) -> Coverage<'a> {
+        self.coverage
+    }
+
+    /// The decoded [`EntryExit`] record for `glyph`, or `None` if the
+    /// glyph is not in the Coverage table.
+    ///
+    /// Either anchor of the returned record may be `None` (a NULL
+    /// `entryAnchorOffset` / `exitAnchorOffset`, meaning the glyph cannot
+    /// be cursively joined on that side).
+    pub fn entry_exit(&self, glyph: u16) -> Option<Result<EntryExit, Error>> {
+        let idx = self.coverage.index_of(glyph)?;
+        Some(self.entry_exit_at(idx))
+    }
+
+    /// Resolve the EntryExit record at Coverage index `idx`.
+    fn entry_exit_at(&self, idx: u16) -> Result<EntryExit, Error> {
+        if idx >= self.entry_exit_count {
+            return Err(Error::BadStructure(
+                "GPOS/CursivePos: coverage index >= entryExitCount",
+            ));
+        }
+        let rec_off = 6 + idx as usize * 4;
+        let entry_off = read_u16(self.bytes, rec_off)? as usize;
+        let exit_off = read_u16(self.bytes, rec_off + 2)? as usize;
+        // Offsets are from the start of the CursivePos subtable; a NULL
+        // (zero) offset means "no anchor on this side".
+        let entry_anchor = if entry_off == 0 {
+            None
+        } else {
+            Some(Anchor::parse(self.bytes, entry_off)?)
+        };
+        let exit_anchor = if exit_off == 0 {
+            None
+        } else {
+            Some(Anchor::parse(self.bytes, exit_off)?)
+        };
+        Ok(EntryExit {
+            entry_anchor,
+            exit_anchor,
+        })
+    }
+
+    /// Compute the cursive attachment geometry for the ordered pair
+    /// `(first_glyph, second_glyph)`.
+    ///
+    /// Returns:
+    /// * `None` — either glyph is not covered, or one of the two
+    ///   participating anchors is NULL (`first` has no exit anchor or
+    ///   `second` has no entry anchor): per spec, no positioning
+    ///   adjustment is applied in that case.
+    /// * `Some(Err(_))` — the on-disk records are malformed.
+    /// * `Some(Ok(CursiveAttachment))` — the first glyph's exit anchor
+    ///   and the second glyph's entry anchor a shaper aligns to join the
+    ///   pair.
+    pub fn attachment(
+        &self,
+        first_glyph: u16,
+        second_glyph: u16,
+    ) -> Option<Result<CursiveAttachment, Error>> {
+        let first = match self.entry_exit(first_glyph)? {
+            Ok(ee) => ee,
+            Err(e) => return Some(Err(e)),
+        };
+        let second = match self.entry_exit(second_glyph)? {
+            Ok(ee) => ee,
+            Err(e) => return Some(Err(e)),
+        };
+        match (first.exit_anchor, second.entry_anchor) {
+            (Some(exit_anchor), Some(entry_anchor)) => Some(Ok(CursiveAttachment {
+                exit_anchor,
+                entry_anchor,
+            })),
+            _ => None,
+        }
+    }
+}
+
 /// Parsed `GPOS` header view.
 #[derive(Debug, Clone, Copy)]
 pub struct GposTable<'a> {
@@ -1450,6 +1652,27 @@ impl<'a> GposTable<'a> {
         }
         let bytes = lk.subtable_bytes(sub_i)?;
         Some(MarkBasePos::parse(bytes))
+    }
+
+    /// Decode subtable `sub_i` of lookup `lookup_i` as a [`CursivePos`]
+    /// (`GposLookupType = 3`, cursive attachment positioning).
+    ///
+    /// Returns:
+    /// * `None` — `lookup_i` or `sub_i` is out of range, or the
+    ///   referenced subtable bytes are unreachable.
+    /// * `Some(Err(Error::BadStructure))` — the lookup is not declared
+    ///   as `GPOS_LOOKUP_TYPE_CURSIVE`, or the subtable bytes are
+    ///   malformed.
+    /// * `Some(Ok(CursivePos))` — the typed subtable view.
+    pub fn cursive_pos(&self, lookup_i: u16, sub_i: u16) -> Option<Result<CursivePos<'a>, Error>> {
+        let lk = self.lookup(lookup_i)?;
+        if lk.lookup_type() != GPOS_LOOKUP_TYPE_CURSIVE {
+            return Some(Err(Error::BadStructure(
+                "GPOS/CursivePos: lookup is not type 3",
+            )));
+        }
+        let bytes = lk.subtable_bytes(sub_i)?;
+        Some(CursivePos::parse(bytes))
     }
 }
 
@@ -2416,6 +2639,197 @@ mod tests {
         let mbp2 = ep.as_mark_base_pos().unwrap();
         let at2 = mbp2.attachment(11, 20).unwrap().unwrap();
         assert_eq!((at2.base_anchor.x, at2.base_anchor.y), (32, -40));
+        // Wrong as_* resolver → Err.
+        assert!(ep.as_single_pos().is_err());
+    }
+
+    // -- CursivePos (Lookup Type 3) --------------------------------------
+
+    /// Build a standalone CursivePosFormat1 subtable covering glyphs
+    /// {10, 11, 12}:
+    ///   * glyph 10: entry (5,100)   exit (90,100)
+    ///   * glyph 11: entry (8,100)   exit NULL  (no following join)
+    ///   * glyph 12: entry NULL      exit (95,100)  (no preceding join)
+    fn cursivepos_subtable() -> Vec<u8> {
+        let mut b: Vec<u8> = Vec::new();
+        // Header (6 bytes); offsets patched after layout.
+        b.extend_from_slice(&be(1)); // format
+        b.extend_from_slice(&be(0)); // coverageOffset (patch)
+        b.extend_from_slice(&be(3)); // entryExitCount = 3
+
+        // EntryExit records (4 bytes each); offsets patched after the
+        // anchors are appended.
+        let rec_off = b.len();
+        for _ in 0..3 {
+            b.extend_from_slice(&be(0)); // entryAnchorOffset (patch)
+            b.extend_from_slice(&be(0)); // exitAnchorOffset (patch)
+        }
+
+        // Coverage (format 1: {10, 11, 12}).
+        let cov_off = b.len();
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(3));
+        b.extend_from_slice(&be(10));
+        b.extend_from_slice(&be(11));
+        b.extend_from_slice(&be(12));
+
+        // Anchor tables (format 1, 6 bytes each), offsets from subtable
+        // start.
+        let anchor = |b: &mut Vec<u8>, x: i16, y: i16| -> u16 {
+            let off = b.len() as u16;
+            b.extend_from_slice(&be(1));
+            b.extend_from_slice(&x.to_be_bytes());
+            b.extend_from_slice(&y.to_be_bytes());
+            off
+        };
+        let g10_entry = anchor(&mut b, 5, 100);
+        let g10_exit = anchor(&mut b, 90, 100);
+        let g11_entry = anchor(&mut b, 8, 100);
+        let g12_exit = anchor(&mut b, 95, 100);
+
+        // Patch coverage offset.
+        b[2..4].copy_from_slice(&be(cov_off as u16));
+        // Patch EntryExit records (entry, exit) per glyph.
+        b[rec_off..rec_off + 2].copy_from_slice(&be(g10_entry));
+        b[rec_off + 2..rec_off + 4].copy_from_slice(&be(g10_exit));
+        b[rec_off + 4..rec_off + 6].copy_from_slice(&be(g11_entry));
+        b[rec_off + 6..rec_off + 8].copy_from_slice(&be(0)); // glyph 11 exit NULL
+        b[rec_off + 8..rec_off + 10].copy_from_slice(&be(0)); // glyph 12 entry NULL
+        b[rec_off + 10..rec_off + 12].copy_from_slice(&be(g12_exit));
+        b
+    }
+
+    #[test]
+    fn cursivepos_parses_and_resolves_entry_exit() {
+        let sub = cursivepos_subtable();
+        let cp = CursivePos::parse(&sub).unwrap();
+        assert_eq!(cp.format(), 1);
+        assert_eq!(cp.entry_exit_count(), 3);
+        assert!(cp.coverage().contains(10));
+        assert!(cp.coverage().contains(12));
+        assert!(!cp.coverage().contains(99));
+
+        // Glyph 10 has both anchors.
+        let ee = cp.entry_exit(10).unwrap().unwrap();
+        let entry = ee.entry_anchor.unwrap();
+        let exit = ee.exit_anchor.unwrap();
+        assert_eq!((entry.x, entry.y), (5, 100));
+        assert_eq!((exit.x, exit.y), (90, 100));
+
+        // Glyph 11: entry present, exit NULL.
+        let ee = cp.entry_exit(11).unwrap().unwrap();
+        assert_eq!(ee.entry_anchor.map(|a| a.x), Some(8));
+        assert!(ee.exit_anchor.is_none());
+
+        // Glyph 12: entry NULL, exit present.
+        let ee = cp.entry_exit(12).unwrap().unwrap();
+        assert!(ee.entry_anchor.is_none());
+        assert_eq!(ee.exit_anchor.map(|a| a.x), Some(95));
+
+        // Uncovered glyph → None.
+        assert!(cp.entry_exit(99).is_none());
+    }
+
+    #[test]
+    fn cursivepos_attachment_aligns_exit_to_entry() {
+        let sub = cursivepos_subtable();
+        let cp = CursivePos::parse(&sub).unwrap();
+
+        // Join 10 → 11: 10's exit (90,100) aligns with 11's entry (8,100).
+        let at = cp.attachment(10, 11).unwrap().unwrap();
+        assert_eq!((at.exit_anchor.x, at.exit_anchor.y), (90, 100));
+        assert_eq!((at.entry_anchor.x, at.entry_anchor.y), (8, 100));
+
+        // Join 10 → 10 also works (10 has both an exit and an entry).
+        let at = cp.attachment(10, 10).unwrap().unwrap();
+        assert_eq!(at.exit_anchor.x, 90);
+        assert_eq!(at.entry_anchor.x, 5);
+
+        // Join 11 → 10: glyph 11 has NULL exit → no adjustment.
+        assert!(cp.attachment(11, 10).is_none());
+
+        // Join 10 → 12: glyph 12 has NULL entry → no adjustment.
+        assert!(cp.attachment(10, 12).is_none());
+
+        // Uncovered first/second → None.
+        assert!(cp.attachment(99, 11).is_none());
+        assert!(cp.attachment(10, 99).is_none());
+    }
+
+    #[test]
+    fn cursivepos_rejects_bad_format() {
+        let mut sub = cursivepos_subtable();
+        sub[0..2].copy_from_slice(&be(2)); // format = 2 (undefined)
+        assert!(matches!(
+            CursivePos::parse(&sub),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn cursivepos_rejects_truncated_array() {
+        // A valid Coverage sits at the buffer's tail, but entryExitCount
+        // claims more records than the bytes between the 6-byte header and
+        // that Coverage can hold → the EntryExit array overruns into EOF.
+        let mut b: Vec<u8> = Vec::new();
+        b.extend_from_slice(&be(1)); // format
+        b.extend_from_slice(&be(0)); // coverageOffset (patch)
+        b.extend_from_slice(&be(3)); // entryExitCount = 3 → needs 12 array bytes
+                                     // Only 4 bytes of array space before Coverage starts.
+        b.extend_from_slice(&be(0));
+        b.extend_from_slice(&be(0));
+        let cov_off = b.len();
+        b.extend_from_slice(&be(1)); // coverage format 1
+        b.extend_from_slice(&be(0)); // glyphCount = 0
+        b[2..4].copy_from_slice(&be(cov_off as u16));
+        assert!(matches!(CursivePos::parse(&b), Err(Error::UnexpectedEof)));
+    }
+
+    #[test]
+    fn cursivepos_via_gpos_accessor_and_extension() {
+        // Build a GPOS table whose single lookup is type 3 with the
+        // synthetic CursivePos subtable, then resolve via cursive_pos.
+        let sub = cursivepos_subtable();
+        let mut bytes = vec![0u8; 54];
+        bytes[0..2].copy_from_slice(&be(1));
+        bytes[2..4].copy_from_slice(&be(0));
+        bytes[4..6].copy_from_slice(&be(10));
+        bytes[6..8].copy_from_slice(&be(22));
+        bytes[8..10].copy_from_slice(&be(44));
+        bytes[10..12].copy_from_slice(&be(1));
+        bytes[12..16].copy_from_slice(b"DFLT");
+        bytes[16..18].copy_from_slice(&be(8));
+        bytes[18..20].copy_from_slice(&be(0));
+        bytes[20..22].copy_from_slice(&be(0));
+        bytes[22..24].copy_from_slice(&be(1));
+        bytes[24..28].copy_from_slice(b"curs");
+        bytes[28..30].copy_from_slice(&be(8));
+        bytes[30..32].copy_from_slice(&be(0));
+        bytes[32..34].copy_from_slice(&be(1));
+        bytes[34..36].copy_from_slice(&be(0));
+        bytes[44..46].copy_from_slice(&be(1)); // LookupList count
+        bytes[46..48].copy_from_slice(&be(4)); // lookupOffset
+        bytes[48..50].copy_from_slice(&be(3)); // lookupType = 3
+        bytes[50..52].copy_from_slice(&be(0)); // lookupFlag
+        bytes[52..54].copy_from_slice(&be(1)); // subTableCount
+        bytes.extend_from_slice(&be(8)); // subtableOffset (56 - 48)
+        bytes.extend_from_slice(&sub);
+
+        let g = GposTable::parse(&bytes).unwrap();
+        assert_eq!(g.lookup(0).map(|l| l.lookup_type()), Some(3));
+        let cp = g.cursive_pos(0, 0).unwrap().unwrap();
+        let at = cp.attachment(10, 11).unwrap().unwrap();
+        assert_eq!(at.exit_anchor.x, 90);
+        // Wrong-type accessor on a type-3 lookup → Some(Err).
+        assert!(g.single_pos(0, 0).unwrap().is_err());
+
+        // Extension wrapping a type-3 subtable resolves via as_cursive_pos.
+        let ext = build_extension_pos(GPOS_LOOKUP_TYPE_CURSIVE, &sub);
+        let ep = ExtensionPos::parse(&ext).unwrap();
+        assert_eq!(ep.extension_lookup_type(), GPOS_LOOKUP_TYPE_CURSIVE);
+        let cp2 = ep.as_cursive_pos().unwrap();
+        let at2 = cp2.attachment(10, 11).unwrap().unwrap();
+        assert_eq!(at2.entry_anchor.x, 8);
         // Wrong as_* resolver → Err.
         assert!(ep.as_single_pos().is_err());
     }
