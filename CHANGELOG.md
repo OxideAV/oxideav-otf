@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- decode GPOS Lookup Type 6 (mark-to-mark attachment positioning) as a
+  typed `MarkMarkPos` view over MarkMarkPosFormat1. The structure mirrors
+  mark-to-base: `mark1` plays the "mark" role and `mark2` plays the
+  "base" role, with the `Mark2Array` laid out exactly like the
+  `BaseArray`. `mark1_record(mark1)` resolves the attaching mark's class
+  and `Anchor`; `mark2_anchor(mark2, class)` resolves the base-mark
+  anchor for a class (`Ok(None)` for a NULL class offset); and
+  `attachment(mark1, mark2)` returns the
+  `MarkMarkAttachment { mark_class, mark1_anchor, mark2_anchor }` pair a
+  shaper aligns to stack one combining mark over a preceding mark.
+  Reachable directly via `GposTable::mark_mark_pos` and through the
+  type-9 positioning extension (`ExtensionPos::as_mark_mark_pos`). Reuses
+  the shared `Anchor` and MarkArray/MarkRecord primitives.
+
 - decode GPOS Lookup Type 3 (cursive attachment positioning) as a typed
   `CursivePos` view over CursivePosFormat1. `entry_exit(glyph)` returns
   the glyph's `EntryExit` record (entry / exit `Anchor`, either of which

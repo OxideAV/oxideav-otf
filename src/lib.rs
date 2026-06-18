@@ -57,11 +57,11 @@ pub use crate::tables::gdef::{
 pub use crate::tables::gpos::GposTable as GposView;
 pub use crate::tables::gpos::{
     Anchor, CursiveAttachment, CursivePos, EntryExit, ExtensionPos, MarkAttachment, MarkBasePos,
-    MarkRecord, PairPos, PairPosIter, PairValue, SinglePos, SinglePosIter, ValueFormat,
-    ValueRecord, GPOS_LOOKUP_TYPE_CHAINED_CONTEXT, GPOS_LOOKUP_TYPE_CONTEXT,
-    GPOS_LOOKUP_TYPE_CURSIVE, GPOS_LOOKUP_TYPE_EXTENSION, GPOS_LOOKUP_TYPE_MARK_TO_BASE,
-    GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE, GPOS_LOOKUP_TYPE_MARK_TO_MARK, GPOS_LOOKUP_TYPE_PAIR,
-    GPOS_LOOKUP_TYPE_SINGLE,
+    MarkMarkAttachment, MarkMarkPos, MarkRecord, PairPos, PairPosIter, PairValue, SinglePos,
+    SinglePosIter, ValueFormat, ValueRecord, GPOS_LOOKUP_TYPE_CHAINED_CONTEXT,
+    GPOS_LOOKUP_TYPE_CONTEXT, GPOS_LOOKUP_TYPE_CURSIVE, GPOS_LOOKUP_TYPE_EXTENSION,
+    GPOS_LOOKUP_TYPE_MARK_TO_BASE, GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE,
+    GPOS_LOOKUP_TYPE_MARK_TO_MARK, GPOS_LOOKUP_TYPE_PAIR, GPOS_LOOKUP_TYPE_SINGLE,
 };
 pub use crate::tables::gsub::GsubTable as GsubView;
 pub use crate::tables::gsub::{
