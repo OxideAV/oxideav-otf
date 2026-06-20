@@ -928,6 +928,18 @@ impl<'a> ExtensionPos<'a> {
         }
         MarkMarkPos::parse(self.extension_subtable_bytes())
     }
+
+    /// Resolve the wrapped subtable as a [`MarkLigPos`]
+    /// (`extensionLookupType = 5`). `Err(BadStructure)` when the declared
+    /// type disagrees or the wrapped bytes are malformed.
+    pub fn as_mark_lig_pos(&self) -> Result<MarkLigPos<'a>, Error> {
+        if self.ext_lookup_type != GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE {
+            return Err(Error::BadStructure(
+                "GPOS/ExtensionPos: extensionLookupType is not 5",
+            ));
+        }
+        MarkLigPos::parse(self.extension_subtable_bytes())
+    }
 }
 
 /// A decoded `Anchor` table — one attachment point used by the GPOS
@@ -1292,6 +1304,367 @@ impl<'a> MarkBasePos<'a> {
             mark_class: mark.mark_class,
             mark_anchor: mark.anchor,
             base_anchor: base,
+        }))
+    }
+}
+
+/// The attachment geometry a [`MarkLigPos`] subtable computes for a
+/// `(mark, ligature, component)` triple: the mark's own anchor and the
+/// ligature-component anchor for that mark's class.
+///
+/// A text-processing client aligns `mark_anchor` over `ligature_anchor`,
+/// positioning the combining mark relative to the identified ligature
+/// component's attachment point (spec §"Lookup type 5 subtable"). The
+/// roles mirror [`MarkAttachment`] exactly, except the base anchor is
+/// chosen by `(component, mark_class)` rather than `mark_class` alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LigatureAttachment {
+    /// The mark glyph's class (`0..markClassCount`).
+    pub mark_class: u16,
+    /// The ligature component the mark attaches to (`0..componentCount`).
+    pub component: u16,
+    /// The mark glyph's attachment anchor.
+    pub mark_anchor: Anchor,
+    /// The ligature component's anchor for the mark's class.
+    pub ligature_anchor: Anchor,
+}
+
+/// GPOS Lookup Type 5 — mark-to-ligature attachment positioning subtable.
+///
+/// Spec: `docs/text/opentype/otspec-gpos.html` §"Lookup type 5 subtable:
+/// mark-to-ligature attachment positioning". One on-disk format,
+/// `MarkLigPosFormat1`:
+///
+/// ```text
+/// MarkLigPosFormat1 subtable (12 bytes)
+///   0 / 2 / format = 1
+///   2 / 2 / markCoverageOffset     (Offset16, from start of subtable)
+///   4 / 2 / ligatureCoverageOffset (Offset16, from start of subtable)
+///   6 / 2 / markClassCount
+///   8 / 2 / markArrayOffset        (Offset16, from start of subtable)
+///  10 / 2 / ligatureArrayOffset    (Offset16, from start of subtable)
+/// ```
+///
+/// The MarkArray mirrors [`MarkBasePos`] precisely: one [`MarkRecord`]
+/// per mark-Coverage glyph (class + anchor). The difference is the base
+/// side, which is *two-dimensional*. The LigatureArray holds a
+/// `ligatureCount` and one Offset16 per ligature-Coverage glyph (in
+/// Coverage order) to a LigatureAttach table. A LigatureAttach is a
+/// `componentCount` followed by `componentCount` ComponentRecords, each
+/// of which is `markClassCount` Offset16 anchor offsets (one per mark
+/// class, any of which may be NULL). To attach a mark to a ligature, the
+/// caller supplies the component index (which the spec notes must be
+/// tracked by the client from the original character string) and the
+/// mark's class selects which component anchor aligns with the mark's
+/// anchor — see [`Self::attachment`].
+#[derive(Debug, Clone, Copy)]
+pub struct MarkLigPos<'a> {
+    bytes: &'a [u8],
+    mark_coverage: Coverage<'a>,
+    ligature_coverage: Coverage<'a>,
+    mark_class_count: u16,
+    mark_array_off: usize,
+    ligature_array_off: usize,
+    ligature_count: u16,
+}
+
+impl<'a> MarkLigPos<'a> {
+    /// Parse a MarkLigPosFormat1 subtable from its raw `bytes`.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let format = read_u16(bytes, 0)?;
+        if format != 1 {
+            return Err(Error::BadStructure("GPOS/MarkLigPos: unknown format"));
+        }
+        let mark_coverage_off = read_u16(bytes, 2)? as usize;
+        let ligature_coverage_off = read_u16(bytes, 4)? as usize;
+        let mark_class_count = read_u16(bytes, 6)?;
+        let mark_array_off = read_u16(bytes, 8)? as usize;
+        let ligature_array_off = read_u16(bytes, 10)? as usize;
+        if mark_coverage_off == 0
+            || mark_coverage_off >= bytes.len()
+            || ligature_coverage_off == 0
+            || ligature_coverage_off >= bytes.len()
+        {
+            return Err(Error::BadStructure(
+                "GPOS/MarkLigPos: coverageOffset out of range",
+            ));
+        }
+        if mark_array_off == 0
+            || mark_array_off >= bytes.len()
+            || ligature_array_off == 0
+            || ligature_array_off >= bytes.len()
+        {
+            return Err(Error::BadStructure(
+                "GPOS/MarkLigPos: arrayOffset out of range",
+            ));
+        }
+        if mark_class_count == 0 {
+            return Err(Error::BadStructure(
+                "GPOS/MarkLigPos: markClassCount is zero",
+            ));
+        }
+        let mark_coverage = Coverage::parse(&bytes[mark_coverage_off..])?;
+        let ligature_coverage = Coverage::parse(&bytes[ligature_coverage_off..])?;
+        // ligatureCount is the first uint16 of the LigatureArray table; it
+        // is followed by ligatureCount Offset16s to LigatureAttach tables.
+        let ligature_count = read_u16(bytes, ligature_array_off)?;
+        // Validate the LigatureArray offset-array extent: ligatureCount
+        // Offset16s following the 2-byte ligatureCount.
+        let offsets_bytes = (ligature_count as usize)
+            .checked_mul(2)
+            .ok_or(Error::BadStructure(
+                "GPOS/MarkLigPos: LigatureArray size overflow",
+            ))?;
+        let need = ligature_array_off
+            .checked_add(2)
+            .and_then(|v| v.checked_add(offsets_bytes))
+            .ok_or(Error::BadStructure(
+                "GPOS/MarkLigPos: LigatureArray extent overflow",
+            ))?;
+        if need > bytes.len() {
+            return Err(Error::UnexpectedEof);
+        }
+        Ok(Self {
+            bytes,
+            mark_coverage,
+            ligature_coverage,
+            mark_class_count,
+            mark_array_off,
+            ligature_array_off,
+            ligature_count,
+        })
+    }
+
+    /// Subtable format discriminant (always `1`).
+    pub fn format(&self) -> u16 {
+        1
+    }
+
+    /// `markClassCount` — number of distinct mark classes.
+    pub fn mark_class_count(&self) -> u16 {
+        self.mark_class_count
+    }
+
+    /// The mark [`Coverage`] table (lists every mark glyph).
+    pub fn mark_coverage(&self) -> Coverage<'a> {
+        self.mark_coverage
+    }
+
+    /// The ligature [`Coverage`] table (lists every ligature glyph).
+    pub fn ligature_coverage(&self) -> Coverage<'a> {
+        self.ligature_coverage
+    }
+
+    /// The decoded [`MarkRecord`] for `mark_glyph`, or `None` if the
+    /// glyph is not in the mark Coverage table.
+    ///
+    /// The MarkArray's `markCount` is required by the spec to equal the
+    /// mark-Coverage glyph count, so the Coverage Index directly indexes
+    /// the record array.
+    pub fn mark_record(&self, mark_glyph: u16) -> Option<Result<MarkRecord, Error>> {
+        let idx = self.mark_coverage.index_of(mark_glyph)?;
+        Some(self.mark_record_at(idx))
+    }
+
+    /// Resolve MarkRecord at mark-Coverage index `idx`.
+    fn mark_record_at(&self, idx: u16) -> Result<MarkRecord, Error> {
+        // MarkArray: uint16 markCount, then markCount MarkRecords of
+        // 4 bytes each (uint16 markClass + Offset16 markAnchorOffset),
+        // the offset being from the start of the MarkArray table.
+        let mark_count = read_u16(self.bytes, self.mark_array_off)?;
+        if idx >= mark_count {
+            return Err(Error::BadStructure(
+                "GPOS/MarkLigPos: mark coverage index >= markCount",
+            ));
+        }
+        let rec_off = self.mark_array_off + 2 + idx as usize * 4;
+        let mark_class = read_u16(self.bytes, rec_off)?;
+        if mark_class >= self.mark_class_count {
+            return Err(Error::BadStructure(
+                "GPOS/MarkLigPos: markClass >= markClassCount",
+            ));
+        }
+        let anchor_off = read_u16(self.bytes, rec_off + 2)? as usize;
+        // A NULL markAnchorOffset is not meaningful for a mark (the spec
+        // requires every mark to have an anchor).
+        if anchor_off == 0 {
+            return Err(Error::BadStructure(
+                "GPOS/MarkLigPos: NULL mark anchor offset",
+            ));
+        }
+        let anchor = Anchor::parse(self.bytes, self.mark_array_off + anchor_off)?;
+        Ok(MarkRecord { mark_class, anchor })
+    }
+
+    /// `componentCount` for the ligature glyph `lig_glyph` — the number of
+    /// (virtual) components the ligature carries attachment data for.
+    ///
+    /// Returns:
+    /// * `None` — `lig_glyph` is not in the ligature Coverage table.
+    /// * `Some(Err(_))` — the on-disk records are malformed.
+    /// * `Some(Ok(count))` — the component count.
+    pub fn component_count(&self, lig_glyph: u16) -> Option<Result<u16, Error>> {
+        let idx = self.ligature_coverage.index_of(lig_glyph)?;
+        Some(self.component_count_at(idx))
+    }
+
+    /// Resolve the byte offset of the LigatureAttach table at
+    /// ligature-Coverage index `idx`.
+    fn ligature_attach_off(&self, idx: u16) -> Result<usize, Error> {
+        if idx >= self.ligature_count {
+            return Err(Error::BadStructure(
+                "GPOS/MarkLigPos: ligature coverage index >= ligatureCount",
+            ));
+        }
+        // LigatureArray: uint16 ligatureCount, then ligatureCount Offset16s
+        // to LigatureAttach tables, the offsets being from the start of
+        // the LigatureArray table.
+        let off_field = self.ligature_array_off + 2 + idx as usize * 2;
+        let attach_off = read_u16(self.bytes, off_field)? as usize;
+        if attach_off == 0 {
+            return Err(Error::BadStructure(
+                "GPOS/MarkLigPos: NULL ligatureAttach offset",
+            ));
+        }
+        let attach_off =
+            self.ligature_array_off
+                .checked_add(attach_off)
+                .ok_or(Error::BadStructure(
+                    "GPOS/MarkLigPos: ligatureAttach offset overflow",
+                ))?;
+        if attach_off >= self.bytes.len() {
+            return Err(Error::BadStructure(
+                "GPOS/MarkLigPos: ligatureAttach offset out of range",
+            ));
+        }
+        Ok(attach_off)
+    }
+
+    /// Resolve the component count at ligature-Coverage index `idx`,
+    /// validating the LigatureAttach extent.
+    fn component_count_at(&self, idx: u16) -> Result<u16, Error> {
+        let attach_off = self.ligature_attach_off(idx)?;
+        // LigatureAttach: uint16 componentCount, then componentCount
+        // ComponentRecords; each ComponentRecord is markClassCount
+        // Offset16 anchor offsets.
+        let component_count = read_u16(self.bytes, attach_off)?;
+        let record_size = (self.mark_class_count as usize)
+            .checked_mul(2)
+            .ok_or(Error::BadStructure("GPOS/MarkLigPos: record size overflow"))?;
+        let records_bytes =
+            (component_count as usize)
+                .checked_mul(record_size)
+                .ok_or(Error::BadStructure(
+                    "GPOS/MarkLigPos: ComponentRecords size overflow",
+                ))?;
+        let need = attach_off
+            .checked_add(2)
+            .and_then(|v| v.checked_add(records_bytes))
+            .ok_or(Error::BadStructure(
+                "GPOS/MarkLigPos: LigatureAttach extent overflow",
+            ))?;
+        if need > self.bytes.len() {
+            return Err(Error::UnexpectedEof);
+        }
+        Ok(component_count)
+    }
+
+    /// The ligature-component [`Anchor`] for ligature glyph `lig_glyph`,
+    /// component `component`, and mark class `mark_class`.
+    ///
+    /// Returns:
+    /// * `None` — `lig_glyph` is not in the ligature Coverage table.
+    /// * `Some(Ok(None))` — the ComponentRecord's anchor offset for that
+    ///   class is NULL (the spec permits a component to omit an anchor for
+    ///   a class, in which case no adjustment applies for marks of that
+    ///   class on that component).
+    /// * `Some(Ok(Some(Anchor)))` — the decoded component anchor.
+    /// * `Some(Err(_))` — the on-disk records are malformed, or
+    ///   `component`/`mark_class` is out of range.
+    pub fn ligature_anchor(
+        &self,
+        lig_glyph: u16,
+        component: u16,
+        mark_class: u16,
+    ) -> Option<Result<Option<Anchor>, Error>> {
+        let idx = self.ligature_coverage.index_of(lig_glyph)?;
+        Some(self.ligature_anchor_at(idx, component, mark_class))
+    }
+
+    /// Resolve the component anchor at ligature-Coverage index `idx` for
+    /// `(component, mark_class)`.
+    fn ligature_anchor_at(
+        &self,
+        idx: u16,
+        component: u16,
+        mark_class: u16,
+    ) -> Result<Option<Anchor>, Error> {
+        if mark_class >= self.mark_class_count {
+            return Err(Error::BadStructure(
+                "GPOS/MarkLigPos: markClass >= markClassCount",
+            ));
+        }
+        let attach_off = self.ligature_attach_off(idx)?;
+        let component_count = read_u16(self.bytes, attach_off)?;
+        if component >= component_count {
+            return Err(Error::BadStructure(
+                "GPOS/MarkLigPos: component >= componentCount",
+            ));
+        }
+        // ComponentRecord array begins after the 2-byte componentCount;
+        // each record is markClassCount Offset16s, the anchor offsets being
+        // from the start of the LigatureAttach table.
+        let record_size = self.mark_class_count as usize * 2;
+        let rec_off = attach_off + 2 + component as usize * record_size;
+        let anchor_off = read_u16(self.bytes, rec_off + mark_class as usize * 2)? as usize;
+        if anchor_off == 0 {
+            return Ok(None);
+        }
+        let anchor_pos = attach_off
+            .checked_add(anchor_off)
+            .ok_or(Error::BadStructure(
+                "GPOS/MarkLigPos: ligature anchor offset overflow",
+            ))?;
+        let anchor = Anchor::parse(self.bytes, anchor_pos)?;
+        Ok(Some(anchor))
+    }
+
+    /// Compute the attachment geometry for the ordered triple
+    /// `(mark_glyph, lig_glyph, component)`.
+    ///
+    /// `component` is the zero-based index of the ligature component the
+    /// mark is associated with; the spec requires the text-layout client
+    /// to track this association from the original character string, as it
+    /// is not derivable from the font data alone.
+    ///
+    /// Returns:
+    /// * `None` — the mark is not covered, the ligature is not covered, or
+    ///   the identified component has no (non-NULL) anchor for the mark's
+    ///   class (no adjustment applies).
+    /// * `Some(Err(_))` — the on-disk records are malformed, or
+    ///   `component` is out of range for the ligature.
+    /// * `Some(Ok(LigatureAttachment))` — the mark + component anchors a
+    ///   shaper aligns to position the mark over the ligature component.
+    pub fn attachment(
+        &self,
+        mark_glyph: u16,
+        lig_glyph: u16,
+        component: u16,
+    ) -> Option<Result<LigatureAttachment, Error>> {
+        let mark = match self.mark_record(mark_glyph)? {
+            Ok(m) => m,
+            Err(e) => return Some(Err(e)),
+        };
+        let lig = match self.ligature_anchor(lig_glyph, component, mark.mark_class)? {
+            Ok(Some(a)) => a,
+            Ok(None) => return None,
+            Err(e) => return Some(Err(e)),
+        };
+        Some(Ok(LigatureAttachment {
+            mark_class: mark.mark_class,
+            component,
+            mark_anchor: mark.anchor,
+            ligature_anchor: lig,
         }))
     }
 }
@@ -1978,6 +2351,27 @@ impl<'a> GposTable<'a> {
         }
         let bytes = lk.subtable_bytes(sub_i)?;
         Some(MarkMarkPos::parse(bytes))
+    }
+
+    /// Decode subtable `sub_i` of lookup `lookup_i` as a [`MarkLigPos`]
+    /// (`GposLookupType = 5`, mark-to-ligature attachment positioning).
+    ///
+    /// Returns:
+    /// * `None` — `lookup_i` or `sub_i` is out of range, or the
+    ///   referenced subtable bytes are unreachable.
+    /// * `Some(Err(Error::BadStructure))` — the lookup is not declared
+    ///   as `GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE`, or the subtable bytes
+    ///   are malformed.
+    /// * `Some(Ok(MarkLigPos))` — the typed subtable view.
+    pub fn mark_lig_pos(&self, lookup_i: u16, sub_i: u16) -> Option<Result<MarkLigPos<'a>, Error>> {
+        let lk = self.lookup(lookup_i)?;
+        if lk.lookup_type() != GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE {
+            return Some(Err(Error::BadStructure(
+                "GPOS/MarkLigPos: lookup is not type 5",
+            )));
+        }
+        let bytes = lk.subtable_bytes(sub_i)?;
+        Some(MarkLigPos::parse(bytes))
     }
 }
 
@@ -3345,6 +3739,271 @@ mod tests {
         let cp2 = ep.as_cursive_pos().unwrap();
         let at2 = cp2.attachment(10, 11).unwrap().unwrap();
         assert_eq!(at2.entry_anchor.x, 8);
+        // Wrong as_* resolver → Err.
+        assert!(ep.as_single_pos().is_err());
+    }
+
+    // -- MarkLigPos (Lookup Type 5) --------------------------------------
+
+    /// Build a standalone MarkLigPosFormat1 subtable with markClassCount=2:
+    ///   mark Coverage {10, 11}; ligature Coverage {20}
+    ///   mark 10 → class 0, anchor (10,200)
+    ///   mark 11 → class 1, anchor (15,-50)
+    ///   ligature 20 has 2 components:
+    ///     comp0: class0 anchor (30,210), class1 anchor (32,-40)
+    ///     comp1: class0 anchor (33,205), class1 anchor NULL
+    fn markligpos_subtable() -> Vec<u8> {
+        let mut b: Vec<u8> = Vec::new();
+        // Header (12 bytes); patch offsets after layout.
+        b.extend_from_slice(&be(1)); // format
+        b.extend_from_slice(&be(0)); // markCoverageOffset (patch)
+        b.extend_from_slice(&be(0)); // ligatureCoverageOffset (patch)
+        b.extend_from_slice(&be(2)); // markClassCount = 2
+        b.extend_from_slice(&be(0)); // markArrayOffset (patch)
+        b.extend_from_slice(&be(0)); // ligatureArrayOffset (patch)
+
+        // markCoverage (format 1: {10, 11}).
+        let mark_cov_off = b.len();
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(2));
+        b.extend_from_slice(&be(10));
+        b.extend_from_slice(&be(11));
+
+        // ligatureCoverage (format 1: {20}).
+        let lig_cov_off = b.len();
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(20));
+
+        // MarkArray: markCount=2, two MarkRecords (4 bytes each), then two
+        // Anchor tables (format 1, 6 bytes each).
+        let mark_array_off = b.len();
+        b.extend_from_slice(&be(2)); // markCount
+                                     // records 2 + 2*4 = 10 bytes; anchor0 @10, anchor1 @16
+        b.extend_from_slice(&be(0)); // record0.markClass = 0
+        b.extend_from_slice(&be(10)); // record0.markAnchorOffset (rel array)
+        b.extend_from_slice(&be(1)); // record1.markClass = 1
+        b.extend_from_slice(&be(16)); // record1.markAnchorOffset (rel array)
+                                      // anchor0 (10,200)
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&(10i16).to_be_bytes());
+        b.extend_from_slice(&(200i16).to_be_bytes());
+        // anchor1 (15,-50)
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&(15i16).to_be_bytes());
+        b.extend_from_slice(&(-50i16).to_be_bytes());
+
+        // LigatureArray: ligatureCount=1, one Offset16 to a LigatureAttach
+        // table (relative to LigatureArray start).
+        let lig_array_off = b.len();
+        b.extend_from_slice(&be(1)); // ligatureCount
+        b.extend_from_slice(&be(4)); // ligatureAttachOffset (rel array): 2 + 1*2 = 4
+
+        // LigatureAttach table at lig_array_off + 4:
+        //   componentCount=2, then 2 ComponentRecords (markClassCount=2
+        //   Offset16s = 4 bytes each), then anchors.
+        // record bytes: 2 + 2*4 = 10; anchors follow at table-rel:
+        //   comp0c0 @10, comp0c1 @16, comp1c0 @22
+        b.extend_from_slice(&be(2)); // componentCount
+        b.extend_from_slice(&be(10)); // comp0, class0 anchorOffset (rel attach)
+        b.extend_from_slice(&be(16)); // comp0, class1 anchorOffset
+        b.extend_from_slice(&be(22)); // comp1, class0 anchorOffset
+        b.extend_from_slice(&be(0)); // comp1, class1 anchorOffset = NULL
+                                     // comp0 class0 anchor (30,210)
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&(30i16).to_be_bytes());
+        b.extend_from_slice(&(210i16).to_be_bytes());
+        // comp0 class1 anchor (32,-40)
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&(32i16).to_be_bytes());
+        b.extend_from_slice(&(-40i16).to_be_bytes());
+        // comp1 class0 anchor (33,205)
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&(33i16).to_be_bytes());
+        b.extend_from_slice(&(205i16).to_be_bytes());
+
+        // Patch header offsets.
+        b[2..4].copy_from_slice(&be(mark_cov_off as u16));
+        b[4..6].copy_from_slice(&be(lig_cov_off as u16));
+        b[8..10].copy_from_slice(&be(mark_array_off as u16));
+        b[10..12].copy_from_slice(&be(lig_array_off as u16));
+        b
+    }
+
+    #[test]
+    fn markligpos_parses_and_resolves_anchors() {
+        let sub = markligpos_subtable();
+        let mlp = MarkLigPos::parse(&sub).unwrap();
+        assert_eq!(mlp.format(), 1);
+        assert_eq!(mlp.mark_class_count(), 2);
+        assert!(mlp.mark_coverage().contains(10));
+        assert!(mlp.ligature_coverage().contains(20));
+
+        // Mark records.
+        let m0 = mlp.mark_record(10).unwrap().unwrap();
+        assert_eq!(m0.mark_class, 0);
+        assert_eq!((m0.anchor.x, m0.anchor.y), (10, 200));
+        let m1 = mlp.mark_record(11).unwrap().unwrap();
+        assert_eq!(m1.mark_class, 1);
+        assert_eq!((m1.anchor.x, m1.anchor.y), (15, -50));
+        // Uncovered mark.
+        assert!(mlp.mark_record(99).is_none());
+
+        // Component count.
+        assert_eq!(mlp.component_count(20).unwrap().unwrap(), 2);
+        assert!(mlp.component_count(99).is_none());
+
+        // Ligature component anchors per (component, class).
+        let c0k0 = mlp.ligature_anchor(20, 0, 0).unwrap().unwrap().unwrap();
+        assert_eq!((c0k0.x, c0k0.y), (30, 210));
+        let c0k1 = mlp.ligature_anchor(20, 0, 1).unwrap().unwrap().unwrap();
+        assert_eq!((c0k1.x, c0k1.y), (32, -40));
+        let c1k0 = mlp.ligature_anchor(20, 1, 0).unwrap().unwrap().unwrap();
+        assert_eq!((c1k0.x, c1k0.y), (33, 205));
+        // comp1 class1 is a NULL offset → Ok(None).
+        assert!(mlp.ligature_anchor(20, 1, 1).unwrap().unwrap().is_none());
+        // Uncovered ligature.
+        assert!(mlp.ligature_anchor(99, 0, 0).is_none());
+        // Out-of-range component → Err.
+        assert!(mlp.ligature_anchor(20, 2, 0).unwrap().is_err());
+        // Out-of-range mark class → Err.
+        assert!(mlp.ligature_anchor(20, 0, 2).unwrap().is_err());
+    }
+
+    #[test]
+    fn markligpos_attachment_selects_component_and_class() {
+        let sub = markligpos_subtable();
+        let mlp = MarkLigPos::parse(&sub).unwrap();
+
+        // Mark 10 (class 0) on ligature 20 component 0 → mark anchor
+        // (10,200), component-0 class-0 anchor (30,210).
+        let at = mlp.attachment(10, 20, 0).unwrap().unwrap();
+        assert_eq!(at.mark_class, 0);
+        assert_eq!(at.component, 0);
+        assert_eq!((at.mark_anchor.x, at.mark_anchor.y), (10, 200));
+        assert_eq!((at.ligature_anchor.x, at.ligature_anchor.y), (30, 210));
+
+        // Mark 11 (class 1) on ligature 20 component 0 → component-0
+        // class-1 anchor (32,-40).
+        let at = mlp.attachment(11, 20, 0).unwrap().unwrap();
+        assert_eq!((at.ligature_anchor.x, at.ligature_anchor.y), (32, -40));
+
+        // Mark 10 (class 0) on ligature 20 component 1 → component-1
+        // class-0 anchor (33,205). Same mark, different component picks a
+        // different base anchor — the defining property of Type 5.
+        let at = mlp.attachment(10, 20, 1).unwrap().unwrap();
+        assert_eq!(at.component, 1);
+        assert_eq!((at.ligature_anchor.x, at.ligature_anchor.y), (33, 205));
+
+        // Mark 11 (class 1) on component 1 → NULL class-1 anchor → no
+        // attachment (None).
+        assert!(mlp.attachment(11, 20, 1).is_none());
+
+        // Uncovered mark → None.
+        assert!(mlp.attachment(99, 20, 0).is_none());
+        // Uncovered ligature → None.
+        assert!(mlp.attachment(10, 99, 0).is_none());
+        // Out-of-range component → Some(Err).
+        assert!(mlp.attachment(10, 20, 5).unwrap().is_err());
+    }
+
+    #[test]
+    fn markligpos_rejects_bad_format() {
+        let mut sub = markligpos_subtable();
+        sub[0..2].copy_from_slice(&be(2)); // format = 2 (undefined)
+        assert!(matches!(
+            MarkLigPos::parse(&sub),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn markligpos_rejects_zero_mark_class_count() {
+        let mut sub = markligpos_subtable();
+        sub[6..8].copy_from_slice(&be(0)); // markClassCount = 0
+        assert!(matches!(
+            MarkLigPos::parse(&sub),
+            Err(Error::BadStructure(_))
+        ));
+    }
+
+    #[test]
+    fn markligpos_rejects_truncated_ligature_array() {
+        // Inflate ligatureCount so the offset array overruns the buffer.
+        let mut sub = markligpos_subtable();
+        let lig_array_off = u16::from_be_bytes([sub[10], sub[11]]) as usize;
+        sub[lig_array_off..lig_array_off + 2].copy_from_slice(&be(9999));
+        assert!(matches!(MarkLigPos::parse(&sub), Err(Error::UnexpectedEof)));
+    }
+
+    #[test]
+    fn markligpos_rejects_truncated_ligature_attach() {
+        // A valid parse, but componentCount inflated so component_count_at
+        // detects the ComponentRecords overrun.
+        let sub = markligpos_subtable();
+        let mlp = MarkLigPos::parse(&sub).unwrap();
+        // Locate the LigatureAttach componentCount field and corrupt it on
+        // a private copy, then re-parse + query.
+        let mut bad = sub.clone();
+        let lig_array_off = u16::from_be_bytes([bad[10], bad[11]]) as usize;
+        let attach_rel =
+            u16::from_be_bytes([bad[lig_array_off + 2], bad[lig_array_off + 3]]) as usize;
+        let attach_off = lig_array_off + attach_rel;
+        bad[attach_off..attach_off + 2].copy_from_slice(&be(9999));
+        let mlp_bad = MarkLigPos::parse(&bad).unwrap();
+        assert!(mlp_bad.component_count(20).unwrap().is_err());
+        // The healthy fixture still resolves cleanly.
+        assert_eq!(mlp.component_count(20).unwrap().unwrap(), 2);
+    }
+
+    #[test]
+    fn markligpos_via_gpos_accessor_and_extension() {
+        // Build a GPOS table whose single lookup is type 5 with the
+        // synthetic MarkLigPos subtable, then resolve via mark_lig_pos.
+        let sub = markligpos_subtable();
+        let mut bytes = vec![0u8; 54];
+        bytes[0..2].copy_from_slice(&be(1));
+        bytes[2..4].copy_from_slice(&be(0));
+        bytes[4..6].copy_from_slice(&be(10));
+        bytes[6..8].copy_from_slice(&be(22));
+        bytes[8..10].copy_from_slice(&be(44));
+        bytes[10..12].copy_from_slice(&be(1));
+        bytes[12..16].copy_from_slice(b"DFLT");
+        bytes[16..18].copy_from_slice(&be(8));
+        bytes[18..20].copy_from_slice(&be(0));
+        bytes[20..22].copy_from_slice(&be(0));
+        bytes[22..24].copy_from_slice(&be(1));
+        bytes[24..28].copy_from_slice(b"mark");
+        bytes[28..30].copy_from_slice(&be(8));
+        bytes[30..32].copy_from_slice(&be(0));
+        bytes[32..34].copy_from_slice(&be(1));
+        bytes[34..36].copy_from_slice(&be(0));
+        bytes[44..46].copy_from_slice(&be(1)); // LookupList count
+        bytes[46..48].copy_from_slice(&be(4)); // lookupOffset
+        bytes[48..50].copy_from_slice(&be(5)); // lookupType = 5
+        bytes[50..52].copy_from_slice(&be(0)); // lookupFlag
+        bytes[52..54].copy_from_slice(&be(1)); // subTableCount
+        bytes.extend_from_slice(&be(8)); // subtableOffset (56 - 48)
+        bytes.extend_from_slice(&sub);
+
+        let g = GposTable::parse(&bytes).unwrap();
+        assert_eq!(g.lookup(0).map(|l| l.lookup_type()), Some(5));
+        let mlp = g.mark_lig_pos(0, 0).unwrap().unwrap();
+        let at = mlp.attachment(10, 20, 1).unwrap().unwrap();
+        assert_eq!((at.ligature_anchor.x, at.ligature_anchor.y), (33, 205));
+        // Wrong-type accessor on a type-5 lookup → Some(Err).
+        assert!(g.mark_base_pos(0, 0).unwrap().is_err());
+
+        // Extension wrapping a type-5 subtable resolves via as_mark_lig_pos.
+        let ext = build_extension_pos(GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE, &sub);
+        let ep = ExtensionPos::parse(&ext).unwrap();
+        assert_eq!(
+            ep.extension_lookup_type(),
+            GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE
+        );
+        let mlp2 = ep.as_mark_lig_pos().unwrap();
+        let at2 = mlp2.attachment(11, 20, 0).unwrap().unwrap();
+        assert_eq!((at2.ligature_anchor.x, at2.ligature_anchor.y), (32, -40));
         // Wrong as_* resolver → Err.
         assert!(ep.as_single_pos().is_err());
     }
