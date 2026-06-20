@@ -50,6 +50,10 @@ use crate::tables::{
     hhea::HheaTable, hmtx::HmtxTable, maxp::MaxpTable, name::NameTable, os2::Os2Table,
 };
 
+pub use crate::tables::context::{
+    ChainedSequenceContext, ChainedSequenceRule, SequenceContext, SequenceLookupRecord,
+    SequenceRule,
+};
 pub use crate::tables::gdef::{
     AttachList, AttachPoint, CaretValue, ClassDef, Coverage, CoverageIter, GlyphClass,
     LigCaretList, LigGlyph, MarkGlyphSets,

@@ -394,8 +394,10 @@ views over:
 - **`GPOS`** — the same header enumeration plus typed decoders for
   single adjustment (type 1), pair adjustment (type 2), cursive
   attachment (type 3), mark-to-base attachment (type 4), mark-to-ligature
-  attachment (type 5), mark-to-mark attachment (type 6), and the
-  extension (type 9) lookups; remaining types stay raw byte slices.
+  attachment (type 5), mark-to-mark attachment (type 6), contextual
+  positioning (type 7), chained contextual positioning (type 8), and the
+  extension (type 9) lookups — every defined GPOS lookup type now has a
+  typed decoder.
   Mark-to-base decodes the shared `Anchor` (formats 1/2/3) and
   MarkArray/MarkRecord primitives and answers `attachment(mark, base)`
   with the `(mark_anchor, base_anchor)` pair a shaper aligns to position
@@ -415,6 +417,15 @@ views over:
   and answers `attachment(first, second)` with the `(exit_anchor,
   entry_anchor)` pair a shaper aligns to join adjacent cursive glyphs;
   either anchor of an EntryExit record may be NULL.
+  Contextual (type 7) and chained contextual (type 8) positioning decode
+  the shared `SequenceContext` / `ChainedSequenceContext` subtables
+  (formats 1 glyph-based, 2 class-based, 3 coverage-based) from
+  `tables::context`; these are identical on disk to the GSUB type-5/6
+  contextual subtables. Each match surfaces its input (and, for chained,
+  backtrack/lookahead) pattern plus the nested-lookup `SequenceLookupRecord`
+  actions (`sequenceIndex` + `lookupListIndex`) a shaper applies — the
+  pattern structure is decoded; nested-lookup resolution and glyph-buffer
+  mutation remain the shaping client's responsibility.
 - **`cmap`** formats 0 / 4 / 6 / 12, `name`, `post` (every version,
   including the full 258-entry standard-Macintosh glyph-name set, so
   formats 1.0 / 2.0 / 2.5 resolve names end-to-end), and `OS/2`
@@ -440,12 +451,12 @@ views over:
   table ships, but the §6 algorithm is not implemented (the spec
   document is not staged). `agl::name_to_codepoints` can absorb it
   without an API change once the spec is available.
-- GSUB / GPOS lookup types not yet given typed decoders (reachable as
-  raw subtable byte windows) — GPOS context/chained (types 7/8); GSUB
-  context/chained (types 5/6) and reverse-chain (type 8) — and the
-  `kern` table. Anchor format-3
-  Device/VariationIndex tables are surfaced as raw offsets only
-  (Device-table decoding is deferred).
+- GSUB lookup types not yet given typed decoders (reachable as raw
+  subtable byte windows) — GSUB context/chained (types 5/6, whose on-disk
+  formats are already decoded by the shared `tables::context` module and
+  need only thin GSUB wrappers) and reverse-chain (type 8) — and the
+  `kern` table. Anchor format-3 Device/VariationIndex tables are surfaced
+  as raw offsets only (Device-table decoding is deferred).
 - (none for `post` — the 258-entry standard-Macintosh glyph-name set is
   now staged and applied: `PostTable::glyph_name` resolves formats 1.0
   (glyph ID → standard name), 2.0 (`glyphNameIndex < 258` → standard,

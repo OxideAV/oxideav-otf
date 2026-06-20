@@ -34,6 +34,7 @@
 //! primitive for its EntryExit records.
 
 use crate::parser::{read_i16, read_u16, read_u32};
+use crate::tables::context::{ChainedSequenceContext, SequenceContext};
 use crate::tables::gdef::{ClassDef, Coverage};
 use crate::tables::layout::{FeatureList, LayoutHeader, Lookup, LookupList, Script, ScriptList};
 use crate::Error;
@@ -939,6 +940,30 @@ impl<'a> ExtensionPos<'a> {
             ));
         }
         MarkLigPos::parse(self.extension_subtable_bytes())
+    }
+
+    /// Resolve the wrapped subtable as a [`SequenceContext`]
+    /// (`extensionLookupType = 7`). `Err(BadStructure)` when the declared
+    /// type disagrees or the wrapped bytes are malformed.
+    pub fn as_context_pos(&self) -> Result<SequenceContext<'a>, Error> {
+        if self.ext_lookup_type != GPOS_LOOKUP_TYPE_CONTEXT {
+            return Err(Error::BadStructure(
+                "GPOS/ExtensionPos: extensionLookupType is not 7",
+            ));
+        }
+        SequenceContext::parse(self.extension_subtable_bytes())
+    }
+
+    /// Resolve the wrapped subtable as a [`ChainedSequenceContext`]
+    /// (`extensionLookupType = 8`). `Err(BadStructure)` when the declared
+    /// type disagrees or the wrapped bytes are malformed.
+    pub fn as_chained_context_pos(&self) -> Result<ChainedSequenceContext<'a>, Error> {
+        if self.ext_lookup_type != GPOS_LOOKUP_TYPE_CHAINED_CONTEXT {
+            return Err(Error::BadStructure(
+                "GPOS/ExtensionPos: extensionLookupType is not 8",
+            ));
+        }
+        ChainedSequenceContext::parse(self.extension_subtable_bytes())
     }
 }
 
@@ -2372,6 +2397,68 @@ impl<'a> GposTable<'a> {
         }
         let bytes = lk.subtable_bytes(sub_i)?;
         Some(MarkLigPos::parse(bytes))
+    }
+
+    /// Decode subtable `sub_i` of lookup `lookup_i` as a contextual
+    /// positioning subtable ([`SequenceContext`], `GposLookupType = 7`).
+    ///
+    /// The three on-disk formats (glyph / class / coverage based) are
+    /// shared with GSUB type 5; see [`SequenceContext`]. Each match
+    /// carries the nested-lookup [`SequenceLookupRecord`]s a shaper
+    /// applies.
+    ///
+    /// Returns:
+    /// * `None` — `lookup_i` or `sub_i` is out of range, or the
+    ///   referenced subtable bytes are unreachable.
+    /// * `Some(Err(Error::BadStructure))` — the lookup is not declared
+    ///   as `GPOS_LOOKUP_TYPE_CONTEXT`, or the subtable bytes are
+    ///   malformed.
+    /// * `Some(Ok(SequenceContext))` — the typed subtable view.
+    ///
+    /// [`SequenceLookupRecord`]: crate::SequenceLookupRecord
+    pub fn context_pos(
+        &self,
+        lookup_i: u16,
+        sub_i: u16,
+    ) -> Option<Result<SequenceContext<'a>, Error>> {
+        let lk = self.lookup(lookup_i)?;
+        if lk.lookup_type() != GPOS_LOOKUP_TYPE_CONTEXT {
+            return Some(Err(Error::BadStructure(
+                "GPOS/SequenceContext: lookup is not type 7",
+            )));
+        }
+        let bytes = lk.subtable_bytes(sub_i)?;
+        Some(SequenceContext::parse(bytes))
+    }
+
+    /// Decode subtable `sub_i` of lookup `lookup_i` as a chained
+    /// contextual positioning subtable ([`ChainedSequenceContext`],
+    /// `GposLookupType = 8`).
+    ///
+    /// The three on-disk formats are shared with GSUB type 6; see
+    /// [`ChainedSequenceContext`]. Each match additionally constrains the
+    /// backtrack and lookahead sequences around the input.
+    ///
+    /// Returns:
+    /// * `None` — `lookup_i` or `sub_i` is out of range, or the
+    ///   referenced subtable bytes are unreachable.
+    /// * `Some(Err(Error::BadStructure))` — the lookup is not declared
+    ///   as `GPOS_LOOKUP_TYPE_CHAINED_CONTEXT`, or the subtable bytes are
+    ///   malformed.
+    /// * `Some(Ok(ChainedSequenceContext))` — the typed subtable view.
+    pub fn chained_context_pos(
+        &self,
+        lookup_i: u16,
+        sub_i: u16,
+    ) -> Option<Result<ChainedSequenceContext<'a>, Error>> {
+        let lk = self.lookup(lookup_i)?;
+        if lk.lookup_type() != GPOS_LOOKUP_TYPE_CHAINED_CONTEXT {
+            return Some(Err(Error::BadStructure(
+                "GPOS/ChainedSequenceContext: lookup is not type 8",
+            )));
+        }
+        let bytes = lk.subtable_bytes(sub_i)?;
+        Some(ChainedSequenceContext::parse(bytes))
     }
 }
 
@@ -4006,5 +4093,111 @@ mod tests {
         assert_eq!((at2.ligature_anchor.x, at2.ligature_anchor.y), (32, -40));
         // Wrong as_* resolver → Err.
         assert!(ep.as_single_pos().is_err());
+    }
+
+    // -- Contextual positioning (Lookup Types 7 / 8) ---------------------
+
+    /// A minimal SequenceContextFormat3 subtable: one input position with
+    /// Coverage {10}, one SequenceLookup record (seqIndex=0, lookup=3).
+    fn seqctx_format3_subtable() -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&be(3)); // format
+        b.extend_from_slice(&be(1)); // glyphCount
+        b.extend_from_slice(&be(1)); // seqLookupCount
+        b.extend_from_slice(&be(0)); // coverageOffset[0] (patch)
+        b.extend_from_slice(&be(0)); // seqLookup.sequenceIndex
+        b.extend_from_slice(&be(3)); // seqLookup.lookupListIndex
+        let cov = b.len();
+        b.extend_from_slice(&be(1)); // coverage format 1
+        b.extend_from_slice(&be(1)); // glyphCount
+        b.extend_from_slice(&be(10)); // glyph 10
+        b[6..8].copy_from_slice(&be(cov as u16));
+        b
+    }
+
+    /// A minimal ChainedSequenceContextFormat3 subtable: empty backtrack,
+    /// input Coverage {10}, empty lookahead, lookup (0, 5).
+    fn chainctx_format3_subtable() -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&be(3)); // format
+        b.extend_from_slice(&be(0)); // backtrackGlyphCount
+        b.extend_from_slice(&be(1)); // inputGlyphCount
+        b.extend_from_slice(&be(0)); // inputCoverageOffset[0] (patch @ 6)
+        b.extend_from_slice(&be(0)); // lookaheadGlyphCount
+        b.extend_from_slice(&be(1)); // seqLookupCount
+        b.extend_from_slice(&be(0)); // seqLookup.sequenceIndex
+        b.extend_from_slice(&be(5)); // seqLookup.lookupListIndex
+        let cov = b.len();
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(10));
+        b[6..8].copy_from_slice(&be(cov as u16));
+        b
+    }
+
+    /// Build a GPOS byte tower whose single lookup has `lookup_type` and
+    /// wraps `sub`.
+    fn gpos_with_lookup(lookup_type: u16, sub: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0u8; 54];
+        bytes[0..2].copy_from_slice(&be(1));
+        bytes[4..6].copy_from_slice(&be(10));
+        bytes[6..8].copy_from_slice(&be(22));
+        bytes[8..10].copy_from_slice(&be(44));
+        bytes[10..12].copy_from_slice(&be(1));
+        bytes[12..16].copy_from_slice(b"DFLT");
+        bytes[16..18].copy_from_slice(&be(8));
+        bytes[22..24].copy_from_slice(&be(1));
+        bytes[24..28].copy_from_slice(b"test");
+        bytes[28..30].copy_from_slice(&be(8));
+        bytes[32..34].copy_from_slice(&be(1));
+        bytes[44..46].copy_from_slice(&be(1)); // LookupList count
+        bytes[46..48].copy_from_slice(&be(4)); // lookupOffset
+        bytes[48..50].copy_from_slice(&be(lookup_type));
+        bytes[52..54].copy_from_slice(&be(1)); // subTableCount
+        bytes.extend_from_slice(&be(8)); // subtableOffset (56 - 48)
+        bytes.extend_from_slice(sub);
+        bytes
+    }
+
+    #[test]
+    fn context_pos_via_gpos_accessor_and_extension() {
+        let sub = seqctx_format3_subtable();
+        let bytes = gpos_with_lookup(GPOS_LOOKUP_TYPE_CONTEXT, &sub);
+        let g = GposTable::parse(&bytes).unwrap();
+        assert_eq!(g.lookup(0).map(|l| l.lookup_type()), Some(7));
+        let ctx = g.context_pos(0, 0).unwrap().unwrap();
+        assert_eq!(ctx.format(), 3);
+        // Wrong-type accessor on a type-7 lookup → Some(Err).
+        assert!(g.chained_context_pos(0, 0).unwrap().is_err());
+
+        // Extension wrapping a type-7 subtable resolves via as_context_pos.
+        let ext = build_extension_pos(GPOS_LOOKUP_TYPE_CONTEXT, &sub);
+        let ep = ExtensionPos::parse(&ext).unwrap();
+        assert_eq!(ep.extension_lookup_type(), GPOS_LOOKUP_TYPE_CONTEXT);
+        let ctx2 = ep.as_context_pos().unwrap();
+        assert_eq!(ctx2.format(), 3);
+        // Wrong as_* resolver → Err.
+        assert!(ep.as_chained_context_pos().is_err());
+    }
+
+    #[test]
+    fn chained_context_pos_via_gpos_accessor_and_extension() {
+        let sub = chainctx_format3_subtable();
+        let bytes = gpos_with_lookup(GPOS_LOOKUP_TYPE_CHAINED_CONTEXT, &sub);
+        let g = GposTable::parse(&bytes).unwrap();
+        assert_eq!(g.lookup(0).map(|l| l.lookup_type()), Some(8));
+        let ctx = g.chained_context_pos(0, 0).unwrap().unwrap();
+        assert_eq!(ctx.format(), 3);
+        // Wrong-type accessor on a type-8 lookup → Some(Err).
+        assert!(g.context_pos(0, 0).unwrap().is_err());
+
+        // Extension wrapping a type-8 subtable resolves via the
+        // as_chained_context_pos resolver.
+        let ext = build_extension_pos(GPOS_LOOKUP_TYPE_CHAINED_CONTEXT, &sub);
+        let ep = ExtensionPos::parse(&ext).unwrap();
+        assert_eq!(ep.extension_lookup_type(), GPOS_LOOKUP_TYPE_CHAINED_CONTEXT);
+        let ctx2 = ep.as_chained_context_pos().unwrap();
+        assert_eq!(ctx2.format(), 3);
+        assert!(ep.as_context_pos().is_err());
     }
 }

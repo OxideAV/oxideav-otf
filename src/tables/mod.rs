@@ -6,6 +6,7 @@
 //! are documented per-module.
 
 pub mod cmap;
+pub mod context;
 pub mod gdef;
 pub mod gpos;
 pub mod gsub;
