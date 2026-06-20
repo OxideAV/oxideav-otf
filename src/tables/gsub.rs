@@ -92,6 +92,7 @@
 //! is deferred to a future round.
 
 use crate::parser::{read_i16, read_u16, read_u32};
+use crate::tables::context::{ChainedSequenceContext, SequenceContext};
 use crate::tables::gdef::Coverage;
 use crate::tables::layout::{FeatureList, LayoutHeader, Lookup, LookupList, Script, ScriptList};
 use crate::Error;
@@ -1378,6 +1379,30 @@ impl<'a> ExtensionSubst<'a> {
         }
         LigatureSubst::parse(self.extension_subtable_bytes())
     }
+
+    /// Resolve the wrapped subtable as a [`SequenceContext`]
+    /// (`extensionLookupType = 5`). `Err(BadStructure)` when the declared
+    /// type disagrees or the wrapped bytes are malformed.
+    pub fn as_context_subst(&self) -> Result<SequenceContext<'a>, Error> {
+        if self.ext_lookup_type != GSUB_LOOKUP_TYPE_CONTEXT {
+            return Err(Error::BadStructure(
+                "GSUB/ExtensionSubst: extensionLookupType is not 5",
+            ));
+        }
+        SequenceContext::parse(self.extension_subtable_bytes())
+    }
+
+    /// Resolve the wrapped subtable as a [`ChainedSequenceContext`]
+    /// (`extensionLookupType = 6`). `Err(BadStructure)` when the declared
+    /// type disagrees or the wrapped bytes are malformed.
+    pub fn as_chained_context_subst(&self) -> Result<ChainedSequenceContext<'a>, Error> {
+        if self.ext_lookup_type != GSUB_LOOKUP_TYPE_CHAINED_CONTEXT {
+            return Err(Error::BadStructure(
+                "GSUB/ExtensionSubst: extensionLookupType is not 6",
+            ));
+        }
+        ChainedSequenceContext::parse(self.extension_subtable_bytes())
+    }
 }
 
 /// Parsed `GSUB` header view.
@@ -1599,6 +1624,65 @@ impl<'a> GsubTable<'a> {
         }
         let bytes = lk.subtable_bytes(sub_i)?;
         Some(ExtensionSubst::parse(bytes))
+    }
+
+    /// Decode subtable `sub_i` of lookup `lookup_i` as a contextual
+    /// substitution subtable ([`SequenceContext`], `GsubLookupType = 5`).
+    ///
+    /// The three on-disk formats (glyph / class / coverage based) are
+    /// shared with GPOS type 7; see [`SequenceContext`]. Each match
+    /// carries the nested-lookup `SequenceLookupRecord`s a shaper applies.
+    ///
+    /// Returns:
+    /// * `None` — `lookup_i` or `sub_i` is out of range, or the
+    ///   referenced subtable bytes are unreachable.
+    /// * `Some(Err(Error::BadStructure))` — the lookup is not declared
+    ///   as `GSUB_LOOKUP_TYPE_CONTEXT`, or the subtable bytes are
+    ///   malformed.
+    /// * `Some(Ok(SequenceContext))` — the typed subtable view.
+    pub fn context_subst(
+        &self,
+        lookup_i: u16,
+        sub_i: u16,
+    ) -> Option<Result<SequenceContext<'a>, Error>> {
+        let lk = self.lookup(lookup_i)?;
+        if lk.lookup_type() != GSUB_LOOKUP_TYPE_CONTEXT {
+            return Some(Err(Error::BadStructure(
+                "GSUB/SequenceContext: lookup is not type 5",
+            )));
+        }
+        let bytes = lk.subtable_bytes(sub_i)?;
+        Some(SequenceContext::parse(bytes))
+    }
+
+    /// Decode subtable `sub_i` of lookup `lookup_i` as a chained
+    /// contextual substitution subtable ([`ChainedSequenceContext`],
+    /// `GsubLookupType = 6`).
+    ///
+    /// The three on-disk formats are shared with GPOS type 8; see
+    /// [`ChainedSequenceContext`]. Each match additionally constrains the
+    /// backtrack and lookahead sequences around the input.
+    ///
+    /// Returns:
+    /// * `None` — `lookup_i` or `sub_i` is out of range, or the
+    ///   referenced subtable bytes are unreachable.
+    /// * `Some(Err(Error::BadStructure))` — the lookup is not declared
+    ///   as `GSUB_LOOKUP_TYPE_CHAINED_CONTEXT`, or the subtable bytes are
+    ///   malformed.
+    /// * `Some(Ok(ChainedSequenceContext))` — the typed subtable view.
+    pub fn chained_context_subst(
+        &self,
+        lookup_i: u16,
+        sub_i: u16,
+    ) -> Option<Result<ChainedSequenceContext<'a>, Error>> {
+        let lk = self.lookup(lookup_i)?;
+        if lk.lookup_type() != GSUB_LOOKUP_TYPE_CHAINED_CONTEXT {
+            return Some(Err(Error::BadStructure(
+                "GSUB/ChainedSequenceContext: lookup is not type 6",
+            )));
+        }
+        let bytes = lk.subtable_bytes(sub_i)?;
+        Some(ChainedSequenceContext::parse(bytes))
     }
 }
 
@@ -3267,5 +3351,112 @@ mod tests {
         assert!(g.extension_subst(0, 1).is_none());
         // Lookup index past the lookupCount.
         assert!(g.extension_subst(99, 0).is_none());
+    }
+
+    // -------------- Contextual substitution (types 5 / 6) --------------
+
+    /// SequenceContextFormat3 subtable: one input position Coverage {10},
+    /// one SequenceLookup record (seqIndex=0, lookupIndex=2).
+    fn seqctx_format3_subtable() -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&be(3)); // format
+        b.extend_from_slice(&be(1)); // glyphCount
+        b.extend_from_slice(&be(1)); // seqLookupCount
+        b.extend_from_slice(&be(0)); // coverageOffset[0] (patch @6)
+        b.extend_from_slice(&be(0)); // seqLookup.sequenceIndex
+        b.extend_from_slice(&be(2)); // seqLookup.lookupListIndex
+        let cov = b.len();
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(10));
+        b[6..8].copy_from_slice(&be(cov as u16));
+        b
+    }
+
+    /// ChainedSequenceContextFormat3 subtable: empty backtrack, input
+    /// Coverage {10}, lookahead Coverage {40}, lookup (0, 4).
+    fn chainctx_format3_subtable() -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&be(3)); // format
+        b.extend_from_slice(&be(0)); // backtrackGlyphCount
+        b.extend_from_slice(&be(1)); // inputGlyphCount
+        b.extend_from_slice(&be(0)); // inputCoverageOffset[0] (patch @6)
+        b.extend_from_slice(&be(1)); // lookaheadGlyphCount
+        b.extend_from_slice(&be(0)); // lookaheadCoverageOffset[0] (patch @10)
+        b.extend_from_slice(&be(1)); // seqLookupCount
+        b.extend_from_slice(&be(0)); // seqLookup.sequenceIndex
+        b.extend_from_slice(&be(4)); // seqLookup.lookupListIndex
+        let inp = b.len();
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(10));
+        let la = b.len();
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(40));
+        b[6..8].copy_from_slice(&be(inp as u16));
+        b[10..12].copy_from_slice(&be(la as u16));
+        b
+    }
+
+    /// Build a minimal GSUB tower whose single lookup has `lookup_type`
+    /// and wraps `sub`.
+    fn gsub_with_lookup(lookup_type: u16, sub: &[u8]) -> Vec<u8> {
+        let head_end = 48 + sub.len();
+        let mut bytes = vec![0u8; head_end];
+        bytes[0..2].copy_from_slice(&be(1));
+        bytes[4..6].copy_from_slice(&be(10));
+        bytes[6..8].copy_from_slice(&be(22));
+        bytes[8..10].copy_from_slice(&be(36));
+        bytes[10..12].copy_from_slice(&be(1));
+        bytes[12..16].copy_from_slice(b"DFLT");
+        bytes[16..18].copy_from_slice(&be(8));
+        bytes[22..24].copy_from_slice(&be(1));
+        bytes[24..28].copy_from_slice(b"test");
+        bytes[28..30].copy_from_slice(&be(8));
+        bytes[32..34].copy_from_slice(&be(1));
+        bytes[36..38].copy_from_slice(&be(1)); // LookupList count
+        bytes[38..40].copy_from_slice(&be(4)); // lookupOffset
+        bytes[40..42].copy_from_slice(&be(lookup_type));
+        bytes[44..46].copy_from_slice(&be(1)); // subTableCount
+        bytes[46..48].copy_from_slice(&be(8)); // subtableOffset
+        bytes[48..head_end].copy_from_slice(sub);
+        bytes
+    }
+
+    #[test]
+    fn context_subst_via_gsub_accessor_and_extension() {
+        let sub = seqctx_format3_subtable();
+        let bytes = gsub_with_lookup(GSUB_LOOKUP_TYPE_CONTEXT, &sub);
+        let g = GsubTable::parse(&bytes).unwrap();
+        assert_eq!(g.lookup(0).map(|l| l.lookup_type()), Some(5));
+        let ctx = g.context_subst(0, 0).unwrap().unwrap();
+        assert_eq!(ctx.format(), 3);
+        // Wrong-type accessor → Some(Err).
+        assert!(g.chained_context_subst(0, 0).unwrap().is_err());
+
+        let ext = build_extension_subst(GSUB_LOOKUP_TYPE_CONTEXT, &sub);
+        let ep = ExtensionSubst::parse(&ext).unwrap();
+        assert_eq!(ep.extension_lookup_type(), GSUB_LOOKUP_TYPE_CONTEXT);
+        assert_eq!(ep.as_context_subst().unwrap().format(), 3);
+        assert!(ep.as_chained_context_subst().is_err());
+    }
+
+    #[test]
+    fn chained_context_subst_via_gsub_accessor_and_extension() {
+        let sub = chainctx_format3_subtable();
+        let bytes = gsub_with_lookup(GSUB_LOOKUP_TYPE_CHAINED_CONTEXT, &sub);
+        let g = GsubTable::parse(&bytes).unwrap();
+        assert_eq!(g.lookup(0).map(|l| l.lookup_type()), Some(6));
+        let ctx = g.chained_context_subst(0, 0).unwrap().unwrap();
+        assert_eq!(ctx.format(), 3);
+        // Wrong-type accessor → Some(Err).
+        assert!(g.context_subst(0, 0).unwrap().is_err());
+
+        let ext = build_extension_subst(GSUB_LOOKUP_TYPE_CHAINED_CONTEXT, &sub);
+        let ep = ExtensionSubst::parse(&ext).unwrap();
+        assert_eq!(ep.extension_lookup_type(), GSUB_LOOKUP_TYPE_CHAINED_CONTEXT);
+        assert_eq!(ep.as_chained_context_subst().unwrap().format(), 3);
+        assert!(ep.as_context_subst().is_err());
     }
 }

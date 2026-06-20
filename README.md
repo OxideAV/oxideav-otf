@@ -388,9 +388,13 @@ views over:
   (`glyph_class` / `mark_attach_class`); `itemVarStore` is surfaced as a
   raw offset only.
 - **`GSUB`** — script / feature / lookup-list enumeration plus typed
-  decoders for single (type 1), multiple (type 2), and the extension
-  (type 7) lookup formats; remaining lookup types are reachable as raw
-  subtable byte windows.
+  decoders for single (type 1), multiple (type 2), alternate (type 3),
+  ligature (type 4), contextual (type 5), chained contextual (type 6),
+  and the extension (type 7) lookup formats; only reverse-chaining single
+  substitution (type 8) remains reachable as raw subtable byte windows.
+  Contextual (type 5) and chained contextual (type 6) reuse the same
+  `tables::context` `SequenceContext` / `ChainedSequenceContext` decoders
+  shared with GPOS types 7/8.
 - **`GPOS`** — the same header enumeration plus typed decoders for
   single adjustment (type 1), pair adjustment (type 2), cursive
   attachment (type 3), mark-to-base attachment (type 4), mark-to-ligature
@@ -452,11 +456,10 @@ views over:
   document is not staged). `agl::name_to_codepoints` can absorb it
   without an API change once the spec is available.
 - GSUB lookup types not yet given typed decoders (reachable as raw
-  subtable byte windows) — GSUB context/chained (types 5/6, whose on-disk
-  formats are already decoded by the shared `tables::context` module and
-  need only thin GSUB wrappers) and reverse-chain (type 8) — and the
-  `kern` table. Anchor format-3 Device/VariationIndex tables are surfaced
-  as raw offsets only (Device-table decoding is deferred).
+  subtable byte windows) — only reverse-chaining single substitution
+  (type 8) remains — and the `kern` table. Anchor format-3
+  Device/VariationIndex tables are surfaced as raw offsets only
+  (Device-table decoding is deferred).
 - (none for `post` — the 258-entry standard-Macintosh glyph-name set is
   now staged and applied: `PostTable::glyph_name` resolves formats 1.0
   (glyph ID → standard name), 2.0 (`glyphNameIndex < 258` → standard,
