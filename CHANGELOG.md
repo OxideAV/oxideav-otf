@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- support **`cmap` subtable format 13** (many-to-one range mappings).
+  Format 13 shares format 12's on-disk layout but maps every codepoint
+  in a `ConstantMapGroup` `[startCharCode, endCharCode]` to the same
+  `glyphID` (the "last resort" / fallback subtable). It is binary-
+  searched like format 12 and ranked below every real-coverage format,
+  so it only wins subtable selection when nothing better is present.
+
 - decode **Device and VariationIndex tables** (`tables::device`). A
   `Device` table (deltaFormat 1 / 2 / 3) decodes its packed 2- / 4- /
   8-bit signed per-ppem deltas — `delta(ppem)` answers the signed pixel

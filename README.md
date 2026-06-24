@@ -448,10 +448,11 @@ views over:
   Reachable through `Anchor::x_device` / `y_device`,
   `ValueRecord::{x,y}_{placement,advance}_device`, and
   `CaretValue::device`.
-- **`cmap`** formats 0 / 4 / 6 / 12, `name`, `post` (every version,
-  including the full 258-entry standard-Macintosh glyph-name set, so
-  formats 1.0 / 2.0 / 2.5 resolve names end-to-end), and `OS/2`
-  versions 0–5.
+- **`cmap`** formats 0 / 4 / 6 / 12 / 13 (format 13 = the "last resort"
+  many-to-one constant-glyph ranges, ranked below every real-coverage
+  format), `name`, `post` (every version, including the full 258-entry
+  standard-Macintosh glyph-name set, so formats 1.0 / 2.0 / 2.5 resolve
+  names end-to-end), and `OS/2` versions 0–5.
 - **AGL** — the static Adobe Glyph List 2.0 table for glyph-name
   resolution (`agl_glyph_name`).
 - **CFF2** (variable-font CFF, OpenType 1.9.1) — header, Top DICT,

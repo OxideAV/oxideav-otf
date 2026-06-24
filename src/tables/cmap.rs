@@ -2,8 +2,10 @@
 //!
 //! We pick a single subtable at parse time (preferred order: 32-bit
 //! formats first, BMP formats second, legacy single-byte last) and
-//! run all `lookup` calls through it. Round-1 supports formats
-//! 0, 4, 6, 12.
+//! run all `lookup` calls through it. Supported formats: 0, 4, 6, 12,
+//! and 13 (the "last resort" many-to-one constant-glyph ranges; ranked
+//! below every real-coverage format so it only wins when nothing
+//! better is present).
 
 use crate::parser::{read_u16, read_u32};
 use crate::Error;
@@ -19,6 +21,7 @@ enum Subtable<'a> {
     Format4(&'a [u8]),
     Format6(&'a [u8]),
     Format12(&'a [u8]),
+    Format13(&'a [u8]),
 }
 
 impl<'a> CmapTable<'a> {
@@ -55,6 +58,7 @@ impl<'a> CmapTable<'a> {
                 4 => Some(Subtable::Format4(sub)),
                 6 => Some(Subtable::Format6(sub)),
                 12 => Some(Subtable::Format12(sub)),
+                13 => Some(Subtable::Format13(sub)),
                 _ => None,
             };
             if let Some(c) = candidate {
@@ -78,6 +82,7 @@ impl<'a> CmapTable<'a> {
             Subtable::Format4(b) => lookup_format4(b, codepoint),
             Subtable::Format6(b) => lookup_format6(b, codepoint),
             Subtable::Format12(b) => lookup_format12(b, codepoint),
+            Subtable::Format13(b) => lookup_format13(b, codepoint),
         }
     }
 }
@@ -96,6 +101,11 @@ fn subtable_rank(format: u16, platform: u16, encoding: u16) -> i32 {
         4 => 300,
         6 => 200,
         0 => 100,
+        // Format 13 is a "last resort" / fallback subtable (it maps wide
+        // ranges to a single glyph), so it is ranked below every
+        // real-coverage format — it only wins when nothing better
+        // exists.
+        13 => 50,
         _ => 0,
     };
     let platform_score = match (platform, encoding) {
@@ -226,6 +236,38 @@ fn lookup_format12(bytes: &[u8], codepoint: u32) -> Option<u16> {
     None
 }
 
+/// cmap subtable format 13 (many-to-one range mappings). Identical
+/// on-disk layout to format 12 except every codepoint in a
+/// `ConstantMapGroup` `[startCharCode, endCharCode]` maps to the SAME
+/// `glyphID` (not a sequential run). Groups are sorted by start code,
+/// so we binary-search them.
+fn lookup_format13(bytes: &[u8], codepoint: u32) -> Option<u16> {
+    let num_groups = read_u32(bytes, 12).ok()? as usize;
+    if 16 + num_groups * 12 > bytes.len() {
+        return None;
+    }
+    let mut lo = 0usize;
+    let mut hi = num_groups;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let off = 16 + mid * 12;
+        let start = read_u32(bytes, off).ok()?;
+        let end = read_u32(bytes, off + 4).ok()?;
+        if codepoint < start {
+            hi = mid;
+        } else if codepoint > end {
+            lo = mid + 1;
+        } else {
+            let glyph = read_u32(bytes, off + 8).ok()?;
+            if glyph == 0 || glyph > u16::MAX as u32 {
+                return None;
+            }
+            return Some(glyph as u16);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +310,51 @@ mod tests {
         assert_eq!(cmap.lookup('B' as u32), Some(101));
         assert_eq!(cmap.lookup('C' as u32), Some(102));
         assert_eq!(cmap.lookup('D' as u32), None);
+    }
+
+    /// Build a cmap whose single subtable lives at offset 12, using the
+    /// (platform 3, encoding 10) UCS-4 encoding so a format-12/13
+    /// subtable ranks highest.
+    fn build_cmap_ucs4(sub: &[u8]) -> Vec<u8> {
+        let mut out = vec![0u8; 12];
+        out[0..2].copy_from_slice(&0u16.to_be_bytes()); // version
+        out[2..4].copy_from_slice(&1u16.to_be_bytes()); // numTables
+        out[4..6].copy_from_slice(&3u16.to_be_bytes()); // platformID
+        out[6..8].copy_from_slice(&10u16.to_be_bytes()); // encodingID (UCS-4)
+        out[8..12].copy_from_slice(&12u32.to_be_bytes()); // subtableOffset
+        out.extend_from_slice(sub);
+        out
+    }
+
+    #[test]
+    fn format13_constant_glyph_ranges() {
+        // Two ConstantMapGroups: [0x4E00..=0x4FFF] → glyph 1,
+        // [0x20000..=0x2A6DF] → glyph 2. Format 13 maps EVERY codepoint
+        // in a group to the same glyph.
+        let groups: [(u32, u32, u32); 2] = [(0x4E00, 0x4FFF, 1), (0x20000, 0x2A6DF, 2)];
+        let length = 16 + groups.len() * 12;
+        let mut sub = vec![0u8; length];
+        sub[0..2].copy_from_slice(&13u16.to_be_bytes()); // format
+        sub[4..8].copy_from_slice(&(length as u32).to_be_bytes()); // length
+        sub[12..16].copy_from_slice(&(groups.len() as u32).to_be_bytes()); // numGroups
+        for (i, (s, e, g)) in groups.iter().enumerate() {
+            let off = 16 + i * 12;
+            sub[off..off + 4].copy_from_slice(&s.to_be_bytes());
+            sub[off + 4..off + 8].copy_from_slice(&e.to_be_bytes());
+            sub[off + 8..off + 12].copy_from_slice(&g.to_be_bytes());
+        }
+
+        let cmap_bytes = build_cmap_ucs4(&sub);
+        let cmap = CmapTable::parse(&cmap_bytes).unwrap();
+        // Every codepoint in the first range → glyph 1 (constant).
+        assert_eq!(cmap.lookup(0x4E00), Some(1));
+        assert_eq!(cmap.lookup(0x4F00), Some(1));
+        assert_eq!(cmap.lookup(0x4FFF), Some(1));
+        // Second range → glyph 2.
+        assert_eq!(cmap.lookup(0x20000), Some(2));
+        assert_eq!(cmap.lookup(0x2A6DF), Some(2));
+        // Gap between ranges and out-of-range → None.
+        assert_eq!(cmap.lookup(0x5000), None);
+        assert_eq!(cmap.lookup(0x10000), None);
     }
 }
