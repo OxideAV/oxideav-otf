@@ -448,9 +448,10 @@ views over:
   Reachable through `Anchor::x_device` / `y_device`,
   `ValueRecord::{x,y}_{placement,advance}_device`, and
   `CaretValue::device`.
-- **`cmap`** formats 0 / 4 / 6 / 12 / 13 / 14 (format 13 = the "last
-  resort" many-to-one constant-glyph ranges, ranked below every
-  real-coverage format; format 14 = Unicode Variation Sequences,
+- **`cmap`** formats 0 / 2 / 4 / 6 / 12 / 13 / 14 (format 2 = the legacy
+  high-byte mixed 8-/16-bit CJK mapping; format 13 = the "last resort"
+  many-to-one constant-glyph ranges, ranked below every real-coverage
+  format; format 14 = Unicode Variation Sequences,
   retained alongside the base subtable and queried via
   `Font::glyph_index_variation(base, selector)` /
   `Font::variation_sequences()` — a non-default UVS yields its explicit

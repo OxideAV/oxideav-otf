@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- support **`cmap` subtable format 2** (high-byte mapping through table)
+  — the legacy mixed 8-/16-bit encoding used by CJK code-page fonts. A
+  code point's high byte selects a `SubHeader` via the
+  `subHeaderKeys[256]` array (`subHeader 0` handles single-byte
+  characters), and the low byte indexes that SubHeader's `glyphIdArray`
+  sub-array through `firstCode` / `entryCount` / `idRangeOffset`, with
+  `idDelta` applied modulo 65536 to a non-zero result. Ranked above the
+  single-byte format 0 but below the Unicode formats.
+
 - support **`cmap` subtable format 14** (Unicode Variation Sequences).
   A new `tables::cmap_uvs::CmapUvs` view decodes the format-14 subtable
   (VariationSelector records, DefaultUVS range tables, NonDefaultUVS

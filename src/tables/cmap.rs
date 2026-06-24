@@ -2,10 +2,12 @@
 //!
 //! We pick a single subtable at parse time (preferred order: 32-bit
 //! formats first, BMP formats second, legacy single-byte last) and
-//! run all `lookup` calls through it. Supported formats: 0, 4, 6, 12,
-//! and 13 (the "last resort" many-to-one constant-glyph ranges; ranked
-//! below every real-coverage format so it only wins when nothing
-//! better is present).
+//! run all `lookup` calls through it. Supported formats: 0, 2 (legacy
+//! high-byte CJK mapping), 4, 6, 12, and 13 (the "last resort"
+//! many-to-one constant-glyph ranges; ranked below every real-coverage
+//! format so it only wins when nothing better is present). The
+//! format-14 Unicode Variation Sequences subtable is retained
+//! alongside the chosen base subtable (see [`crate::tables::cmap_uvs`]).
 
 use crate::parser::{read_u16, read_u32};
 use crate::tables::cmap_uvs::CmapUvs;
@@ -24,6 +26,7 @@ pub struct CmapTable<'a> {
 #[derive(Debug, Clone)]
 enum Subtable<'a> {
     Format0(&'a [u8]),
+    Format2(&'a [u8]),
     Format4(&'a [u8]),
     Format6(&'a [u8]),
     Format12(&'a [u8]),
@@ -71,6 +74,7 @@ impl<'a> CmapTable<'a> {
 
             let candidate = match format {
                 0 => Some(Subtable::Format0(sub)),
+                2 => Some(Subtable::Format2(sub)),
                 4 => Some(Subtable::Format4(sub)),
                 6 => Some(Subtable::Format6(sub)),
                 12 => Some(Subtable::Format12(sub)),
@@ -96,6 +100,7 @@ impl<'a> CmapTable<'a> {
     pub fn lookup(&self, codepoint: u32) -> Option<u16> {
         match &self.subtable {
             Subtable::Format0(b) => lookup_format0(b, codepoint),
+            Subtable::Format2(b) => lookup_format2(b, codepoint),
             Subtable::Format4(b) => lookup_format4(b, codepoint),
             Subtable::Format6(b) => lookup_format6(b, codepoint),
             Subtable::Format12(b) => lookup_format12(b, codepoint),
@@ -144,6 +149,9 @@ fn subtable_rank(format: u16, platform: u16, encoding: u16) -> i32 {
         4 => 300,
         6 => 200,
         0 => 100,
+        // Format 2 (legacy high-byte CJK mapping) ranks just above the
+        // single-byte format 0 but below the Unicode formats.
+        2 => 150,
         // Format 13 is a "last resort" / fallback subtable (it maps wide
         // ranges to a single glyph), so it is ranked below every
         // real-coverage format — it only wins when nothing better
@@ -174,6 +182,63 @@ fn lookup_format0(bytes: &[u8], codepoint: u32) -> Option<u16> {
     } else {
         Some(g as u16)
     }
+}
+
+/// cmap subtable format 2 (high-byte mapping through table) — the
+/// legacy mixed 8-/16-bit encoding for CJK code pages. Layout: a
+/// `subHeaderKeys[256]` array (each value = `subHeader index * 8`) at
+/// offset 6, then variable-length `SubHeader[]` and `glyphIdArray[]`.
+///
+/// A code point is split into a high byte and a low byte. `subHeader
+/// 0` is special: it maps single-byte (high byte 0) characters. For a
+/// 2-byte character, `subHeaderKeys[hi]` selects the SubHeader; the low
+/// byte indexes into that SubHeader's `glyphIdArray` sub-array via
+/// `firstCode` / `entryCount` / `idRangeOffset`, then `idDelta` is
+/// applied (mod 65536) to a non-zero result.
+fn lookup_format2(bytes: &[u8], codepoint: u32) -> Option<u16> {
+    if codepoint > 0xFFFF {
+        return None;
+    }
+    let hi = (codepoint >> 8) as usize & 0xFF;
+    let lo = (codepoint & 0xFF) as u16;
+
+    // subHeaderKeys[256] at offset 6 (each a uint16 = subHeader idx * 8).
+    let sub_header_keys_off = 6usize;
+    let key = read_u16(bytes, sub_header_keys_off + hi * 2).ok()?;
+    // SubHeaders array begins right after the 512-byte keys array.
+    let sub_headers_off = sub_header_keys_off + 256 * 2;
+    let sub_header_off = sub_headers_off + key as usize;
+
+    // For a single-byte char with high byte 0, the spec routes the
+    // single byte through subHeader 0 as the "low byte". For a 2-byte
+    // char the second (low) byte is mapped. We always treat `lo` as the
+    // byte mapped through the selected SubHeader. When `key == 0`
+    // (subHeader 0) and the char is single-byte, `hi == 0` already and
+    // `lo` is the single byte — consistent with the spec.
+    let first_code = read_u16(bytes, sub_header_off).ok()?;
+    let entry_count = read_u16(bytes, sub_header_off + 2).ok()?;
+    let id_delta = read_u16(bytes, sub_header_off + 4).ok()? as i16;
+    let id_range_offset = read_u16(bytes, sub_header_off + 6).ok()?;
+
+    // The mapped byte must fall in [firstCode, firstCode + entryCount).
+    if lo < first_code || lo >= first_code.wrapping_add(entry_count) {
+        return None;
+    }
+    let index_in_sub = (lo - first_code) as usize;
+
+    // idRangeOffset is the byte distance from the idRangeOffset word
+    // itself to the glyphIdArray element for firstCode.
+    let id_range_offset_word = sub_header_off + 6;
+    let glyph_off = id_range_offset_word
+        .checked_add(id_range_offset as usize)?
+        .checked_add(index_in_sub * 2)?;
+    let raw = read_u16(bytes, glyph_off).ok()?;
+    if raw == 0 {
+        return None;
+    }
+    // idDelta is applied modulo 65536 to a non-zero glyph value.
+    let g = (raw as i32 + id_delta as i32) & 0xFFFF;
+    Some(g as u16)
 }
 
 fn lookup_format4(bytes: &[u8], codepoint: u32) -> Option<u16> {
@@ -399,5 +464,72 @@ mod tests {
         // Gap between ranges and out-of-range → None.
         assert_eq!(cmap.lookup(0x5000), None);
         assert_eq!(cmap.lookup(0x10000), None);
+    }
+
+    #[test]
+    fn format2_high_byte_mapping() {
+        // Build a format-2 subtable with:
+        //   - subHeader 0 (single-byte): firstCode 0x20, entryCount 2,
+        //     idDelta 0, glyphIdArray {0x20→100, 0x21→101}.
+        //   - high byte 0x81 → subHeader 1 (key = 8): firstCode 0x40,
+        //     entryCount 2, idDelta 0, glyphIdArray {0x40→500, 0x41→501}.
+        //
+        // Layout:
+        //   0/2   format = 2
+        //   2/2   length
+        //   4/2   language = 0
+        //   6/512 subHeaderKeys[256] (all 0 except keys[0x81] = 8)
+        //   518   SubHeader 0 (8 bytes)
+        //   526   SubHeader 1 (8 bytes)
+        //   534   glyphIdArray (single-byte sub-array, 2 u16)
+        //   538   glyphIdArray (2-byte sub-array, 2 u16)
+        let sub_headers_off = 6 + 512;
+        let sh0_off = sub_headers_off; // 518
+        let sh1_off = sh0_off + 8; // 526
+        let gid_single_off = sh1_off + 8; // 534
+        let gid_double_off = gid_single_off + 4; // 538
+        let length = gid_double_off + 4;
+        let mut sub = vec![0u8; length];
+        sub[0..2].copy_from_slice(&2u16.to_be_bytes()); // format
+        sub[2..4].copy_from_slice(&(length as u16).to_be_bytes()); // length
+                                                                   // subHeaderKeys[0x81] = 8 (→ SubHeader 1).
+        let key_off = 6 + 0x81 * 2;
+        sub[key_off..key_off + 2].copy_from_slice(&8u16.to_be_bytes());
+
+        // SubHeader 0: firstCode 0x20, entryCount 2, idDelta 0,
+        // idRangeOffset points from the idRangeOffset word (sh0_off+6) to
+        // gid_single_off.
+        sub[sh0_off..sh0_off + 2].copy_from_slice(&0x20u16.to_be_bytes());
+        sub[sh0_off + 2..sh0_off + 4].copy_from_slice(&2u16.to_be_bytes());
+        sub[sh0_off + 4..sh0_off + 6].copy_from_slice(&0u16.to_be_bytes());
+        let ro0 = (gid_single_off - (sh0_off + 6)) as u16;
+        sub[sh0_off + 6..sh0_off + 8].copy_from_slice(&ro0.to_be_bytes());
+
+        // SubHeader 1: firstCode 0x40, entryCount 2, idDelta 0.
+        sub[sh1_off..sh1_off + 2].copy_from_slice(&0x40u16.to_be_bytes());
+        sub[sh1_off + 2..sh1_off + 4].copy_from_slice(&2u16.to_be_bytes());
+        sub[sh1_off + 4..sh1_off + 6].copy_from_slice(&0u16.to_be_bytes());
+        let ro1 = (gid_double_off - (sh1_off + 6)) as u16;
+        sub[sh1_off + 6..sh1_off + 8].copy_from_slice(&ro1.to_be_bytes());
+
+        // glyphIdArrays.
+        sub[gid_single_off..gid_single_off + 2].copy_from_slice(&100u16.to_be_bytes());
+        sub[gid_single_off + 2..gid_single_off + 4].copy_from_slice(&101u16.to_be_bytes());
+        sub[gid_double_off..gid_double_off + 2].copy_from_slice(&500u16.to_be_bytes());
+        sub[gid_double_off + 2..gid_double_off + 4].copy_from_slice(&501u16.to_be_bytes());
+
+        // Single-byte chars route through subHeader 0.
+        assert_eq!(lookup_format2(&sub, 0x20), Some(100));
+        assert_eq!(lookup_format2(&sub, 0x21), Some(101));
+        // Outside the single-byte subrange → None.
+        assert_eq!(lookup_format2(&sub, 0x22), None);
+        // 2-byte chars 0x8140 / 0x8141 route through subHeader 1.
+        assert_eq!(lookup_format2(&sub, 0x8140), Some(500));
+        assert_eq!(lookup_format2(&sub, 0x8141), Some(501));
+        // Outside the 2-byte subrange → None.
+        assert_eq!(lookup_format2(&sub, 0x8142), None);
+        // A high byte with no subHeader key (0x99 → key 0 = subHeader 0,
+        // low byte 0x00 outside [0x20, 0x22)) → None.
+        assert_eq!(lookup_format2(&sub, 0x9900), None);
     }
 }
