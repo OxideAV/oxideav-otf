@@ -388,10 +388,16 @@ views over:
   (`glyph_class` / `mark_attach_class`); `itemVarStore` is surfaced as a
   raw offset only.
 - **`GSUB`** — script / feature / lookup-list enumeration plus typed
-  decoders for single (type 1), multiple (type 2), alternate (type 3),
-  ligature (type 4), contextual (type 5), chained contextual (type 6),
-  and the extension (type 7) lookup formats; only reverse-chaining single
-  substitution (type 8) remains reachable as raw subtable byte windows.
+  decoders for **every** lookup type: single (type 1), multiple (type 2),
+  alternate (type 3), ligature (type 4), contextual (type 5), chained
+  contextual (type 6), the extension (type 7) wrapper, and
+  reverse-chaining contextual single substitution (type 8). Type 8
+  (`ReverseChainSingleSubst`) decodes the input Coverage →
+  `substituteGlyphIDs` mapping plus the backtrack / lookahead Coverage
+  sequences that gate the match; `substitute(glyph)` answers the output
+  glyph and `backtrack_coverage` / `lookahead_coverage` expose the
+  context (it is reachable through `GsubTable::reverse_chain_single_subst`
+  and the type-7 `ExtensionSubst::as_reverse_chain_single_subst`).
   Contextual (type 5) and chained contextual (type 6) reuse the same
   `tables::context` `SequenceContext` / `ChainedSequenceContext` decoders
   shared with GPOS types 7/8.
@@ -465,11 +471,14 @@ views over:
   table ships, but the §6 algorithm is not implemented (the spec
   document is not staged). `agl::name_to_codepoints` can absorb it
   without an API change once the spec is available.
-- GSUB lookup types not yet given typed decoders (reachable as raw
-  subtable byte windows) — only reverse-chaining single substitution
-  (type 8) remains — and the `kern` table. Anchor format-3
-  Device/VariationIndex tables are surfaced as raw offsets only
-  (Device-table decoding is deferred).
+- Every GSUB lookup type (1–8) now has a typed decoder, including
+  reverse-chaining contextual single substitution (type 8,
+  `ReverseChainSingleSubst`: input Coverage → `substituteGlyphIDs` with
+  backtrack / lookahead Coverage context, reachable through
+  `GsubTable::reverse_chain_single_subst` and the type-7 extension
+  `ExtensionSubst::as_reverse_chain_single_subst`). The `kern` table and
+  Anchor format-3 Device/VariationIndex decoding remain deferred (the
+  latter surfaced as raw offsets only).
 - (none for `post` — the 258-entry standard-Macintosh glyph-name set is
   now staged and applied: `PostTable::glyph_name` resolves formats 1.0
   (glyph ID → standard name), 2.0 (`glyphNameIndex < 258` → standard,

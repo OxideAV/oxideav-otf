@@ -71,10 +71,10 @@ pub use crate::tables::gsub::GsubTable as GsubView;
 pub use crate::tables::gsub::{
     AlternateGlyphIter, AlternateSet, AlternateSubst, AlternateSubstIter, ExtensionSubst, Ligature,
     LigatureComponentIter, LigatureSet, LigatureSubst, LigatureSubstIter, MultipleSubst,
-    MultipleSubstIter, Sequence, SequenceGlyphIter, SingleSubst, SingleSubstIter,
-    GSUB_LOOKUP_TYPE_ALTERNATE, GSUB_LOOKUP_TYPE_CHAINED_CONTEXT, GSUB_LOOKUP_TYPE_CONTEXT,
-    GSUB_LOOKUP_TYPE_EXTENSION, GSUB_LOOKUP_TYPE_LIGATURE, GSUB_LOOKUP_TYPE_MULTIPLE,
-    GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE, GSUB_LOOKUP_TYPE_SINGLE,
+    MultipleSubstIter, ReverseChainSingleSubst, Sequence, SequenceGlyphIter, SingleSubst,
+    SingleSubstIter, GSUB_LOOKUP_TYPE_ALTERNATE, GSUB_LOOKUP_TYPE_CHAINED_CONTEXT,
+    GSUB_LOOKUP_TYPE_CONTEXT, GSUB_LOOKUP_TYPE_EXTENSION, GSUB_LOOKUP_TYPE_LIGATURE,
+    GSUB_LOOKUP_TYPE_MULTIPLE, GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE, GSUB_LOOKUP_TYPE_SINGLE,
 };
 pub use crate::tables::layout::{
     Feature, FeatureList, FeatureListIter, LangSys, Lookup, LookupFlag, LookupList, LookupListIter,

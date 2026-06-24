@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- decode GSUB Lookup Type 8 (reverse chaining contextual single
+  substitution) as a typed `ReverseChainSingleSubst` view over
+  ReverseChainSingleSubstFormat1 — the last GSUB lookup type without a
+  typed decoder. It exposes the input `Coverage`, the backtrack /
+  lookahead Coverage sequences (`backtrack_coverage(i)` /
+  `lookahead_coverage(i)`), and the `substituteGlyphIDs` array;
+  `substitute(glyph)` resolves a covered input to its single output
+  glyph via the Coverage index, leaving the backtrack/lookahead context
+  check to the caller (this is the one lookup applied in reverse order,
+  so it invokes no nested lookups). Reachable through
+  `GsubTable::reverse_chain_single_subst` and the type-7 extension
+  `ExtensionSubst::as_reverse_chain_single_subst`. With this, every GSUB
+  lookup type (1–8) has a typed decoder.
+
 - decode **CFF2 variable-font glyph outlines**. A variation-aware CFF2
   Type 2 CharString interpreter (`cff2::Cff2Interpreter`) now runs the
   path / hint / subroutine operators plus the two CFF2 variation

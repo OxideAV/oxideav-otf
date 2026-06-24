@@ -1403,6 +1403,196 @@ impl<'a> ExtensionSubst<'a> {
         }
         ChainedSequenceContext::parse(self.extension_subtable_bytes())
     }
+
+    /// Resolve the wrapped subtable as a [`ReverseChainSingleSubst`]
+    /// (`extensionLookupType = 8`). `Err(BadStructure)` when the
+    /// declared type disagrees or the wrapped bytes are malformed.
+    pub fn as_reverse_chain_single_subst(&self) -> Result<ReverseChainSingleSubst<'a>, Error> {
+        if self.ext_lookup_type != GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE {
+            return Err(Error::BadStructure(
+                "GSUB/ExtensionSubst: extensionLookupType is not 8",
+            ));
+        }
+        ReverseChainSingleSubst::parse(self.extension_subtable_bytes())
+    }
+}
+
+/// Parsed `ReverseChainSingleSubst` subtable — the GSUB
+/// `lookupType = 8` payload (reverse chaining contextual single
+/// substitution).
+///
+/// This is the only GSUB lookup applied in **reverse** order (last
+/// glyph first), so it cannot itself invoke other lookups: each match
+/// substitutes a single input glyph with a single output glyph, gated
+/// by backtrack + lookahead Coverage sequences. The single on-disk
+/// format (`ReverseChainSingleSubstFormat1`) is:
+///
+/// ```text
+/// uint16  format = 1
+/// Offset16 coverageOffset                          // input coverage
+/// uint16  backtrackGlyphCount
+/// Offset16 backtrackCoverageOffsets[backtrackGlyphCount]   // sequence order
+/// uint16  lookaheadGlyphCount
+/// Offset16 lookaheadCoverageOffsets[lookaheadGlyphCount]   // sequence order
+/// uint16  glyphCount                               // == input Coverage length
+/// uint16  substituteGlyphIDs[glyphCount]           // ordered by Coverage index
+/// ```
+///
+/// All Coverage offsets are from the start of the subtable.
+/// `substitute(glyph)` returns the output glyph for a covered input
+/// (using its Coverage index into `substituteGlyphIDs`); the caller is
+/// responsible for verifying the backtrack/lookahead context around the
+/// glyph using [`Self::backtrack_coverage`] / [`Self::lookahead_coverage`].
+///
+/// Spec: `docs/text/opentype/otspec-gsub.html`
+/// (Reverse Chaining Contextual Single Substitution Format 1).
+#[derive(Debug, Clone, Copy)]
+pub struct ReverseChainSingleSubst<'a> {
+    bytes: &'a [u8],
+    coverage: Coverage<'a>,
+    /// Offset of the `backtrackCoverageOffsets[]` array within `bytes`.
+    backtrack_at: usize,
+    backtrack_count: u16,
+    /// Offset of the `lookaheadCoverageOffsets[]` array within `bytes`.
+    lookahead_at: usize,
+    lookahead_count: u16,
+    /// Offset of the `substituteGlyphIDs[]` array within `bytes`.
+    substitutes_at: usize,
+    glyph_count: u16,
+}
+
+impl<'a> ReverseChainSingleSubst<'a> {
+    /// Parse a ReverseChainSingleSubst subtable from a buffer whose
+    /// first two bytes are the `format` identifier.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let format = read_u16(bytes, 0)?;
+        if format != 1 {
+            return Err(Error::BadStructure(
+                "GSUB/ReverseChainSingleSubst: unknown subtable format",
+            ));
+        }
+        let cov_off = read_u16(bytes, 2)? as usize;
+        if cov_off == 0 || cov_off >= bytes.len() {
+            return Err(Error::BadStructure(
+                "GSUB/ReverseChainSingleSubst: coverageOffset out of range",
+            ));
+        }
+        let coverage = Coverage::parse(&bytes[cov_off..])?;
+
+        // backtrackGlyphCount @ 4, then its offset array.
+        let backtrack_count = read_u16(bytes, 4)?;
+        let backtrack_at = 6usize;
+        let lookahead_count_at = backtrack_at
+            .checked_add(backtrack_count as usize * 2)
+            .ok_or(Error::BadStructure(
+                "GSUB/ReverseChainSingleSubst: backtrack array overflow",
+            ))?;
+        // lookaheadGlyphCount, then its offset array.
+        let lookahead_count = read_u16(bytes, lookahead_count_at)?;
+        let lookahead_at = lookahead_count_at + 2;
+        let glyph_count_at = lookahead_at
+            .checked_add(lookahead_count as usize * 2)
+            .ok_or(Error::BadStructure(
+                "GSUB/ReverseChainSingleSubst: lookahead array overflow",
+            ))?;
+        // glyphCount, then substituteGlyphIDs[glyphCount].
+        let glyph_count = read_u16(bytes, glyph_count_at)?;
+        let substitutes_at = glyph_count_at + 2;
+        let subs_end =
+            substitutes_at
+                .checked_add(glyph_count as usize * 2)
+                .ok_or(Error::BadStructure(
+                    "GSUB/ReverseChainSingleSubst: substitute array overflow",
+                ))?;
+        if subs_end > bytes.len() {
+            return Err(Error::BadStructure(
+                "GSUB/ReverseChainSingleSubst: substitute array past end",
+            ));
+        }
+
+        Ok(Self {
+            bytes,
+            coverage,
+            backtrack_at,
+            backtrack_count,
+            lookahead_at,
+            lookahead_count,
+            substitutes_at,
+            glyph_count,
+        })
+    }
+
+    /// `format` identifier — always `1`.
+    pub fn format(&self) -> u16 {
+        1
+    }
+
+    /// Input [`Coverage`] — the glyphs this subtable can substitute.
+    pub fn coverage(&self) -> Coverage<'a> {
+        self.coverage
+    }
+
+    /// Number of glyphs in the backtrack (preceding, logical-order)
+    /// sequence.
+    pub fn backtrack_glyph_count(&self) -> u16 {
+        self.backtrack_count
+    }
+
+    /// Number of glyphs in the lookahead (following, logical-order)
+    /// sequence.
+    pub fn lookahead_glyph_count(&self) -> u16 {
+        self.lookahead_count
+    }
+
+    /// Backtrack [`Coverage`] `i` (in glyph-sequence order). `None`
+    /// when `i >= backtrack_glyph_count` or the offset is malformed.
+    pub fn backtrack_coverage(&self, i: u16) -> Option<Coverage<'a>> {
+        if i >= self.backtrack_count {
+            return None;
+        }
+        let off = read_u16(self.bytes, self.backtrack_at + i as usize * 2).ok()? as usize;
+        if off == 0 || off >= self.bytes.len() {
+            return None;
+        }
+        Coverage::parse(&self.bytes[off..]).ok()
+    }
+
+    /// Lookahead [`Coverage`] `i` (in glyph-sequence order). `None`
+    /// when `i >= lookahead_glyph_count` or the offset is malformed.
+    pub fn lookahead_coverage(&self, i: u16) -> Option<Coverage<'a>> {
+        if i >= self.lookahead_count {
+            return None;
+        }
+        let off = read_u16(self.bytes, self.lookahead_at + i as usize * 2).ok()? as usize;
+        if off == 0 || off >= self.bytes.len() {
+            return None;
+        }
+        Coverage::parse(&self.bytes[off..]).ok()
+    }
+
+    /// Number of entries in `substituteGlyphIDs` (equals the input
+    /// Coverage length for a well-formed subtable).
+    pub fn glyph_count(&self) -> u16 {
+        self.glyph_count
+    }
+
+    /// The substitute glyph at `substituteGlyphIDs[index]`, where
+    /// `index` is a Coverage index. `None` when `index >= glyph_count`.
+    pub fn substitute_at(&self, index: u16) -> Option<u16> {
+        if index >= self.glyph_count {
+            return None;
+        }
+        read_u16(self.bytes, self.substitutes_at + index as usize * 2).ok()
+    }
+
+    /// The output glyph for input `glyph` — resolves `glyph`'s Coverage
+    /// index then reads `substituteGlyphIDs[index]`. `None` when
+    /// `glyph` is not covered (the context gating by backtrack /
+    /// lookahead Coverage is the caller's responsibility).
+    pub fn substitute(&self, glyph: u16) -> Option<u16> {
+        let idx = self.coverage.index_of(glyph)?;
+        self.substitute_at(idx)
+    }
 }
 
 /// Parsed `GSUB` header view.
@@ -1683,6 +1873,31 @@ impl<'a> GsubTable<'a> {
         }
         let bytes = lk.subtable_bytes(sub_i)?;
         Some(ChainedSequenceContext::parse(bytes))
+    }
+
+    /// Decode subtable `sub_i` of lookup `lookup_i` as a
+    /// [`ReverseChainSingleSubst`] (`GsubLookupType = 8`).
+    ///
+    /// Returns:
+    /// * `None` — `lookup_i` or `sub_i` is out of range, or the
+    ///   referenced subtable bytes are unreachable.
+    /// * `Some(Err(Error::BadStructure))` — the lookup is not declared
+    ///   as `GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE`, or the subtable
+    ///   bytes are malformed.
+    /// * `Some(Ok(ReverseChainSingleSubst))` — the typed subtable view.
+    pub fn reverse_chain_single_subst(
+        &self,
+        lookup_i: u16,
+        sub_i: u16,
+    ) -> Option<Result<ReverseChainSingleSubst<'a>, Error>> {
+        let lk = self.lookup(lookup_i)?;
+        if lk.lookup_type() != GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE {
+            return Some(Err(Error::BadStructure(
+                "GSUB/ReverseChainSingleSubst: lookup is not type 8",
+            )));
+        }
+        let bytes = lk.subtable_bytes(sub_i)?;
+        Some(ReverseChainSingleSubst::parse(bytes))
     }
 }
 
@@ -3458,5 +3673,131 @@ mod tests {
         assert_eq!(ep.extension_lookup_type(), GSUB_LOOKUP_TYPE_CHAINED_CONTEXT);
         assert_eq!(ep.as_chained_context_subst().unwrap().format(), 3);
         assert!(ep.as_context_subst().is_err());
+    }
+
+    /// A small Coverage Format 1 listing `glyphs` (ascending), appended
+    /// to `out`; returns its byte offset within `out`.
+    fn append_coverage_f1(out: &mut Vec<u8>, glyphs: &[u16]) -> u16 {
+        let at = out.len() as u16;
+        out.extend_from_slice(&be(1)); // coverageFormat = 1
+        out.extend_from_slice(&be(glyphs.len() as u16)); // glyphCount
+        for &g in glyphs {
+            out.extend_from_slice(&be(g));
+        }
+        at
+    }
+
+    /// Build a ReverseChainSingleSubstFormat1 subtable:
+    ///   input coverage {0x14, 0x18}, backtrack [{0x30}], lookahead
+    ///   [{0x40, 0x41}], substituteGlyphIDs [0x80, 0x81].
+    fn reverse_chain_subtable() -> Vec<u8> {
+        // Header is variable length; we lay the fixed part out first
+        // with placeholder offsets, append the Coverage tables at the
+        // end, then patch the offsets.
+        let mut v = Vec::new();
+        v.extend_from_slice(&be(1)); // format
+        let cov_off_at = v.len();
+        v.extend_from_slice(&be(0)); // coverageOffset (patched)
+        v.extend_from_slice(&be(1)); // backtrackGlyphCount
+        let bt0_at = v.len();
+        v.extend_from_slice(&be(0)); // backtrackCoverageOffsets[0] (patched)
+        v.extend_from_slice(&be(2)); // lookaheadGlyphCount
+        let la0_at = v.len();
+        v.extend_from_slice(&be(0)); // lookaheadCoverageOffsets[0]
+        let la1_at = v.len();
+        v.extend_from_slice(&be(0)); // lookaheadCoverageOffsets[1]
+        v.extend_from_slice(&be(2)); // glyphCount
+        v.extend_from_slice(&be(0x80)); // substituteGlyphIDs[0]
+        v.extend_from_slice(&be(0x81)); // substituteGlyphIDs[1]
+
+        let cov = append_coverage_f1(&mut v, &[0x14, 0x18]);
+        let bt0 = append_coverage_f1(&mut v, &[0x30]);
+        let la0 = append_coverage_f1(&mut v, &[0x40, 0x41]);
+        let la1 = append_coverage_f1(&mut v, &[0x50]);
+
+        v[cov_off_at..cov_off_at + 2].copy_from_slice(&be(cov));
+        v[bt0_at..bt0_at + 2].copy_from_slice(&be(bt0));
+        v[la0_at..la0_at + 2].copy_from_slice(&be(la0));
+        v[la1_at..la1_at + 2].copy_from_slice(&be(la1));
+        v
+    }
+
+    #[test]
+    fn reverse_chain_single_subst_decodes() {
+        let raw = reverse_chain_subtable();
+        let rc = ReverseChainSingleSubst::parse(&raw).unwrap();
+        assert_eq!(rc.format(), 1);
+        assert_eq!(rc.glyph_count(), 2);
+        assert_eq!(rc.backtrack_glyph_count(), 1);
+        assert_eq!(rc.lookahead_glyph_count(), 2);
+
+        // Input coverage maps {0x14 → 0x80, 0x18 → 0x81}.
+        assert_eq!(rc.substitute(0x14), Some(0x80));
+        assert_eq!(rc.substitute(0x18), Some(0x81));
+        assert_eq!(rc.substitute(0x15), None); // uncovered
+
+        // substitute_at by Coverage index.
+        assert_eq!(rc.substitute_at(0), Some(0x80));
+        assert_eq!(rc.substitute_at(1), Some(0x81));
+        assert_eq!(rc.substitute_at(2), None);
+
+        // Backtrack / lookahead coverage tables decode and gate context.
+        let bt = rc.backtrack_coverage(0).unwrap();
+        assert!(bt.contains(0x30));
+        assert!(!bt.contains(0x31));
+        assert!(rc.backtrack_coverage(1).is_none());
+
+        let la0 = rc.lookahead_coverage(0).unwrap();
+        assert!(la0.contains(0x40) && la0.contains(0x41));
+        let la1 = rc.lookahead_coverage(1).unwrap();
+        assert!(la1.contains(0x50));
+        assert!(rc.lookahead_coverage(2).is_none());
+    }
+
+    #[test]
+    fn reverse_chain_single_subst_rejects_bad_format() {
+        let mut raw = reverse_chain_subtable();
+        raw[0..2].copy_from_slice(&be(2)); // format 2 undefined for type 8
+        let err = ReverseChainSingleSubst::parse(&raw).unwrap_err();
+        assert!(matches!(err, Error::BadStructure(s) if s.contains("unknown subtable format")));
+    }
+
+    #[test]
+    fn reverse_chain_single_subst_rejects_truncated_substitutes() {
+        let mut raw = reverse_chain_subtable();
+        // Bump glyphCount beyond what the buffer holds. glyphCount sits
+        // right before the substitute array, after the fixed format +
+        // coverageOffset, the 1-entry backtrack array, and the 2-entry
+        // lookahead array: 6 + 2*1 + 2 + 2*2 = 14.
+        let backtrack_count = 1usize;
+        let lookahead_count = 2usize;
+        let gc_at = 6 + backtrack_count * 2 + 2 + lookahead_count * 2;
+        raw[gc_at..gc_at + 2].copy_from_slice(&be(1000));
+        assert!(ReverseChainSingleSubst::parse(&raw).is_err());
+    }
+
+    #[test]
+    fn reverse_chain_single_subst_via_gsub_and_extension() {
+        let sub = reverse_chain_subtable();
+        let bytes = gsub_with_lookup(GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE, &sub);
+        let g = GsubTable::parse(&bytes).unwrap();
+        assert_eq!(g.lookup(0).map(|l| l.lookup_type()), Some(8));
+        let rc = g.reverse_chain_single_subst(0, 0).unwrap().unwrap();
+        assert_eq!(rc.substitute(0x14), Some(0x80));
+        // Wrong-type accessor → Some(Err).
+        assert!(g.single_subst(0, 0).unwrap().is_err());
+
+        // Wrapped in a type-7 Extension.
+        let ext = build_extension_subst(GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE, &sub);
+        let ep = ExtensionSubst::parse(&ext).unwrap();
+        assert_eq!(
+            ep.extension_lookup_type(),
+            GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE
+        );
+        assert_eq!(
+            ep.as_reverse_chain_single_subst().unwrap().substitute(0x18),
+            Some(0x81)
+        );
+        assert!(ep.as_single_subst().is_err());
     }
 }
