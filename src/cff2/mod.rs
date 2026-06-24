@@ -19,38 +19,50 @@
 //!    (§7) and the **CharString operator set** adds `blend` (16) and
 //!    `vsindex` (15) for variable-font outlines (§9).
 //!
-//! This module implements points (1)–(4): header, INDEX, and Top DICT
+//! This module implements points (1)–(5): header, INDEX, and Top DICT
 //! parsing, plus the GlobalSubrINDEX + CharStringINDEX + FontDICTINDEX
-//! walks they reference, and the ItemVariationStore (§12) for variable
-//! fonts (`VariationRegionList` + `ItemVariationData` subtables; see
-//! [`varstore`]). The Type 2 charstring decoder (§9) and the per-glyph
-//! `blend`/`vsindex` resolution against the variation store are still
-//! deferred — calling `Font::glyph_outline` on a CFF2 font surfaces
-//! `Error::Cff2NotImplemented` — but the variation-region geometry the
-//! blend math will need is now parsed and exposed.
+//! walks they reference, the per-FontDICT PrivateDICT (default
+//! `vsindex` + LocalSubrINDEX; see [`private`]) routed by the
+//! FontDICTSelect ([`fdselect`], formats 0/3/4), the ItemVariationStore
+//! (§12) for variable fonts (`VariationRegionList` + `ItemVariationData`
+//! subtables; see [`varstore`]), and the variation-aware Type 2
+//! CharString interpreter ([`charstring`]) with `blend`/`vsindex`
+//! resolution. `Cff2::glyph_outline` decodes a glyph at the default
+//! variation instance; `Cff2::glyph_outline_var` decodes a
+//! caller-supplied instance (the region-scalar derivation from axis
+//! settings is the shaper's responsibility).
 //!
 //! Spec: `docs/text/opentype/otspec-cff2.html`.
 
+pub mod charstring;
+pub mod fdselect;
+pub mod font_dict;
 pub mod header;
 pub mod index;
+pub mod private;
 pub mod top_dict;
 pub mod varstore;
 
+pub use self::charstring::Cff2Interpreter;
+pub use self::fdselect::Cff2FdSelect;
+pub use self::font_dict::Cff2FontDict;
 pub use self::header::Cff2Header;
 pub use self::index::Cff2Index;
+pub use self::private::Cff2Private;
 pub use self::top_dict::{Cff2Op, Cff2TopDict, DEFAULT_FONT_MATRIX};
 pub use self::varstore::{
     ItemVariationData, ItemVariationStore, RegionAxisCoordinates, VariationRegion,
 };
 
+use crate::outline::CubicOutline;
 use crate::Error;
 
-/// Parsed CFF2 table — currently exposes the header, Top DICT, and
-/// the structural INDEXes (GlobalSubrINDEX, CharStringINDEX,
-/// FontDICTINDEX, plus each Font DICT's raw bytes). The Type 2
-/// charstring decoder is not extended to CFF2 in this round;
-/// `Cff::glyph_outline` is the path that still rejects with
-/// [`Error::Cff2NotImplemented`].
+/// Parsed CFF2 table — exposes the header, Top DICT, the structural
+/// INDEXes (GlobalSubrINDEX, CharStringINDEX, FontDICTINDEX), the
+/// per-FontDICT PrivateDICTs (default `vsindex` + LocalSubrINDEX) +
+/// FontDICTSelect routing, the ItemVariationStore, and a
+/// variation-aware glyph-outline decoder ([`Cff2::glyph_outline`] /
+/// [`Cff2::glyph_outline_var`]).
 #[derive(Debug, Clone)]
 pub struct Cff2<'a> {
     /// Original CFF2 table bytes; every offset is relative to byte 0
@@ -78,6 +90,14 @@ pub struct Cff2<'a> {
     /// non-variable CFF2 fonts (where `blend`/`vsindex` must not
     /// appear, per §12).
     variation_store: Option<ItemVariationStore>,
+    /// Per-FontDICT parsed PrivateDICTs (default `vsindex` +
+    /// LocalSubrINDEX), one per FontDICTINDEX entry, in index order.
+    /// Always at least one (the FontDICTINDEX is non-empty).
+    privates: Vec<Cff2Private<'a>>,
+    /// FontDICTSelect (GID → FontDICT index), present iff the Top DICT
+    /// carried a `FontDICTSelectOffset`. When absent every glyph maps
+    /// to FontDICT 0.
+    fd_select: Option<Cff2FdSelect<'a>>,
 }
 
 impl<'a> Cff2<'a> {
@@ -123,6 +143,26 @@ impl<'a> Cff2<'a> {
             None => None,
         };
 
+        // Per-FontDICT PrivateDICTs (default vsindex + LocalSubrINDEX).
+        // Each FontDICT carries a `Private` (size, offset) operator;
+        // the offset is from the start of the CFF2 table.
+        let mut privates = Vec::with_capacity(font_dicts.count as usize);
+        for fd_idx in 0..font_dicts.count {
+            let fd_bytes = font_dicts.entry(fd_idx)?;
+            let fd = Cff2FontDict::parse(fd_bytes)?;
+            privates.push(Cff2Private::parse(
+                bytes,
+                fd.private_offset,
+                fd.private_size,
+            )?);
+        }
+
+        // FontDICTSelect (GID → FontDICT). Present only with > 1 FD.
+        let fd_select = match top.font_dict_select_offset {
+            Some(off) => Some(Cff2FdSelect::parse(bytes, off as usize, charstrings.count)?),
+            None => None,
+        };
+
         Ok(Self {
             bytes,
             header,
@@ -131,7 +171,73 @@ impl<'a> Cff2<'a> {
             charstrings,
             font_dicts,
             variation_store,
+            privates,
+            fd_select,
         })
+    }
+
+    /// The FontDICT index that owns glyph `gid`. With a single
+    /// FontDICT (no FontDICTSelect) every glyph maps to FontDICT 0;
+    /// otherwise the FontDICTSelect routes it. Returns `0` if a
+    /// FontDICTSelect is present but does not cover `gid` (defensive
+    /// fallback — a conforming font's FontDICTSelect covers every GID).
+    fn fd_for_glyph(&self, gid: u32) -> u16 {
+        match &self.fd_select {
+            Some(sel) => sel.fd_index(gid).unwrap_or(0),
+            None => 0,
+        }
+    }
+
+    /// Borrow the parsed PrivateDICT for FontDICT `fd_index`.
+    fn private_for_fd(&self, fd_index: u16) -> Option<&Cff2Private<'a>> {
+        self.privates.get(fd_index as usize)
+    }
+
+    /// Decode glyph `gid` to a cubic outline at the **default
+    /// variation instance** (every region scalar `0`, so `blend`
+    /// deltas contribute nothing and the result is the default
+    /// design). Equivalent to [`Self::glyph_outline_var`] with an
+    /// empty scalar slice.
+    pub fn glyph_outline(&self, gid: u32) -> Result<CubicOutline, Error> {
+        self.glyph_outline_var(gid, &[])
+    }
+
+    /// Decode glyph `gid` to a cubic outline for a variation instance
+    /// described by `region_scalars`.
+    ///
+    /// `region_scalars[r]` is the interpolation scalar (a real number,
+    /// normally in `[0, 1]`) for variation region `r` of the active
+    /// ItemVariationData's `regionIndexes` list. The mapping is
+    /// positional: a `blend` operator's `j`-th delta (for `j` in
+    /// `0..k`) is multiplied by `region_scalars[j]`. A caller computes
+    /// these scalars from the font's `fvar`/`avar` axis settings (the
+    /// region-scalar algorithm is specified in the OpenType *Font
+    /// Variations Common Table Formats* chapter and is the shaper's
+    /// responsibility — this crate consumes the scalars, not the axis
+    /// coordinates).
+    ///
+    /// An empty `region_scalars` slice selects the **default
+    /// instance** (all scalars treated as `0`). A scalar slice shorter
+    /// than the active region count `k` treats missing entries as `0`.
+    pub fn glyph_outline_var(
+        &self,
+        gid: u32,
+        region_scalars: &[f32],
+    ) -> Result<CubicOutline, Error> {
+        let cs = self.charstrings.entry(gid)?;
+        let fd = self.fd_for_glyph(gid);
+        let private = self.private_for_fd(fd);
+        let local_subrs = private.and_then(|p| p.local_subrs.as_ref());
+        let default_vsindex = private.map(|p| p.vsindex).unwrap_or(0);
+        let mut interp = Cff2Interpreter::new(
+            &self.global_subrs,
+            local_subrs,
+            self.variation_store.as_ref(),
+            default_vsindex,
+            region_scalars,
+        );
+        interp.run(cs)?;
+        Ok(interp.into_outline())
     }
 
     /// Borrow the parsed CFF2 header (`major`, `minor`, `headerSize`,
@@ -179,10 +285,9 @@ impl<'a> Cff2<'a> {
         self.variation_store.as_ref()
     }
 
-    /// Raw bytes for the CharString at glyph index `gid`. Returned
-    /// even though the Type 2 + blend interpreter for CFF2 is not
-    /// implemented this round, so callers can inspect / count
-    /// operators or store them for a later decoder pass.
+    /// Raw bytes for the CharString at glyph index `gid` — exposed
+    /// alongside the decoded outline so callers can inspect / count
+    /// operators without re-running the interpreter.
     pub fn charstring(&self, gid: u32) -> Result<&'a [u8], Error> {
         self.charstrings.entry(gid)
     }

@@ -11,7 +11,7 @@
 //! Spec: `docs/text/opentype/otspec-cff2.html` for the CFF2 table,
 //! `docs/text/opentype/otspec-otff.html` for the sfnt directory.
 
-use oxideav_otf::{Error, Font};
+use oxideav_otf::Font;
 
 /// Build a synthetic OpenType/CFF2 font with the minimum required
 /// sfnt tables + a 1-glyph CFF2 table (no variations, no global
@@ -180,22 +180,23 @@ fn build_minimal_cff2_table() -> Vec<u8> {
 
     assert_eq!(v.len(), cs_off as usize);
 
-    // CharStringINDEX: 1 entry, payload single byte 0x0E
-    // (Type 2 charstring `endchar`) — we don't decode it this round,
-    // it just needs to be addressable.
+    // CharStringINDEX: 1 entry, a single-byte CFF2 charstring `0x01`
+    // (`hstem`). With an empty operand stack it declares zero hints,
+    // clears the stack, and the charstring ends at end-of-stream
+    // (CFF2 has no `endchar`), yielding an empty-but-valid outline.
     v.extend_from_slice(&[0, 0, 0, 1]); // count
     v.push(1); // offSize
     v.extend_from_slice(&[1, 2]); // offsets
-    v.push(0x0E); // endchar
+    v.push(0x01); // hstem (no operands)
 
     assert_eq!(v.len(), fd_off as usize);
 
-    // FontDICTINDEX: 1 entry, single byte 0xFF (we don't yet decode
-    // Font DICT contents).
-    v.extend_from_slice(&[0, 0, 0, 1]);
-    v.push(1);
-    v.extend_from_slice(&[1, 2]);
-    v.push(0xFF);
+    // FontDICTINDEX: 1 entry, an empty (0-length) FontDICT. With no
+    // `Private` operator it denotes an empty PrivateDICT (vsindex 0,
+    // no local subrs).
+    v.extend_from_slice(&[0, 0, 0, 1]); // count
+    v.push(1); // offSize
+    v.extend_from_slice(&[1, 1]); // offsets — entry length 0
 
     v
 }
@@ -239,13 +240,18 @@ fn parses_synthetic_cff2_font() {
 }
 
 #[test]
-fn glyph_outline_returns_cff2_not_implemented() {
+fn glyph_outline_decodes_cff2() {
     let bytes = build_minimal_cff2_font();
     let f = Font::from_bytes(&bytes).expect("CFF2 font parses");
-    let err = f
-        .glyph_outline(0)
-        .expect_err("CFF2 outline decode is deferred");
-    assert!(matches!(err, Error::Cff2NotImplemented));
+    // The 1-byte `hstem` charstring produces a valid, empty outline.
+    let outline = f.glyph_outline(0).expect("CFF2 outline decodes");
+    assert!(outline.is_empty(), "hstem-only charstring has no contours");
+    // The variation-instance entry point is also reachable; with no
+    // VariationStore and an empty scalar slice it is identical.
+    let outline_var = f
+        .glyph_outline_var(0, &[])
+        .expect("CFF2 default-instance outline decodes");
+    assert_eq!(outline, outline_var);
 }
 
 #[test]
@@ -291,10 +297,10 @@ fn cff2_view_exposes_raw_charstrings_and_font_dicts() {
     assert_eq!(c.glyph_count(), 1);
     assert_eq!(c.font_dict_count(), 1);
     assert_eq!(c.global_subr_count(), 0);
-    // CharString bytes are reachable for inspection even though the
-    // full decoder is deferred.
-    assert_eq!(c.charstring(0).unwrap(), &[0x0Eu8][..]);
-    assert_eq!(c.font_dict(0).unwrap(), &[0xFFu8][..]);
+    // CharString bytes are reachable for inspection.
+    assert_eq!(c.charstring(0).unwrap(), &[0x01u8][..]);
+    // The FontDICT is empty (0-length).
+    assert_eq!(c.font_dict(0).unwrap(), &[][..]);
     // Out-of-range queries surface as Error::Cff(...).
     assert!(c.charstring(1).is_err());
     assert!(c.font_dict(1).is_err());

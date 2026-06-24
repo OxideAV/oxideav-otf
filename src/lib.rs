@@ -107,12 +107,11 @@ pub enum Error {
     MissingTable(&'static str),
     /// The font has no `CFF ` or `CFF2` table.
     MissingCff,
-    /// CFF2-flavoured fonts are parsed for metadata (header, Top
-    /// DICT, structural INDEXes — see the `cff2` module), but Type 2
-    /// charstring decoding for CFF2 (with `blend` + `vsindex`
-    /// resolution against the ItemVariationStore) is not yet
-    /// implemented; [`Font::glyph_outline`] returns this error on a
-    /// CFF2 font.
+    /// **Deprecated / no longer returned.** CFF2 glyph outlines are now
+    /// decoded by the variation-aware CFF2 charstring interpreter (see
+    /// the `cff2` module); [`Font::glyph_outline`] decodes a CFF2 font
+    /// at its default variation instance and never returns this error.
+    /// The variant is retained so existing `match` arms keep compiling.
     Cff2NotImplemented,
     /// A glyph index was out of range vs. `maxp.numGlyphs` /
     /// `CharStrings INDEX count`.
@@ -450,10 +449,10 @@ impl<'a> Font<'a> {
     /// returned view exposes the CFF2 header, Top DICT, CharString
     /// count, FontDICT INDEX, per-glyph CharString bytes, and (for
     /// variable fonts) the parsed `ItemVariationStore`
-    /// ([`Font::variation_store`]); per-glyph outline decoding (the
-    /// `blend`/`vsindex` charstring math against the store) is deferred
-    /// to a future round and currently surfaces as
-    /// [`Error::Cff2NotImplemented`] from [`Font::glyph_outline`].
+    /// ([`Font::variation_store`]). Per-glyph outline decoding (the
+    /// variation-aware `blend`/`vsindex` charstring interpreter) is
+    /// available through [`Font::glyph_outline`] (default instance) and
+    /// [`Font::glyph_outline_var`] (a caller-supplied instance).
     pub fn cff2(&self) -> Option<&Cff2<'a>> {
         self.cff2_view()
     }
@@ -501,18 +500,46 @@ impl<'a> Font<'a> {
 
     /// Decode the cubic-Bezier outline for `glyph_id`.
     ///
-    /// CFF2 outlines (with `blend` + `vsindex` resolution against the
-    /// font's `VariationStore`) are not decoded this round; callers on
-    /// a CFF2 font receive [`Error::Cff2NotImplemented`] regardless of
-    /// `glyph_id`. The CFF2 charstring bytes are still reachable via
-    /// `Font::cff2().unwrap().charstring(gid)` for inspection.
+    /// For a CFF1 font this runs the Type 2 charstring interpreter. For
+    /// a CFF2 (variable) font this runs the variation-aware CFF2
+    /// interpreter at the **default variation instance** (every region
+    /// scalar `0`, so `blend` deltas contribute nothing and the result
+    /// is the default design). Use [`Font::glyph_outline_var`] to
+    /// decode a specific variation instance.
     pub fn glyph_outline(&self, glyph_id: u16) -> Result<CubicOutline, Error> {
         if glyph_id >= self.maxp.num_glyphs {
             return Err(Error::GlyphOutOfRange(glyph_id));
         }
         match &self.cff {
             CffFlavour::Cff1(c) => c.glyph_outline(glyph_id),
-            CffFlavour::Cff2(_) => Err(Error::Cff2NotImplemented),
+            CffFlavour::Cff2(c) => c.glyph_outline(glyph_id as u32),
+        }
+    }
+
+    /// Decode the cubic-Bezier outline for `glyph_id` at the variation
+    /// instance described by `region_scalars`.
+    ///
+    /// This is only meaningful for a CFF2 variable font: a `blend`
+    /// operator's `j`-th delta is scaled by `region_scalars[j]` (the
+    /// interpolation scalar of the `j`-th active variation region) and
+    /// added to its default value. A caller derives the scalars from
+    /// the font's `fvar`/`avar` axis settings via the OpenType *Font
+    /// Variations Common Table Formats* region-scalar algorithm. An
+    /// empty slice selects the default instance.
+    ///
+    /// For a CFF1 font `region_scalars` is ignored (CFF1 has no
+    /// variation operators) and the static outline is returned.
+    pub fn glyph_outline_var(
+        &self,
+        glyph_id: u16,
+        region_scalars: &[f32],
+    ) -> Result<CubicOutline, Error> {
+        if glyph_id >= self.maxp.num_glyphs {
+            return Err(Error::GlyphOutOfRange(glyph_id));
+        }
+        match &self.cff {
+            CffFlavour::Cff1(c) => c.glyph_outline(glyph_id),
+            CffFlavour::Cff2(c) => c.glyph_outline_var(glyph_id as u32, region_scalars),
         }
     }
 

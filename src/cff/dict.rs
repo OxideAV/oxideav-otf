@@ -140,20 +140,20 @@ impl Dict {
         while i < bytes.len() {
             let b0 = bytes[i];
             // Operator vs operand byte ranges per Adobe TN5176 §4
-            // Table 3 (and OpenType 1.9.1 CFF2 §6 reuse): the operand
-            // encodings use bytes 28, 29, 30 and 32..=254; everything
-            // else (0..=21 historical + 24 = `VariationStoreOffset`
-            // for CFF2 §7) is an operator byte. We accept operator
+            // Table 3 (and OpenType 1.9.1 CFF2 reuse): the operand
+            // encodings use bytes 28, 29, 30 and 32..=254; every other
+            // byte below 32 is an operator byte. We accept operator
             // codes 0..=24 here so the same DICT parser can decode
-            // both CFF1 and CFF2 Top DICTs; CFF1's operator vocabulary
-            // tops out at 21 so widening this range is safe — any
-            // CFF1 font using a byte in 22..=24 was already malformed.
-            // Bytes 22, 23, 25, 26, 27, 31 are reserved in CFF1 and
-            // either reserved or operand prefixes (28..30) elsewhere;
-            // we only emit "operator" for the bytes we actually
-            // recognise (0..=21 + 24) so reserved bytes still trip
-            // the operand-decode error path below.
-            if b0 <= 21 || b0 == 24 {
+            // CFF1 Top/Private DICTs as well as CFF2 Top DICTs
+            // (byte 24 = `VariationStoreOffset`) and CFF2 PrivateDICTs
+            // (byte 22 = `vsindex`, byte 23 = `blend`). CFF1's
+            // operator vocabulary tops out at 21, so widening the
+            // range to 24 is safe — any CFF1 font using a byte in
+            // 22..=24 was already malformed. Bytes 25, 26, 27, 31
+            // remain reserved (28..30 are operand prefixes, excluded
+            // below), so they still trip the operand-decode error
+            // path.
+            if b0 <= 24 {
                 // Operator (1 or 2 bytes).
                 let op = if b0 == 12 {
                     if i + 1 >= bytes.len() {

@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- decode **CFF2 variable-font glyph outlines**. A variation-aware CFF2
+  Type 2 CharString interpreter (`cff2::Cff2Interpreter`) now runs the
+  path / hint / subroutine operators plus the two CFF2 variation
+  operators — `vsindex` (select the active `ItemVariationData`, hence the
+  active region count `k`) and `blend` (pop `n + n*k + 1` operands and
+  push `n` interpolated values `default[i] + Σ_j scalar[j]·delta[i*k+j]`).
+  CFF2 differs from CFF1 in having no `endchar` (the CharString ends at
+  end-of-stream), no glyph-width prefix, and no arithmetic / storage /
+  conditional operators; all four are handled. The per-FontDICT
+  PrivateDICT (default `vsindex` + LocalSubrINDEX, `cff2::Cff2Private`)
+  and the FontDICT `Private` pointer (`cff2::Cff2FontDict`) are parsed,
+  and a glyph is routed to its FontDICT through a new CFF2 FontDICTSelect
+  (`cff2::Cff2FdSelect`, formats 0 / 3 / **4** — format 4 being the
+  CFF2-only 32-bit-range variant for > 65,534 glyphs). `Font::glyph_outline`
+  on a CFF2 font now decodes the **default variation instance** (every
+  region scalar `0`) instead of returning `Error::Cff2NotImplemented`;
+  the new `Font::glyph_outline_var(gid, &region_scalars)` decodes a
+  specific instance from caller-supplied per-region interpolation scalars
+  (the scalar derivation from `fvar`/`avar` axis settings — the OpenType
+  *Font Variations Common Table Formats* region-scalar algorithm — is the
+  shaping client's responsibility and is not staged in the CFF2 doc).
+  `Error::Cff2NotImplemented` is retained but is no longer returned.
+
 - decode GPOS Lookup Type 6 (mark-to-mark attachment positioning) as a
   typed `MarkMarkPos` view over MarkMarkPosFormat1. The structure mirrors
   mark-to-base: `mark1` plays the "mark" role and `mark2` plays the

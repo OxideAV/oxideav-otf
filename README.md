@@ -436,19 +436,29 @@ views over:
   versions 0–5.
 - **AGL** — the static Adobe Glyph List 2.0 table for glyph-name
   resolution (`agl_glyph_name`).
-- **CFF2** — header, Top DICT, Global Subr / CharString / Font DICT
-  INDEXes, and the `ItemVariationStore` are parsed, but
-  `Font::glyph_outline` on a CFF2 font returns `Error::Cff2NotImplemented`
-  until the variation-aware charstring interpreter and region-blend
-  resolver land.
+- **CFF2** (variable-font CFF, OpenType 1.9.1) — header, Top DICT,
+  Global Subr / CharString / Font DICT INDEXes, the per-FontDICT
+  PrivateDICT (default `vsindex` + LocalSubrINDEX), the FontDICTSelect
+  (formats 0 / 3 / 4), and the `ItemVariationStore` are parsed, and a
+  variation-aware Type 2 CharString interpreter decodes glyph outlines:
+  it runs the path / hint / subroutine operators plus the two CFF2
+  variation operators `vsindex` (select the active region list) and
+  `blend` (interpolate `n` defaults with `n*k` deltas against `k`
+  region scalars). CFF2's no-`endchar` termination, absent glyph-width
+  prefix, and absent arithmetic operators are all handled.
+  `Font::glyph_outline` decodes the **default variation instance**;
+  `Font::glyph_outline_var(gid, &region_scalars)` decodes a specific
+  instance from caller-supplied per-region scalars.
 
 ## Out of scope
 
-- The variation-aware CFF2 charstring interpreter (`blend` / `vsindex`)
-  and the `ItemVariationStore` region-blend resolver — until they land,
-  `Font::glyph_outline` on a CFF2 font returns
-  `Error::Cff2NotImplemented`. `GDEF.itemVarStore` is likewise surfaced
-  as a raw offset only.
+- The CFF2 region-scalar derivation from `fvar`/`avar` axis settings
+  (the OpenType *Font Variations Common Table Formats* region-scalar
+  algorithm). `Font::glyph_outline_var` consumes the `k` per-region
+  interpolation scalars; computing them from normalized axis
+  coordinates is the shaping client's responsibility (the algorithm is
+  referenced by, but not staged in, the CFF2 doc). `GDEF.itemVarStore`
+  is likewise surfaced as a raw offset only.
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
 - The AGL Specification §6 component-name decomposition algorithm
   (`f_f_i` → `ffi`, `uniXXXX` → `U+XXXX`, etc.) — the static AGL 2.0
