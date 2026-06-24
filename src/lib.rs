@@ -54,6 +54,7 @@ pub use crate::tables::context::{
     ChainedSequenceContext, ChainedSequenceRule, SequenceContext, SequenceLookupRecord,
     SequenceRule,
 };
+pub use crate::tables::device::{DeviceOrVariationIndex, DeviceTable, VariationIndexTable};
 pub use crate::tables::gdef::{
     AttachList, AttachPoint, CaretValue, ClassDef, Coverage, CoverageIter, GlyphClass,
     LigCaretList, LigGlyph, MarkGlyphSets,

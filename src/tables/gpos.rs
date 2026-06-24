@@ -35,6 +35,7 @@
 
 use crate::parser::{read_i16, read_u16, read_u32};
 use crate::tables::context::{ChainedSequenceContext, SequenceContext};
+use crate::tables::device::DeviceOrVariationIndex;
 use crate::tables::gdef::{ClassDef, Coverage};
 use crate::tables::layout::{FeatureList, LayoutHeader, Lookup, LookupList, Script, ScriptList};
 use crate::Error;
@@ -134,12 +135,15 @@ impl ValueFormat {
 /// A decoded `ValueRecord`: positioning adjustments for one glyph
 /// position. Spec: `docs/text/opentype/otspec-gpos.html` §"ValueRecord".
 ///
-/// Only the design-unit placement/advance values are surfaced as typed
-/// fields; the four optional Device/VariationIndex offsets are kept as
-/// raw `Offset16` values (`0` = NULL) because Device-table decoding is
-/// deferred to a later round. Every field that the originating
-/// `ValueFormat` does not declare is reported as `0`, matching the
-/// spec's "empty ValueRecord ⇒ no positioning change" semantics.
+/// The design-unit placement/advance values are surfaced as typed
+/// fields, and the four optional Device/VariationIndex offsets are kept
+/// as raw `Offset16` values (`0` = NULL); the referenced tables are
+/// decoded by [`ValueRecord::x_placement_device`] and friends (given
+/// the subtable base, since the offsets are from the start of the
+/// subtable that contained the `ValueRecord`). Every field that the
+/// originating `ValueFormat` does not declare is reported as `0`,
+/// matching the spec's "empty ValueRecord ⇒ no positioning change"
+/// semantics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ValueRecord {
     /// Horizontal placement adjustment, design units.
@@ -197,6 +201,47 @@ impl ValueRecord {
         take_off!(format.has_y_advance_device(), y_advance_device_offset);
 
         Ok((rec, cur - off))
+    }
+
+    /// Decode the `xPlaDeviceOffset` Device / VariationIndex table.
+    /// `subtable` is the slice whose index 0 is the start of the GPOS
+    /// subtable that owned this `ValueRecord` (the offset is from the
+    /// subtable start). `None` for a NULL offset.
+    pub fn x_placement_device<'a>(
+        &self,
+        subtable: &'a [u8],
+    ) -> Option<Result<DeviceOrVariationIndex<'a>, Error>> {
+        decode_device_at(subtable, self.x_placement_device_offset)
+    }
+
+    /// Decode the `yPlaDeviceOffset` Device / VariationIndex table.
+    /// See [`ValueRecord::x_placement_device`] for the `subtable`
+    /// convention.
+    pub fn y_placement_device<'a>(
+        &self,
+        subtable: &'a [u8],
+    ) -> Option<Result<DeviceOrVariationIndex<'a>, Error>> {
+        decode_device_at(subtable, self.y_placement_device_offset)
+    }
+
+    /// Decode the `xAdvDeviceOffset` Device / VariationIndex table.
+    /// See [`ValueRecord::x_placement_device`] for the `subtable`
+    /// convention.
+    pub fn x_advance_device<'a>(
+        &self,
+        subtable: &'a [u8],
+    ) -> Option<Result<DeviceOrVariationIndex<'a>, Error>> {
+        decode_device_at(subtable, self.x_advance_device_offset)
+    }
+
+    /// Decode the `yAdvDeviceOffset` Device / VariationIndex table.
+    /// See [`ValueRecord::x_placement_device`] for the `subtable`
+    /// convention.
+    pub fn y_advance_device<'a>(
+        &self,
+        subtable: &'a [u8],
+    ) -> Option<Result<DeviceOrVariationIndex<'a>, Error>> {
+        decode_device_at(subtable, self.y_advance_device_offset)
     }
 }
 
@@ -979,10 +1024,11 @@ impl<'a> ExtensionPos<'a> {
 ///   glyph's contour points (a hinting refinement). The contour-point
 ///   index is surfaced via [`Anchor::contour_point`].
 /// * **Format 3** — design units plus `Offset16` references to Device /
-///   VariationIndex tables for X and Y (each may be NULL). Device-table
-///   decoding is deferred, so the raw offsets are surfaced via
-///   [`Anchor::x_device_offset`] / [`Anchor::y_device_offset`] exactly as
-///   the [`ValueRecord`] device offsets are.
+///   VariationIndex tables for X and Y (each may be NULL). The raw
+///   offsets are surfaced via [`Anchor::x_device_offset`] /
+///   [`Anchor::y_device_offset`], and the referenced tables are decoded
+///   by [`Anchor::x_device`] / [`Anchor::y_device`] (given the Anchor
+///   table's byte slice).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Anchor {
     /// Subtable format discriminant (1, 2, or 3).
@@ -1058,6 +1104,44 @@ impl Anchor {
     pub fn y_device_offset(&self) -> u16 {
         self.y_device_offset
     }
+
+    /// Decode the format-3 X Device / VariationIndex table, if present.
+    ///
+    /// `anchor_table` is the byte slice whose index 0 is the start of
+    /// this Anchor table — i.e. `&data[off..]` for the `(data, off)`
+    /// pair passed to [`Anchor::parse`] (the `xDeviceOffset` is relative
+    /// to the Anchor table start). Returns `None` when the offset is
+    /// NULL or the anchor is not format 3; `Some(Err(..))` when the
+    /// referenced bytes are malformed.
+    pub fn x_device<'a>(
+        &self,
+        anchor_table: &'a [u8],
+    ) -> Option<Result<DeviceOrVariationIndex<'a>, Error>> {
+        decode_device_at(anchor_table, self.x_device_offset)
+    }
+
+    /// Decode the format-3 Y Device / VariationIndex table, if present.
+    /// See [`Anchor::x_device`] for the `anchor_table` convention.
+    pub fn y_device<'a>(
+        &self,
+        anchor_table: &'a [u8],
+    ) -> Option<Result<DeviceOrVariationIndex<'a>, Error>> {
+        decode_device_at(anchor_table, self.y_device_offset)
+    }
+}
+
+/// Decode a Device / VariationIndex table at `offset` within `base`.
+/// `None` for a NULL (`0`) or out-of-range offset; `Some(Err(..))` for
+/// malformed bytes.
+fn decode_device_at(base: &[u8], offset: u16) -> Option<Result<DeviceOrVariationIndex<'_>, Error>> {
+    if offset == 0 {
+        return None;
+    }
+    let off = offset as usize;
+    if off >= base.len() {
+        return Some(Err(Error::BadStructure("GPOS/Device: offset out of range")));
+    }
+    Some(DeviceOrVariationIndex::parse(&base[off..]))
 }
 
 /// A decoded `MarkRecord` — the class and anchor of one mark glyph.
@@ -3208,6 +3292,59 @@ mod tests {
         assert_eq!(a.x_device_offset(), 0x10);
         assert_eq!(a.y_device_offset(), 0);
         assert_eq!(a.contour_point(), None);
+    }
+
+    #[test]
+    fn anchor_format3_decodes_device_table() {
+        // Anchor format 3 with an X Device table at offset 10 and a NULL
+        // Y device. The Device table (deltaFormat 2, 4-bit) carries the
+        // spec example {1, 2, 3, -1} for ppem 12..=15.
+        let mut b = Vec::new();
+        b.extend_from_slice(&be(3)); // format
+        b.extend_from_slice(&(1i16).to_be_bytes()); // x
+        b.extend_from_slice(&(2i16).to_be_bytes()); // y
+        b.extend_from_slice(&be(10)); // xDeviceOffset = 10
+        b.extend_from_slice(&be(0)); // yDeviceOffset = NULL
+        assert_eq!(b.len(), 10);
+        // Device table @ offset 10.
+        b.extend_from_slice(&be(12)); // startSize
+        b.extend_from_slice(&be(15)); // endSize
+        b.extend_from_slice(&be(2)); // deltaFormat (4-bit)
+        b.extend_from_slice(&be(0x123F)); // {1,2,3,-1}
+
+        let a = Anchor::parse(&b, 0).unwrap();
+        // The anchor table base is the whole slice (off = 0).
+        let dev = a.x_device(&b).expect("x device present").expect("decodes");
+        let d = dev.as_device().expect("a Device table");
+        assert_eq!(d.delta(12), 1);
+        assert_eq!(d.delta(15), -1);
+        // NULL Y device → None.
+        assert!(a.y_device(&b).is_none());
+    }
+
+    #[test]
+    fn value_record_decodes_advance_device() {
+        // A ValueRecord declaring only xAdvDeviceOffset, pointing at a
+        // VariationIndex table in the same subtable buffer.
+        // Subtable layout: [ValueRecord @ 0 (2 bytes)] [pad] [VarIndex @ 4].
+        let mut sub = Vec::new();
+        sub.extend_from_slice(&be(4)); // xAdvDeviceOffset = 4
+        sub.extend_from_slice(&be(0)); // pad to offset 4
+        sub.extend_from_slice(&be(2)); // deltaSetOuterIndex
+        sub.extend_from_slice(&be(9)); // deltaSetInnerIndex
+        sub.extend_from_slice(&be(0x8000)); // deltaFormat = VARIATION_INDEX
+        let fmt = ValueFormat(0x0040); // X_ADVANCE_DEVICE
+        let (rec, n) = ValueRecord::parse(&sub, 0, fmt).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(rec.x_advance_device_offset, 4);
+        let dev = rec
+            .x_advance_device(&sub)
+            .expect("device present")
+            .expect("decodes");
+        let vi = dev.as_variation_index().expect("VariationIndex");
+        assert_eq!(vi.outer_index, 2);
+        assert_eq!(vi.inner_index, 9);
+        assert!(rec.x_placement_device(&sub).is_none());
     }
 
     #[test]

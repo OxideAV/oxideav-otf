@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- decode **Device and VariationIndex tables** (`tables::device`). A
+  `Device` table (deltaFormat 1 / 2 / 3) decodes its packed 2- / 4- /
+  8-bit signed per-ppem deltas — `delta(ppem)` answers the signed pixel
+  correction (spec's worked 4-bit example `{1,2,3,-1}` → `0x123F`) — and
+  a `VariationIndex` table (deltaFormat 0x8000) surfaces its
+  `(deltaSetOuterIndex, deltaSetInnerIndex)` delta-set index pair into
+  the GDEF/BASE `ItemVariationStore`; `DeviceOrVariationIndex::parse`
+  dispatches on the `deltaFormat` field. These were previously surfaced
+  only as raw `Offset16` values: GPOS Anchor format-3 now decodes them
+  via `Anchor::x_device` / `y_device`, GPOS `ValueRecord` via
+  `x_placement_device` / `y_placement_device` / `x_advance_device` /
+  `y_advance_device`, and GDEF CaretValue format-3 via
+  `CaretValue::device` (plus a `CaretValue::coordinate` accessor). Each
+  takes the slice whose byte 0 is the structure the offset is relative
+  to (the Anchor table, the GPOS subtable, or the CaretValue table).
+
 - decode GSUB Lookup Type 8 (reverse chaining contextual single
   substitution) as a typed `ReverseChainSingleSubst` view over
   ReverseChainSingleSubstFormat1 — the last GSUB lookup type without a

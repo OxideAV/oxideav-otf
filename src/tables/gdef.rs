@@ -49,6 +49,7 @@
 //! `&[u8]` once and returns owned primitives or sub-slices.
 
 use crate::parser::{read_i16, read_u16, read_u32};
+use crate::tables::device::DeviceOrVariationIndex;
 use crate::Error;
 
 // -- Coverage table (shared with GSUB / GPOS) -----------------------------
@@ -427,6 +428,43 @@ pub enum CaretValue {
     /// the CaretValue table itself. The device-table offset may be 0
     /// to indicate "no device adjustment / use the bare coordinate."
     DesignUnitsWithDevice { coordinate: i16, device_offset: u16 },
+}
+
+impl CaretValue {
+    /// The design-unit caret coordinate, for formats 1 and 3.
+    /// `None` for the format-2 contour-point form.
+    pub fn coordinate(&self) -> Option<i16> {
+        match self {
+            Self::DesignUnits(c) => Some(*c),
+            Self::DesignUnitsWithDevice { coordinate, .. } => Some(*coordinate),
+            Self::ContourPoint(_) => None,
+        }
+    }
+
+    /// Decode the format-3 Device / VariationIndex table referenced by
+    /// `deviceOffset`. `caret_value_table` is the slice whose index 0 is
+    /// the start of this CaretValue table (the offset is from there).
+    /// `None` when the offset is NULL or this is not a format-3 caret;
+    /// `Some(Err(..))` when the referenced bytes are malformed.
+    pub fn device<'a>(
+        &self,
+        caret_value_table: &'a [u8],
+    ) -> Option<Result<DeviceOrVariationIndex<'a>, Error>> {
+        let offset = match self {
+            Self::DesignUnitsWithDevice { device_offset, .. } => *device_offset,
+            _ => return None,
+        };
+        if offset == 0 {
+            return None;
+        }
+        let off = offset as usize;
+        if off >= caret_value_table.len() {
+            return Some(Err(Error::BadStructure(
+                "GDEF/CaretValue: deviceOffset out of range",
+            )));
+        }
+        Some(DeviceOrVariationIndex::parse(&caret_value_table[off..]))
+    }
 }
 
 /// Parsed `GDEF` table.
@@ -1373,5 +1411,40 @@ mod tests {
         assert_eq!(GlyphClass::from_raw(4), Some(GlyphClass::Component));
         assert_eq!(GlyphClass::from_raw(5), None);
         assert_eq!(GlyphClass::from_raw(0xFFFF), None);
+    }
+
+    #[test]
+    fn caret_value_format3_decodes_device() {
+        // CaretValueFormat3: coordinate 200, deviceOffset 6 → a Device
+        // table (deltaFormat 2, 4-bit) {1,2,3,-1} for ppem 12..=15.
+        let mut cv = Vec::new();
+        cv.extend_from_slice(&be16(3)); // format
+        cv.extend_from_slice(&(200i16).to_be_bytes()); // coordinate
+        cv.extend_from_slice(&be16(6)); // deviceOffset = 6
+        assert_eq!(cv.len(), 6);
+        cv.extend_from_slice(&be16(12)); // startSize
+        cv.extend_from_slice(&be16(15)); // endSize
+        cv.extend_from_slice(&be16(2)); // deltaFormat (4-bit)
+        cv.extend_from_slice(&be16(0x123F)); // {1,2,3,-1}
+
+        let caret = parse_caret_value(&cv).unwrap();
+        assert_eq!(caret.coordinate(), Some(200));
+        let dev = caret.device(&cv).expect("device present").expect("decodes");
+        let d = dev.as_device().expect("Device table");
+        assert_eq!(d.delta(12), 1);
+        assert_eq!(d.delta(15), -1);
+    }
+
+    #[test]
+    fn caret_value_format1_has_no_device() {
+        let cv = {
+            let mut v = Vec::new();
+            v.extend_from_slice(&be16(1));
+            v.extend_from_slice(&(-50i16).to_be_bytes());
+            v
+        };
+        let caret = parse_caret_value(&cv).unwrap();
+        assert_eq!(caret.coordinate(), Some(-50));
+        assert!(caret.device(&cv).is_none());
     }
 }

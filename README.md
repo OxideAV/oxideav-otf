@@ -436,6 +436,18 @@ views over:
   actions (`sequenceIndex` + `lookupListIndex`) a shaper applies — the
   pattern structure is decoded; nested-lookup resolution and glyph-buffer
   mutation remain the shaping client's responsibility.
+- **Device / VariationIndex tables** — the per-ppem (non-variable) /
+  per-instance (variable) correction tables referenced by GPOS
+  `ValueRecord` `*DeviceOffset` fields, Anchor format-3
+  `x`/`yDeviceOffset`, and GDEF CaretValue format-3 `deviceOffset`. A
+  `Device` table (deltaFormat 1 / 2 / 3) decodes its packed 2- / 4- /
+  8-bit signed deltas — `delta(ppem)` answers the signed pixel
+  correction for a size — and a `VariationIndex` table (deltaFormat
+  0x8000) surfaces its `(deltaSetOuterIndex, deltaSetInnerIndex)`
+  delta-set index pair into the GDEF/BASE `ItemVariationStore`.
+  Reachable through `Anchor::x_device` / `y_device`,
+  `ValueRecord::{x,y}_{placement,advance}_device`, and
+  `CaretValue::device`.
 - **`cmap`** formats 0 / 4 / 6 / 12, `name`, `post` (every version,
   including the full 258-entry standard-Macintosh glyph-name set, so
   formats 1.0 / 2.0 / 2.5 resolve names end-to-end), and `OS/2`
@@ -476,9 +488,9 @@ views over:
   `ReverseChainSingleSubst`: input Coverage → `substituteGlyphIDs` with
   backtrack / lookahead Coverage context, reachable through
   `GsubTable::reverse_chain_single_subst` and the type-7 extension
-  `ExtensionSubst::as_reverse_chain_single_subst`). The `kern` table and
-  Anchor format-3 Device/VariationIndex decoding remain deferred (the
-  latter surfaced as raw offsets only).
+  `ExtensionSubst::as_reverse_chain_single_subst`). The `kern` table
+  remains deferred (no `kern` chapter is staged under
+  `docs/text/opentype/`).
 - (none for `post` — the 258-entry standard-Macintosh glyph-name set is
   now staged and applied: `PostTable::glyph_name` resolves formats 1.0
   (glyph ID → standard name), 2.0 (`glyphNameIndex < 258` → standard,
