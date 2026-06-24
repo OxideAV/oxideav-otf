@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- support **`cmap` subtable format 14** (Unicode Variation Sequences).
+  A new `tables::cmap_uvs::CmapUvs` view decodes the format-14 subtable
+  (VariationSelector records, DefaultUVS range tables, NonDefaultUVS
+  mapping tables — all uint24-keyed and binary-searched). The
+  `CmapTable` retains the format-14 subtable alongside its chosen base
+  subtable (format 14 supplements rather than replaces the base cmap),
+  exposing `CmapTable::uvs` and `CmapTable::lookup_variation`. At the
+  `Font` level, `glyph_index_variation(base, selector)` resolves a
+  variation sequence — a non-default UVS yields its explicit glyph, a
+  default UVS resolves `base` through the base cmap, an unsupported
+  sequence yields `None` — and `variation_sequences()` exposes the
+  `CmapUvs` view for enumerating supported selectors.
+
 - support **`cmap` subtable format 13** (many-to-one range mappings).
   Format 13 shares format 12's on-disk layout but maps every codepoint
   in a `ConstantMapGroup` `[startCharCode, endCharCode]` to the same

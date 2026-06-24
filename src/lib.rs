@@ -50,6 +50,7 @@ use crate::tables::{
     hhea::HheaTable, hmtx::HmtxTable, maxp::MaxpTable, name::NameTable, os2::Os2Table,
 };
 
+pub use crate::tables::cmap_uvs::{CmapUvs, UvsMapping};
 pub use crate::tables::context::{
     ChainedSequenceContext, ChainedSequenceRule, SequenceContext, SequenceLookupRecord,
     SequenceRule,
@@ -497,6 +498,28 @@ impl<'a> Font<'a> {
     /// Map a Unicode codepoint to its glyph id.
     pub fn glyph_index(&self, codepoint: char) -> Option<u16> {
         self.cmap.lookup(codepoint as u32)
+    }
+
+    /// Map a Unicode variation sequence — a `base` character followed by
+    /// a `variation_selector` — to its glyph id, using the `cmap`
+    /// format-14 (Unicode Variation Sequences) subtable.
+    ///
+    /// A non-default UVS yields its font-specified glyph; a default UVS
+    /// resolves `base` through the base `cmap` ([`Font::glyph_index`]);
+    /// an unsupported sequence (or a font with no format-14 subtable)
+    /// yields `None`. Callers that want the "fall back to the base
+    /// glyph for an unsupported selector" behaviour should try this
+    /// first and then `glyph_index(base)`.
+    pub fn glyph_index_variation(&self, base: char, variation_selector: char) -> Option<u16> {
+        self.cmap
+            .lookup_variation(base as u32, variation_selector as u32)
+    }
+
+    /// The `cmap` format-14 (Unicode Variation Sequences) view, if the
+    /// font carries one. Lets callers enumerate the supported variation
+    /// selectors and perform raw `(base, selector)` lookups.
+    pub fn variation_sequences(&self) -> Option<Result<CmapUvs<'a>, Error>> {
+        self.cmap.uvs()
     }
 
     /// Decode the cubic-Bezier outline for `glyph_id`.

@@ -8,11 +8,17 @@
 //! better is present).
 
 use crate::parser::{read_u16, read_u32};
+use crate::tables::cmap_uvs::CmapUvs;
 use crate::Error;
 
 #[derive(Debug, Clone)]
 pub struct CmapTable<'a> {
     subtable: Subtable<'a>,
+    /// Format-14 (Unicode Variation Sequences) subtable bytes, if the
+    /// font carries one (platform 0 / encoding 5). Retained separately
+    /// from the chosen base `subtable` because format 14 supplements —
+    /// rather than replaces — the base cmap.
+    uvs: Option<&'a [u8]>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +44,7 @@ impl<'a> CmapTable<'a> {
 
         let mut best: Option<Subtable<'_>> = None;
         let mut best_rank = i32::MIN;
+        let mut uvs: Option<&[u8]> = None;
 
         for i in 0..num_tables as usize {
             let off = 4 + i * 8;
@@ -52,6 +59,15 @@ impl<'a> CmapTable<'a> {
             let sub = bytes
                 .get(sub_off..sub_off + length)
                 .ok_or(Error::BadOffset)?;
+
+            // Format 14 (Unicode Variation Sequences) supplements — it
+            // does not replace — the base subtable, so it is retained
+            // separately and never participates in the base-subtable
+            // ranking.
+            if format == 14 {
+                uvs = Some(sub);
+                continue;
+            }
 
             let candidate = match format {
                 0 => Some(Subtable::Format0(sub)),
@@ -72,6 +88,7 @@ impl<'a> CmapTable<'a> {
 
         Ok(Self {
             subtable: best.ok_or(Error::UnsupportedCmapFormat(0xFFFF))?,
+            uvs,
         })
     }
 
@@ -85,12 +102,38 @@ impl<'a> CmapTable<'a> {
             Subtable::Format13(b) => lookup_format13(b, codepoint),
         }
     }
+
+    /// The font's Unicode Variation Sequences (format-14) subtable, if
+    /// present. Parsed lazily so the common no-UVS case costs nothing.
+    /// Use [`CmapUvs::lookup`] with a base character + variation
+    /// selector; combine its result with [`CmapTable::lookup`] for the
+    /// default-UVS case.
+    pub fn uvs(&self) -> Option<Result<CmapUvs<'a>, Error>> {
+        self.uvs.map(CmapUvs::parse)
+    }
+
+    /// Convenience: resolve a variation sequence `(base,
+    /// variation_selector)` to a glyph. A non-default UVS yields its
+    /// explicit glyph; a default UVS resolves `base` through the base
+    /// cmap [`CmapTable::lookup`]; an unsupported sequence yields
+    /// `None`. Returns `None` when the font has no format-14 subtable.
+    pub fn lookup_variation(&self, base: u32, variation_selector: u32) -> Option<u16> {
+        let uvs = self.uvs()?.ok()?;
+        match uvs.lookup(base, variation_selector) {
+            crate::tables::cmap_uvs::UvsMapping::Glyph(g) => Some(g),
+            crate::tables::cmap_uvs::UvsMapping::UseDefault => self.lookup(base),
+            crate::tables::cmap_uvs::UvsMapping::NotFound => None,
+        }
+    }
 }
 
 fn subtable_length(bytes: &[u8], off: usize, format: u16) -> Result<usize, Error> {
     Ok(match format {
         0 | 2 | 4 | 6 => read_u16(bytes, off + 2)? as usize,
         8 | 10 | 12 | 13 => read_u32(bytes, off + 4)? as usize,
+        // Format 14's length is a uint32 immediately after the uint16
+        // format field (no reserved/language words in between).
+        14 => read_u32(bytes, off + 2)? as usize,
         _ => return Err(Error::UnsupportedCmapFormat(format)),
     })
 }
