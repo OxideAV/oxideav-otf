@@ -15,6 +15,7 @@ pub mod gsub;
 pub mod head;
 pub mod hhea;
 pub mod hmtx;
+pub mod kern;
 pub mod layout;
 pub mod maxp;
 pub mod name;

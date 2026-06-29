@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- support the legacy **`kern`** table (ISO/IEC 14496-22:2019 §5.7.5),
+  the OFF/Windows version-0 format: a 4-byte header (`version`,
+  `nTables`) followed by subtables, each with its own `coverage`
+  byte-field (horizontal / minimum / cross-stream / override flags + an
+  8-bit format selector). Subtable **format 0** (sorted
+  `(left, right, value)` pair list, binary-searched on the 32-bit
+  `(left << 16) | right` key) and **format 2** (the two-dimensional
+  class-kerning array with pre-multiplied left/right class-table
+  offsets) are both decoded; reserved formats are skipped rather than
+  rejected. `KernView::kerning(left, right)` accumulates the additive
+  horizontal kerning value across applicable subtables (honouring the
+  `override` flag), and the per-subtable `value` / coverage accessors
+  let a shaper apply minimum / cross-stream / vertical subtables itself.
+  Surfaced at the `Font` level via `kern()` and the
+  `kern_pair(left, right)` convenience. (Modern fonts express kerning
+  through GPOS pair adjustment, already supported; `kern` is the legacy
+  fallback.) The Apple version-1.0 `kern` layout is intentionally not
+  decoded (the OFF spec defines only version 0).
+
 - support **`vhea` / `vmtx`** — the vertical header and vertical metrics
   tables (ISO/IEC 14496-22:2019 §§5.7.9–5.7.10). `vhea` decodes both
   v1.0 (`ascent`/`descent`/`lineGap`) and v1.1

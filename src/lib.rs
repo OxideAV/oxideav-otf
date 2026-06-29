@@ -47,8 +47,8 @@ use crate::cff::Cff;
 use crate::parser::TableDirectory;
 use crate::tables::{
     cmap::CmapTable, gdef::GdefTable, gpos::GposTable, gsub::GsubTable, head::HeadTable,
-    hhea::HheaTable, hmtx::HmtxTable, maxp::MaxpTable, name::NameTable, os2::Os2Table,
-    vhea::VheaTable, vmtx::VmtxTable,
+    hhea::HheaTable, hmtx::HmtxTable, kern::KernTable, maxp::MaxpTable, name::NameTable,
+    os2::Os2Table, vhea::VheaTable, vmtx::VmtxTable,
 };
 
 pub use crate::tables::cmap_uvs::{CmapUvs, UvsMapping};
@@ -78,6 +78,10 @@ pub use crate::tables::gsub::{
     SingleSubstIter, GSUB_LOOKUP_TYPE_ALTERNATE, GSUB_LOOKUP_TYPE_CHAINED_CONTEXT,
     GSUB_LOOKUP_TYPE_CONTEXT, GSUB_LOOKUP_TYPE_EXTENSION, GSUB_LOOKUP_TYPE_LIGATURE,
     GSUB_LOOKUP_TYPE_MULTIPLE, GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE, GSUB_LOOKUP_TYPE_SINGLE,
+};
+pub use crate::tables::kern::{
+    KernSubtable, KernTable as KernView, KERN_COVERAGE_CROSS_STREAM, KERN_COVERAGE_HORIZONTAL,
+    KERN_COVERAGE_MINIMUM, KERN_COVERAGE_OVERRIDE,
 };
 pub use crate::tables::layout::{
     Feature, FeatureList, FeatureListIter, LangSys, Lookup, LookupFlag, LookupList, LookupListIter,
@@ -269,6 +273,11 @@ pub struct Font<'a> {
     /// header shape as `GSUB`; per-lookup positioning-subtable
     /// decoding is deferred.
     gpos: Option<GposTable<'a>>,
+    /// `kern` — legacy kerning table. Optional. Modern fonts express
+    /// kerning through GPOS pair adjustment, but many still ship a
+    /// `kern` table for compatibility; we decode the OFF/Windows
+    /// version-0 format (subtable formats 0 and 2).
+    kern: Option<KernTable<'a>>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -370,6 +379,14 @@ impl<'a> Font<'a> {
             None => None,
         };
 
+        // `kern` is optional and may use formats we don't decode; a
+        // malformed `kern` shouldn't sink the whole font, so we tolerate
+        // a parse failure by surfacing `None`.
+        let kern = match dir.find(b"kern", bytes) {
+            Some(slice) => KernTable::parse(slice).ok(),
+            None => None,
+        };
+
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
             CffFlavour::Cff2(Box::new(Cff2::parse(cff2_bytes)?))
@@ -394,6 +411,7 @@ impl<'a> Font<'a> {
             gdef,
             gsub,
             gpos,
+            kern,
             cff,
         })
     }
@@ -648,6 +666,25 @@ impl<'a> Font<'a> {
     /// `None` when the font carries no vertical metrics.
     pub fn glyph_tsb(&self, glyph_id: u16) -> Option<i16> {
         self.vmtx.as_ref().map(|v| v.top_side_bearing(glyph_id))
+    }
+
+    // ---- legacy kerning (kern) --------------------------------------------
+
+    /// Raw `kern` table view, if present. Modern shaping uses GPOS pair
+    /// adjustment (`Font::gpos`); `kern` is a legacy fallback.
+    pub fn kern(&self) -> Option<&KernTable<'a>> {
+        self.kern.as_ref()
+    }
+
+    /// Convenience: accumulated horizontal kerning adjustment for an
+    /// ordered glyph pair from the legacy `kern` table, in font units.
+    /// Returns 0 when the font has no `kern` table or the pair is
+    /// uncovered. (See `KernView::kerning` for the additive semantics.)
+    pub fn kern_pair(&self, left: u16, right: u16) -> i16 {
+        self.kern
+            .as_ref()
+            .map(|k| k.kerning(left, right))
+            .unwrap_or(0)
     }
 
     /// Glyph name (from CFF charset / strings) — useful for diagnostics
