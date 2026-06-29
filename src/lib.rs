@@ -48,6 +48,7 @@ use crate::parser::TableDirectory;
 use crate::tables::{
     cmap::CmapTable, gdef::GdefTable, gpos::GposTable, gsub::GsubTable, head::HeadTable,
     hhea::HheaTable, hmtx::HmtxTable, maxp::MaxpTable, name::NameTable, os2::Os2Table,
+    vhea::VheaTable, vmtx::VmtxTable,
 };
 
 pub use crate::tables::cmap_uvs::{CmapUvs, UvsMapping};
@@ -93,6 +94,8 @@ pub use crate::tables::os2::{
 pub use crate::tables::post::{
     standard_mac_glyph_name, PostFormat, PostGlyphName, PostTable, STANDARD_MAC_GLYPH_NAMES,
 };
+pub use crate::tables::vhea::VheaTable as VheaView;
+pub use crate::tables::vmtx::VmtxTable as VmtxView;
 
 /// Errors emitted during font parsing or glyph lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,6 +236,14 @@ pub struct Font<'a> {
     cmap: CmapTable<'a>,
     name: NameTable<'a>,
     hmtx: HmtxTable<'a>,
+    /// `vhea` — vertical header. Optional: only present in fonts that
+    /// support vertical writing (typically CJK). Carries
+    /// `numOfLongVerMetrics`, consumed by `vmtx`.
+    vhea: Option<VheaTable>,
+    /// `vmtx` — vertical metrics. Present only alongside `vhea`; parsed
+    /// only when both tables exist (per spec they are co-required for
+    /// vertical fonts).
+    vmtx: Option<VmtxTable<'a>>,
     /// Optional per OpenType spec: every well-formed OpenType font
     /// carries `post`, but some real-world stripped-down fonts omit
     /// it. We tolerate absence rather than reject the whole font.
@@ -304,6 +315,23 @@ impl<'a> Font<'a> {
             maxp.num_glyphs,
         )?;
 
+        // `vhea` / `vmtx` are co-required for vertical fonts and absent
+        // from horizontal-only fonts. Parse `vmtx` only when `vhea`
+        // supplied `numOfLongVerMetrics`; a `vhea` without `vmtx`
+        // surfaces metrics-free vertical header data.
+        let vhea = match dir.find(b"vhea", bytes) {
+            Some(slice) => Some(VheaTable::parse(slice)?),
+            None => None,
+        };
+        let vmtx = match (&vhea, dir.find(b"vmtx", bytes)) {
+            (Some(vh), Some(slice)) => Some(VmtxTable::parse(
+                slice,
+                vh.num_long_ver_metrics,
+                maxp.num_glyphs,
+            )?),
+            _ => None,
+        };
+
         // `post` is one of the OpenType-spec required tables (per
         // `otspec-otff.html` "Required Tables"); for OpenType-CFF1 the
         // spec mandates version 3.0. Some real-world stripped-down
@@ -359,6 +387,8 @@ impl<'a> Font<'a> {
             cmap,
             name,
             hmtx,
+            vhea,
+            vmtx,
             post,
             os2,
             gdef,
@@ -575,6 +605,49 @@ impl<'a> Font<'a> {
     /// Per-glyph left-side bearing in font units.
     pub fn glyph_lsb(&self, glyph_id: u16) -> i16 {
         self.hmtx.lsb(glyph_id)
+    }
+
+    // ---- vertical metrics (vhea / vmtx) ------------------------------------
+
+    /// Whether this font carries vertical layout metrics (`vhea` +
+    /// `vmtx`). Typically true only for CJK fonts.
+    pub fn has_vertical_metrics(&self) -> bool {
+        self.vmtx.is_some()
+    }
+
+    /// Raw `vhea` view, if present.
+    pub fn vhea(&self) -> Option<&VheaTable> {
+        self.vhea.as_ref()
+    }
+
+    /// Vertical typographic ascender (`vhea.vertTypoAscender` /
+    /// v1.0 `ascent`). `None` when the font has no `vhea`.
+    pub fn vertical_ascent(&self) -> Option<i16> {
+        self.vhea.as_ref().map(|v| v.ascent)
+    }
+
+    /// Vertical typographic descender (`vhea.vertTypoDescender` /
+    /// v1.0 `descent`).
+    pub fn vertical_descent(&self) -> Option<i16> {
+        self.vhea.as_ref().map(|v| v.descent)
+    }
+
+    /// Vertical typographic line gap (`vhea.vertTypoLineGap` /
+    /// v1.0 `lineGap`).
+    pub fn vertical_line_gap(&self) -> Option<i16> {
+        self.vhea.as_ref().map(|v| v.line_gap)
+    }
+
+    /// Per-glyph advance **height** in font units (`vmtx.advanceHeight`).
+    /// `None` when the font carries no vertical metrics.
+    pub fn glyph_advance_height(&self, glyph_id: u16) -> Option<u16> {
+        self.vmtx.as_ref().map(|v| v.advance(glyph_id))
+    }
+
+    /// Per-glyph top side bearing in font units (`vmtx.topSideBearing`).
+    /// `None` when the font carries no vertical metrics.
+    pub fn glyph_tsb(&self, glyph_id: u16) -> Option<i16> {
+        self.vmtx.as_ref().map(|v| v.top_side_bearing(glyph_id))
     }
 
     /// Glyph name (from CFF charset / strings) — useful for diagnostics

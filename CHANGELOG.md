@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- support **`vhea` / `vmtx`** — the vertical header and vertical metrics
+  tables (ISO/IEC 14496-22:2019 §§5.7.9–5.7.10). `vhea` decodes both
+  v1.0 (`ascent`/`descent`/`lineGap`) and v1.1
+  (`vertTypoAscender`/`vertTypoDescender`/`vertTypoLineGap`) — the two
+  versions share an identical 36-byte layout, differing only in field
+  names — surfacing `numOfLongVerMetrics` plus the caret slope / extent
+  fields. `vmtx` mirrors `hmtx`: `numOfLongVerMetrics`
+  `(advanceHeight, topSideBearing)` pairs followed by a bare
+  `topSideBearing` tail, with tail glyphs inheriting the last full
+  advance height (the spec's monospaced-run optimisation). Both tables
+  are optional (present only in vertical / CJK fonts) and surfaced at
+  the `Font` level via `has_vertical_metrics`, `vhea`,
+  `vertical_ascent` / `vertical_descent` / `vertical_line_gap`,
+  `glyph_advance_height`, and `glyph_tsb`.
+
 - support **`cmap` subtable format 2** (high-byte mapping through table)
   — the legacy mixed 8-/16-bit encoding used by CJK code-page fonts. A
   code point's high byte selects a `SubHeader` via the
