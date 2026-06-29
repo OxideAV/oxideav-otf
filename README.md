@@ -509,6 +509,11 @@ outline directly from **user-scale axis coordinates** (e.g. `wght = 700`):
   records + the IVS, resolving font-wide metric adjustments.
   `Font::metric_variation(tag, &user_coords)` (e.g. `b"hasc"` →
   `OS/2.sTypoAscender` delta).
+- **`HVAR` / `VVAR`** (§7.3.5, §7.3.8) — per-glyph horizontal/vertical
+  metrics variations via the IVS + `DeltaSetIndexMap` (advance, side
+  bearings, and `VVAR`'s vertical origin; implicit glyph-ID index when
+  no advance map is present). `Font::advance_width_variation` /
+  `advance_height_variation(gid, &user_coords)`.
 - **`STAT`** (§7.3.7) — the style attributes table: design-axis records
   (tag / name ID / ordering) and all four axis-value-table formats
   (1 single value, 2 value + range, 3 value + style-link, 4 multi-axis

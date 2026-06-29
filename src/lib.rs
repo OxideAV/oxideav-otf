@@ -49,7 +49,7 @@ use crate::tables::{
     avar::AvarTable, cmap::CmapTable, fvar::FvarTable, gdef::GdefTable, gpos::GposTable,
     gsub::GsubTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable, kern::KernTable,
     maxp::MaxpTable, mvar::MvarTable, name::NameTable, os2::Os2Table, stat::StatTable,
-    vhea::VheaTable, vmtx::VmtxTable,
+    vhea::VheaTable, vmtx::VmtxTable, xvar::MetricsVariations,
 };
 
 pub use crate::tables::avar::{AvarTable as AvarView, AxisValueMap, SegmentMap};
@@ -85,7 +85,7 @@ pub use crate::tables::gsub::{
     GSUB_LOOKUP_TYPE_MULTIPLE, GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE, GSUB_LOOKUP_TYPE_SINGLE,
 };
 pub use crate::tables::ivs::{
-    ItemVariationData as DeltaSetItemVariationData,
+    DeltaSetIndexMap, ItemVariationData as DeltaSetItemVariationData,
     ItemVariationStore as DeltaSetItemVariationStore,
 };
 pub use crate::tables::kern::{
@@ -114,6 +114,7 @@ pub use crate::tables::stat::{
 };
 pub use crate::tables::vhea::VheaTable as VheaView;
 pub use crate::tables::vmtx::VmtxTable as VmtxView;
+pub use crate::tables::xvar::MetricsVariations as MetricsVariationsView;
 
 /// Errors emitted during font parsing or glyph lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,6 +308,13 @@ pub struct Font<'a> {
     /// `hhea` / `vhea` / `post` metrics per instance via an
     /// ItemVariationStore keyed by four-byte value tags.
     mvar: Option<MvarTable>,
+    /// `HVAR` — horizontal metrics variations. Optional (required for
+    /// CFF2 variable fonts with varying advance widths); per-glyph
+    /// advance-width / side-bearing per-instance adjustments.
+    hvar: Option<MetricsVariations>,
+    /// `VVAR` — vertical metrics variations. Optional; per-glyph
+    /// advance-height / side-bearing / vertical-origin adjustments.
+    vvar: Option<MetricsVariations>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -438,6 +446,16 @@ impl<'a> Font<'a> {
             Some(slice) => MvarTable::parse(slice).ok(),
             None => None,
         };
+        // `HVAR` / `VVAR` — per-glyph metrics variations. Variable-font
+        // tables; tolerate malformed data.
+        let hvar = match dir.find(b"HVAR", bytes) {
+            Some(slice) => MetricsVariations::parse_hvar(slice).ok(),
+            None => None,
+        };
+        let vvar = match dir.find(b"VVAR", bytes) {
+            Some(slice) => MetricsVariations::parse_vvar(slice).ok(),
+            None => None,
+        };
 
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
@@ -468,6 +486,8 @@ impl<'a> Font<'a> {
             avar,
             stat,
             mvar,
+            hvar,
+            vvar,
             cff,
         })
     }
@@ -873,6 +893,41 @@ impl<'a> Font<'a> {
         };
         let normalized = self.normalize_coords(user_coords);
         mvar.metric_delta(tag, &normalized)
+    }
+
+    // ---- per-glyph metrics variations (HVAR / VVAR) -----------------------
+
+    /// The `HVAR` table view, if present.
+    pub fn hvar(&self) -> Option<&MetricsVariations> {
+        self.hvar.as_ref()
+    }
+
+    /// The `VVAR` table view, if present.
+    pub fn vvar(&self) -> Option<&MetricsVariations> {
+        self.vvar.as_ref()
+    }
+
+    /// The per-instance **advance-width** adjustment for a glyph from
+    /// `HVAR`, given user-scale axis coordinates. Returns `0.0` when
+    /// there is no `HVAR` table. Add to the `hmtx` advance to get the
+    /// instance advance width.
+    pub fn advance_width_variation(&self, glyph_id: u16, user_coords: &[f32]) -> f32 {
+        let Some(hvar) = self.hvar.as_ref() else {
+            return 0.0;
+        };
+        let normalized = self.normalize_coords(user_coords);
+        hvar.advance(glyph_id, &normalized)
+    }
+
+    /// The per-instance **advance-height** adjustment for a glyph from
+    /// `VVAR`, given user-scale axis coordinates. Returns `0.0` when
+    /// there is no `VVAR` table. Add to the `vmtx` advance height.
+    pub fn advance_height_variation(&self, glyph_id: u16, user_coords: &[f32]) -> f32 {
+        let Some(vvar) = self.vvar.as_ref() else {
+            return 0.0;
+        };
+        let normalized = self.normalize_coords(user_coords);
+        vvar.advance(glyph_id, &normalized)
     }
 
     /// Glyph name (from CFF charset / strings) — useful for diagnostics

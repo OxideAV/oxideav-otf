@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- support the **`HVAR`** and **`VVAR`** per-glyph metrics variations
+  tables (ISO/IEC 14496-22:2019 §7.3.5, §7.3.8): the IVS-offset +
+  `DeltaSetIndexMap` offsets header (advance + side bearings, plus
+  `VVAR`'s vertical-origin map) and the `DeltaSetIndexMap` itself (the
+  packed `entryFormat` with inner-index bit count + entry size, glyph IDs
+  past `mapCount` clamping to the last entry). `advance` resolves the
+  per-glyph advance adjustment (implicit glyph-ID index when no advance
+  map is present); the side-bearing / vertical-origin accessors do the
+  same for their maps. Surfaced via `Font::hvar` / `vvar` /
+  `advance_width_variation` / `advance_height_variation`.
+
 - decode the **delta-set-storing `ItemVariationStore`** (ISO/IEC
   14496-22:2019 §7.2.3) — the variation-data structure shared by the
   metrics/positioning variation tables (distinct from the CFF2

@@ -198,6 +198,74 @@ impl ItemVariationStore {
     }
 }
 
+/// A `DeltaSetIndexMap` table (ISO/IEC 14496-22:2019 §7.3.5.2): maps a
+/// glyph ID (the array index) to a delta-set `(outer, inner)` index
+/// pair, in a packed representation.
+///
+/// The 16-bit-`mapCount` form decoded here has the layout
+/// `entryFormat(2) mapCount(2) mapData[]`. The `entryFormat` packs the
+/// inner-index bit count (low 4 bits, minus 1) and the per-entry byte
+/// size (bits 4-5, minus 1). A glyph ID past `mapCount - 1` clamps to
+/// the last entry.
+#[derive(Debug, Clone)]
+pub struct DeltaSetIndexMap {
+    inner_bit_count: u32,
+    entry_size: usize,
+    map_count: usize,
+    /// The raw `mapData` slice.
+    data: Vec<u8>,
+}
+
+impl DeltaSetIndexMap {
+    /// Parse a 16-bit-`mapCount` DeltaSetIndexMap at `offset` within
+    /// `parent`.
+    pub fn parse_at(parent: &[u8], offset: usize) -> Result<Self, Error> {
+        if offset + 4 > parent.len() {
+            return Err(Error::UnexpectedEof);
+        }
+        let entry_format = read_u16(parent, offset)?;
+        let map_count = read_u16(parent, offset + 2)? as usize;
+        let inner_bit_count = (entry_format & 0x000F) as u32 + 1;
+        let entry_size = (((entry_format & 0x0030) >> 4) + 1) as usize;
+        let data_start = offset + 4;
+        let data_len = entry_size * map_count;
+        let data = parent
+            .get(data_start..data_start + data_len)
+            .ok_or(Error::UnexpectedEof)?
+            .to_vec();
+        Ok(Self {
+            inner_bit_count,
+            entry_size,
+            map_count,
+            data,
+        })
+    }
+
+    /// Resolve a glyph ID to its `(outerIndex, innerIndex)` delta-set
+    /// index pair. A glyph past the last entry clamps to the last entry
+    /// (per spec).
+    pub fn index(&self, glyph_id: u16) -> (u16, u16) {
+        if self.map_count == 0 {
+            return (0, 0);
+        }
+        let i = (glyph_id as usize).min(self.map_count - 1);
+        let off = i * self.entry_size;
+        let mut entry: u32 = 0;
+        for b in 0..self.entry_size {
+            entry = (entry << 8) | self.data[off + b] as u32;
+        }
+        let inner_mask = (1u32 << self.inner_bit_count) - 1;
+        let outer = (entry >> self.inner_bit_count) as u16;
+        let inner = (entry & inner_mask) as u16;
+        (outer, inner)
+    }
+
+    /// Number of mapping entries.
+    pub fn map_count(&self) -> usize {
+        self.map_count
+    }
+}
+
 /// Parse the `VariationRegionList` at `offset`; returns
 /// `(axisCount, regions)`.
 fn parse_region_list(ivs: &[u8], offset: usize) -> Result<(u16, Vec<VariationRegion>), Error> {
@@ -297,5 +365,30 @@ mod tests {
             ItemVariationStore::parse(&v),
             Err(Error::BadStructure(_))
         ));
+    }
+
+    #[test]
+    fn delta_set_index_map_unpacks_entries() {
+        // entryFormat: inner bit count 4 (low nibble = 3), entry size 2
+        // bytes (bits 4-5 = 1). 3 entries.
+        let entry_format: u16 = 0x0013; // (0x0010 size=2) | (0x0003 inner=4)
+        let mut p = Vec::new();
+        p.extend_from_slice(&entry_format.to_be_bytes());
+        p.extend_from_slice(&3u16.to_be_bytes()); // mapCount
+                                                  // entry = (outer << 4) | inner.
+                                                  // glyph0 -> (1, 2) = 0x12
+        p.extend_from_slice(&0x0012u16.to_be_bytes());
+        // glyph1 -> (0, 5) = 0x05
+        p.extend_from_slice(&0x0005u16.to_be_bytes());
+        // glyph2 -> (2, 0) = 0x20
+        p.extend_from_slice(&0x0020u16.to_be_bytes());
+
+        let m = DeltaSetIndexMap::parse_at(&p, 0).unwrap();
+        assert_eq!(m.map_count(), 3);
+        assert_eq!(m.index(0), (1, 2));
+        assert_eq!(m.index(1), (0, 5));
+        assert_eq!(m.index(2), (2, 0));
+        // glyph past the end clamps to the last entry.
+        assert_eq!(m.index(99), (2, 0));
     }
 }
