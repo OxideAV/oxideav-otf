@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- decode the **delta-set-storing `ItemVariationStore`** (ISO/IEC
+  14496-22:2019 §7.2.3) — the variation-data structure shared by the
+  metrics/positioning variation tables (distinct from the CFF2
+  delta-free IVS where deltas live in CharStrings). It stores the
+  `itemCount × regionIndexCount` delta-set matrix (first
+  `shortDeltaCount` columns `int16`, the rest `int8`) and resolves a
+  `(outer, inner)` index pair to a per-instance adjustment via the
+  §7.1.7 region-scalar algorithm (`tables::ivs`).
+
+- support the **`MVAR`** metrics variations table (§7.3.6): the value
+  records mapping a four-byte value tag (e.g. `b"hasc"` =
+  `OS/2.sTypoAscender`) to a delta-set index, plus the embedded
+  ItemVariationStore. `MvarView::metric_delta` /
+  `Font::metric_variation(tag, user_coords)` resolve a font-wide
+  metric's per-instance adjustment (value records binary-searched by
+  tag; absent tag ⇒ constant metric ⇒ 0).
+
 - support the **`STAT`** style attributes table (ISO/IEC
   14496-22:2019 §7.3.7): the header (version 1.1/1.2, design-axis +
   axis-value arrays, `elidedFallbackNameID`), the design-axis records

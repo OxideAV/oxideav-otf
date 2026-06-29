@@ -500,6 +500,15 @@ outline directly from **user-scale axis coordinates** (e.g. `wght = 700`):
   produces the per-region scalar vector for an `ItemVariationData`
   subtable. Validated against the §7.1.8 Skia two-axis example
   (instance `(0.2, 0.7)` → R1 `0.2`, R2 `0.7`, R3 `0.14`).
+- **Delta-set `ItemVariationStore`** (§7.2.3) — the variation-data
+  structure carrying the `itemCount × regionIndexCount` delta matrix
+  (the metrics/positioning IVS, distinct from the CFF2 delta-free one);
+  `delta(outer, inner, &normalized)` resolves a delta-set to a
+  per-instance adjustment (`tables::ivs`).
+- **`MVAR`** (§7.3.6) — metrics variations: value-tag → delta-set
+  records + the IVS, resolving font-wide metric adjustments.
+  `Font::metric_variation(tag, &user_coords)` (e.g. `b"hasc"` →
+  `OS/2.sTypoAscender` delta).
 - **`STAT`** (§7.3.7) — the style attributes table: design-axis records
   (tag / name ID / ordering) and all four axis-value-table formats
   (1 single value, 2 value + range, 3 value + style-link, 4 multi-axis

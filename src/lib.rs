@@ -48,8 +48,8 @@ use crate::parser::TableDirectory;
 use crate::tables::{
     avar::AvarTable, cmap::CmapTable, fvar::FvarTable, gdef::GdefTable, gpos::GposTable,
     gsub::GsubTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable, kern::KernTable,
-    maxp::MaxpTable, name::NameTable, os2::Os2Table, stat::StatTable, vhea::VheaTable,
-    vmtx::VmtxTable,
+    maxp::MaxpTable, mvar::MvarTable, name::NameTable, os2::Os2Table, stat::StatTable,
+    vhea::VheaTable, vmtx::VmtxTable,
 };
 
 pub use crate::tables::avar::{AvarTable as AvarView, AxisValueMap, SegmentMap};
@@ -84,6 +84,10 @@ pub use crate::tables::gsub::{
     GSUB_LOOKUP_TYPE_CONTEXT, GSUB_LOOKUP_TYPE_EXTENSION, GSUB_LOOKUP_TYPE_LIGATURE,
     GSUB_LOOKUP_TYPE_MULTIPLE, GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE, GSUB_LOOKUP_TYPE_SINGLE,
 };
+pub use crate::tables::ivs::{
+    ItemVariationData as DeltaSetItemVariationData,
+    ItemVariationStore as DeltaSetItemVariationStore,
+};
 pub use crate::tables::kern::{
     KernSubtable, KernTable as KernView, KERN_COVERAGE_CROSS_STREAM, KERN_COVERAGE_HORIZONTAL,
     KERN_COVERAGE_MINIMUM, KERN_COVERAGE_OVERRIDE,
@@ -92,6 +96,7 @@ pub use crate::tables::layout::{
     Feature, FeatureList, FeatureListIter, LangSys, Lookup, LookupFlag, LookupList, LookupListIter,
     Script, ScriptList, ScriptListIter, NO_REQUIRED_FEATURE,
 };
+pub use crate::tables::mvar::{MvarTable as MvarView, ValueRecord as MvarValueRecord};
 pub use crate::tables::name::{NameId, NameRecord};
 pub use crate::tables::os2::{
     EmbeddingPermission, FS_SELECTION_BOLD, FS_SELECTION_ITALIC, FS_SELECTION_NEGATIVE,
@@ -298,6 +303,10 @@ pub struct Font<'a> {
     /// optional otherwise; describes the family-relative design
     /// attributes and their `name`-table associations.
     stat: Option<StatTable>,
+    /// `MVAR` — metrics variations. Optional; varies font-wide `OS/2` /
+    /// `hhea` / `vhea` / `post` metrics per instance via an
+    /// ItemVariationStore keyed by four-byte value tags.
+    mvar: Option<MvarTable>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -424,6 +433,11 @@ impl<'a> Font<'a> {
             Some(slice) => StatTable::parse(slice).ok(),
             None => None,
         };
+        // `MVAR` is a variable-font table; tolerate a malformed table.
+        let mvar = match dir.find(b"MVAR", bytes) {
+            Some(slice) => MvarTable::parse(slice).ok(),
+            None => None,
+        };
 
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
@@ -453,6 +467,7 @@ impl<'a> Font<'a> {
             fvar,
             avar,
             stat,
+            mvar,
             cff,
         })
     }
@@ -836,6 +851,28 @@ impl<'a> Font<'a> {
     /// `(major, minor)` version of the `STAT` table, if present.
     pub fn stat_version(&self) -> Option<(u16, u16)> {
         self.stat.as_ref().map(|s| s.version())
+    }
+
+    // ---- metrics variations (MVAR) ----------------------------------------
+
+    /// The `MVAR` table view, if present. Exposes the value records and
+    /// the ItemVariationStore that vary font-wide metrics.
+    pub fn mvar(&self) -> Option<&MvarTable> {
+        self.mvar.as_ref()
+    }
+
+    /// The per-instance adjustment for a font-wide metric value tag
+    /// (e.g. `b"hasc"` = `OS/2.sTypoAscender`), given **user-scale** axis
+    /// coordinates. Normalizes `user_coords` through `fvar`/`avar`, then
+    /// resolves the `MVAR` delta. Returns `0.0` when there is no `MVAR`
+    /// table, the tag is absent (constant metric), or the font has no
+    /// axes. Add the result to the base metric to get the instance value.
+    pub fn metric_variation(&self, tag: &[u8; 4], user_coords: &[f32]) -> f32 {
+        let Some(mvar) = self.mvar.as_ref() else {
+            return 0.0;
+        };
+        let normalized = self.normalize_coords(user_coords);
+        mvar.metric_delta(tag, &normalized)
     }
 
     /// Glyph name (from CFF charset / strings) — useful for diagnostics
