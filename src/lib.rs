@@ -48,7 +48,8 @@ use crate::parser::TableDirectory;
 use crate::tables::{
     avar::AvarTable, cmap::CmapTable, fvar::FvarTable, gdef::GdefTable, gpos::GposTable,
     gsub::GsubTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable, kern::KernTable,
-    maxp::MaxpTable, name::NameTable, os2::Os2Table, vhea::VheaTable, vmtx::VmtxTable,
+    maxp::MaxpTable, name::NameTable, os2::Os2Table, stat::StatTable, vhea::VheaTable,
+    vmtx::VmtxTable,
 };
 
 pub use crate::tables::avar::{AvarTable as AvarView, AxisValueMap, SegmentMap};
@@ -101,6 +102,10 @@ pub use crate::tables::os2::{
 };
 pub use crate::tables::post::{
     standard_mac_glyph_name, PostFormat, PostGlyphName, PostTable, STANDARD_MAC_GLYPH_NAMES,
+};
+pub use crate::tables::stat::{
+    AxisValue, StatAxisRecord, StatTable as StatView, STAT_ELIDABLE_AXIS_VALUE_NAME,
+    STAT_OLDER_SIBLING_FONT_ATTRIBUTE,
 };
 pub use crate::tables::vhea::VheaTable as VheaView;
 pub use crate::tables::vmtx::VmtxTable as VmtxView;
@@ -289,6 +294,10 @@ pub struct Font<'a> {
     /// `avar` — axis variations table. Optional; refines `fvar`'s
     /// default normalization with per-axis segment maps.
     avar: Option<AvarTable>,
+    /// `STAT` — style attributes table. Required in variable fonts,
+    /// optional otherwise; describes the family-relative design
+    /// attributes and their `name`-table associations.
+    stat: Option<StatTable>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -409,6 +418,12 @@ impl<'a> Font<'a> {
             (Some(_), Some(slice)) => AvarTable::parse(slice).ok(),
             _ => None,
         };
+        // `STAT` is independent of fvar (allowed in non-variable fonts);
+        // tolerate a malformed table by surfacing `None`.
+        let stat = match dir.find(b"STAT", bytes) {
+            Some(slice) => StatTable::parse(slice).ok(),
+            None => None,
+        };
 
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
@@ -437,6 +452,7 @@ impl<'a> Font<'a> {
             kern,
             fvar,
             avar,
+            stat,
             cff,
         })
     }
@@ -806,6 +822,20 @@ impl<'a> Font<'a> {
                 c.glyph_outline_var(glyph_id as u32, &scalars)
             }
         }
+    }
+
+    // ---- style attributes (STAT) ------------------------------------------
+
+    /// The `STAT` table view, if present. Exposes the design-axis
+    /// records, the axis-value tables (formats 1-4), and the
+    /// elided-fallback name ID.
+    pub fn stat(&self) -> Option<&StatTable> {
+        self.stat.as_ref()
+    }
+
+    /// `(major, minor)` version of the `STAT` table, if present.
+    pub fn stat_version(&self) -> Option<(u16, u16)> {
+        self.stat.as_ref().map(|s| s.version())
     }
 
     /// Glyph name (from CFF charset / strings) — useful for diagnostics

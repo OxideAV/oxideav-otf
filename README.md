@@ -500,6 +500,11 @@ outline directly from **user-scale axis coordinates** (e.g. `wght = 700`):
   produces the per-region scalar vector for an `ItemVariationData`
   subtable. Validated against the §7.1.8 Skia two-axis example
   (instance `(0.2, 0.7)` → R1 `0.2`, R2 `0.7`, R3 `0.14`).
+- **`STAT`** (§7.3.7) — the style attributes table: design-axis records
+  (tag / name ID / ordering) and all four axis-value-table formats
+  (1 single value, 2 value + range, 3 value + style-link, 4 multi-axis
+  combination), with the older-sibling / elidable flags. Surfaced via
+  `Font::stat` / `Font::stat_version`.
 - **End-to-end glue** — `Font::normalize_coords(&user_coords)` runs the
   full `fvar` → `avar` pipeline, and `Font::glyph_outline_for_axes(gid,
   &user_coords)` chains normalization → region scalars → the CFF2

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- support the **`STAT`** style attributes table (ISO/IEC
+  14496-22:2019 §7.3.7): the header (version 1.1/1.2, design-axis +
+  axis-value arrays, `elidedFallbackNameID`), the design-axis records
+  (`axisTag` / `axisNameID` / `axisOrdering`), and all four axis-value
+  table formats — format 1 (single value), format 2 (nominal value +
+  `[min, max]` range), format 3 (value + style-linked counterpart), and
+  format 4 (multi-axis combination). The `OLDER_SIBLING_FONT_ATTRIBUTE`
+  and `ELIDABLE_AXIS_VALUE_NAME` flags are exposed; NULL offsets and
+  unrecognised formats are skipped per spec. Surfaced via `Font::stat`
+  and `Font::stat_version`.
+
 - support the variable-font axis-definition tables and connect them to
   the CFF2 variation interpreter (ISO/IEC 14496-22:2019 §7.1, §7.3):
   - **`fvar`** (§7.3.3) — decode the variation axes
