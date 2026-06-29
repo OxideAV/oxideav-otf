@@ -519,6 +519,9 @@ outline directly from **user-scale axis coordinates** (e.g. `wght = 700`):
   (1 single value, 2 value + range, 3 value + style-link, 4 multi-axis
   combination), with the older-sibling / elidable flags. Surfaced via
   `Font::stat` / `Font::stat_version`.
+- **`BASE`** (§6.3) — the baseline table: per-axis baseline tag lists +
+  per-script `BaseValues` resolving BaseCoord (formats 1/2/3) values.
+  `Font::base` / `Font::baseline_coord(axis, script_tag, baseline_tag)`.
 - **End-to-end glue** — `Font::normalize_coords(&user_coords)` runs the
   full `fvar` → `avar` pipeline, and `Font::glyph_outline_for_axes(gid,
   &user_coords)` chains normalization → region scalars → the CFF2

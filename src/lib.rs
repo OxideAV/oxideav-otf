@@ -46,13 +46,16 @@ pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
 use crate::cff::Cff;
 use crate::parser::TableDirectory;
 use crate::tables::{
-    avar::AvarTable, cmap::CmapTable, fvar::FvarTable, gdef::GdefTable, gpos::GposTable,
-    gsub::GsubTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable, kern::KernTable,
-    maxp::MaxpTable, mvar::MvarTable, name::NameTable, os2::Os2Table, stat::StatTable,
-    vhea::VheaTable, vmtx::VmtxTable, xvar::MetricsVariations,
+    avar::AvarTable, base::BaseTable, cmap::CmapTable, fvar::FvarTable, gdef::GdefTable,
+    gpos::GposTable, gsub::GsubTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable,
+    kern::KernTable, maxp::MaxpTable, mvar::MvarTable, name::NameTable, os2::Os2Table,
+    stat::StatTable, vhea::VheaTable, vmtx::VmtxTable, xvar::MetricsVariations,
 };
 
 pub use crate::tables::avar::{AvarTable as AvarView, AxisValueMap, SegmentMap};
+pub use crate::tables::base::{
+    AxisTable as BaseAxisTable, BaseAxis, BaseScript, BaseTable as BaseView,
+};
 pub use crate::tables::cmap_uvs::{CmapUvs, UvsMapping};
 pub use crate::tables::context::{
     ChainedSequenceContext, ChainedSequenceRule, SequenceContext, SequenceLookupRecord,
@@ -315,6 +318,9 @@ pub struct Font<'a> {
     /// `VVAR` — vertical metrics variations. Optional; per-glyph
     /// advance-height / side-bearing / vertical-origin adjustments.
     vvar: Option<MetricsVariations>,
+    /// `BASE` — baseline table. Optional; per-axis, per-script baseline
+    /// coordinates and min/max extents for multi-script alignment.
+    base: Option<BaseTable>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -456,6 +462,12 @@ impl<'a> Font<'a> {
             Some(slice) => MetricsVariations::parse_vvar(slice).ok(),
             None => None,
         };
+        // `BASE` is optional and allowed in non-variable fonts; tolerate
+        // a malformed table.
+        let base = match dir.find(b"BASE", bytes) {
+            Some(slice) => BaseTable::parse(slice).ok(),
+            None => None,
+        };
 
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
@@ -488,6 +500,7 @@ impl<'a> Font<'a> {
             mvar,
             hvar,
             vvar,
+            base,
             cff,
         })
     }
@@ -928,6 +941,28 @@ impl<'a> Font<'a> {
         };
         let normalized = self.normalize_coords(user_coords);
         vvar.advance(glyph_id, &normalized)
+    }
+
+    // ---- baselines (BASE) -------------------------------------------------
+
+    /// The `BASE` table view, if present.
+    pub fn base(&self) -> Option<&BaseTable> {
+        self.base.as_ref()
+    }
+
+    /// Convenience: the baseline coordinate (design units) for a given
+    /// `(script_tag, baseline_tag)` on an axis, from the `BASE` table.
+    /// `None` when there is no `BASE` table or the axis/script/baseline
+    /// is absent.
+    pub fn baseline_coord(
+        &self,
+        axis: BaseAxis,
+        script_tag: &[u8; 4],
+        baseline_tag: &[u8; 4],
+    ) -> Option<i16> {
+        self.base
+            .as_ref()?
+            .baseline_coord(axis, script_tag, baseline_tag)
     }
 
     /// Glyph name (from CFF charset / strings) — useful for diagnostics

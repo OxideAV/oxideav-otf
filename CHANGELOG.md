@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- support the **`BASE`** baseline table (ISO/IEC 14496-22:2019 §6.3):
+  the v1.0/v1.1 header, the horizontal + vertical `Axis` tables, the
+  `BaseTagList` (per-axis baseline tags), the `BaseScriptList` /
+  `BaseScript` / `BaseValues` chain, and the `BaseCoord` formats 1/2/3
+  (the design-unit coordinate; contour-point / Device refinements are
+  not applied — the format-3 default-instance value is used). Surfaced
+  via `Font::base` and the `Font::baseline_coord(axis, script_tag,
+  baseline_tag)` convenience; the v1.1 `itemVarStoreOffset` is exposed
+  as a raw offset (parseable with the delta-set ItemVariationStore).
+
 - support the **`HVAR`** and **`VVAR`** per-glyph metrics variations
   tables (ISO/IEC 14496-22:2019 §7.3.5, §7.3.8): the IVS-offset +
   `DeltaSetIndexMap` offsets header (advance + side bearings, plus

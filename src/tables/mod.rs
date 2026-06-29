@@ -6,6 +6,7 @@
 //! are documented per-module.
 
 pub mod avar;
+pub mod base;
 pub mod cmap;
 pub mod cmap_uvs;
 pub mod context;
