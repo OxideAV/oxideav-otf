@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- support the **`VORG`** vertical origin table (ISO/IEC 14496-22:2019
+  §5.4): the `defaultVertOriginY` plus the sorted
+  `vertOriginYMetrics` array (glyph index → explicit vertical-origin Y).
+  `VorgView::vert_origin_y(gid)` binary-searches the array and falls
+  back to the default; surfaced via `Font::vorg` /
+  `Font::vertical_origin_y`. Complements the `vmtx`/`VVAR` vertical
+  metrics by giving CFF fonts the vertical origin directly instead of
+  computing it from the charstring bbox top.
+
 - support the **`BASE`** baseline table (ISO/IEC 14496-22:2019 §6.3):
   the v1.0/v1.1 header, the horizontal + vertical `Axis` tables, the
   `BaseTagList` (per-axis baseline tags), the `BaseScriptList` /

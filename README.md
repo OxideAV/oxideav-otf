@@ -50,9 +50,10 @@ and typed views over the OpenType Layout tables. Highlights:
     delta vs `nominalWidthX` / `defaultWidthX`), including the
     5-operand seac form `[width?] adx ady bchar achar endchar`.
 - Selected sfnt tables for metadata: `head`, `hhea`, `maxp`, `hmtx`,
-  `vhea` (v1.0 + v1.1), `vmtx`, `cmap` (formats 0/4/6/12), `name`,
-  `post` (every spec version), `OS/2` (versions 0..5, all six layouts),
-  and the legacy `kern` table (OFF version-0; subtable formats 0 + 2).
+  `vhea` (v1.0 + v1.1), `vmtx`, `VORG` (CFF vertical origin), `cmap`
+  (formats 0/4/6/12), `name`, `post` (every spec version), `OS/2`
+  (versions 0..5, all six layouts), and the legacy `kern` table (OFF
+  version-0; subtable formats 0 + 2).
 
 ## Public API
 

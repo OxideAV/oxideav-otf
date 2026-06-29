@@ -49,7 +49,7 @@ use crate::tables::{
     avar::AvarTable, base::BaseTable, cmap::CmapTable, fvar::FvarTable, gdef::GdefTable,
     gpos::GposTable, gsub::GsubTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable,
     kern::KernTable, maxp::MaxpTable, mvar::MvarTable, name::NameTable, os2::Os2Table,
-    stat::StatTable, vhea::VheaTable, vmtx::VmtxTable, xvar::MetricsVariations,
+    stat::StatTable, vhea::VheaTable, vmtx::VmtxTable, vorg::VorgTable, xvar::MetricsVariations,
 };
 
 pub use crate::tables::avar::{AvarTable as AvarView, AxisValueMap, SegmentMap};
@@ -117,6 +117,7 @@ pub use crate::tables::stat::{
 };
 pub use crate::tables::vhea::VheaTable as VheaView;
 pub use crate::tables::vmtx::VmtxTable as VmtxView;
+pub use crate::tables::vorg::VorgTable as VorgView;
 pub use crate::tables::xvar::MetricsVariations as MetricsVariationsView;
 
 /// Errors emitted during font parsing or glyph lookup.
@@ -321,6 +322,9 @@ pub struct Font<'a> {
     /// `BASE` — baseline table. Optional; per-axis, per-script baseline
     /// coordinates and min/max extents for multi-script alignment.
     base: Option<BaseTable>,
+    /// `VORG` — vertical origin table. Optional CFF-OFF table giving the
+    /// Y coordinate of each glyph's vertical origin directly.
+    vorg: Option<VorgTable>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -468,6 +472,11 @@ impl<'a> Font<'a> {
             Some(slice) => BaseTable::parse(slice).ok(),
             None => None,
         };
+        // `VORG` is a CFF-OFF vertical-origin table; tolerate malformed.
+        let vorg = match dir.find(b"VORG", bytes) {
+            Some(slice) => VorgTable::parse(slice).ok(),
+            None => None,
+        };
 
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
@@ -501,6 +510,7 @@ impl<'a> Font<'a> {
             hvar,
             vvar,
             base,
+            vorg,
             cff,
         })
     }
@@ -963,6 +973,21 @@ impl<'a> Font<'a> {
         self.base
             .as_ref()?
             .baseline_coord(axis, script_tag, baseline_tag)
+    }
+
+    // ---- vertical origin (VORG) -------------------------------------------
+
+    /// The `VORG` table view, if present.
+    pub fn vorg(&self) -> Option<&VorgTable> {
+        self.vorg.as_ref()
+    }
+
+    /// The Y coordinate (design units) of a glyph's vertical origin from
+    /// the `VORG` table, or `None` when the font has no `VORG`. (Without
+    /// `VORG`, the vertical origin is the glyph bbox top plus the `vmtx`
+    /// top side bearing.)
+    pub fn vertical_origin_y(&self, glyph_id: u16) -> Option<i16> {
+        self.vorg.as_ref().map(|v| v.vert_origin_y(glyph_id))
     }
 
     /// Glyph name (from CFF charset / strings) — useful for diagnostics

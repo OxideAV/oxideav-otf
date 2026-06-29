@@ -29,4 +29,5 @@ pub mod post;
 pub mod stat;
 pub mod vhea;
 pub mod vmtx;
+pub mod vorg;
 pub mod xvar;
