@@ -153,6 +153,31 @@ pub(crate) fn read_u32(bytes: &[u8], off: usize) -> Result<u32, Error> {
     Ok(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
 }
 
+#[inline]
+pub(crate) fn read_i32(bytes: &[u8], off: usize) -> Result<i32, Error> {
+    Ok(read_u32(bytes, off)? as i32)
+}
+
+/// Read a 4-byte ASCII `Tag`.
+#[inline]
+pub(crate) fn read_tag(bytes: &[u8], off: usize) -> Result<[u8; 4], Error> {
+    let s = bytes.get(off..off + 4).ok_or(Error::UnexpectedEof)?;
+    Ok([s[0], s[1], s[2], s[3]])
+}
+
+/// Read a `Fixed` (16.16 signed fixed-point) as an `f32`.
+#[inline]
+pub(crate) fn read_fixed(bytes: &[u8], off: usize) -> Result<f32, Error> {
+    Ok(read_i32(bytes, off)? as f32 / 65536.0)
+}
+
+/// Read an `F2DOT14` (2.14 signed fixed-point) as an `f32`. Range is
+/// `[-2.0, 2.0)`; OpenType variation coordinates use `[-1.0, 1.0]`.
+#[inline]
+pub(crate) fn read_f2dot14(bytes: &[u8], off: usize) -> Result<f32, Error> {
+    Ok(read_i16(bytes, off)? as f32 / 16384.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

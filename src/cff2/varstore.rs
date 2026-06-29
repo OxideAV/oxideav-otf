@@ -93,6 +93,57 @@ pub struct VariationRegion {
     pub region_axes: Vec<RegionAxisCoordinates>,
 }
 
+impl VariationRegion {
+    /// Compute this region's interpolation **scalar** for a normalized
+    /// instance coordinate tuple, per the OFF *Font Variations Overview*
+    /// scalar algorithm (ISO/IEC 14496-22:2019 §7.1.7).
+    ///
+    /// The result is the product of the per-axis scalars `AS`, each in
+    /// `[0, 1]`; the overall scalar `S` is therefore also in `[0, 1]`.
+    /// `S` is `0` if the instance is out of the region's range on any
+    /// axis that participates in the calculation, and `1` for axes the
+    /// region ignores (peak 0, or an invalid/degenerate region span).
+    ///
+    /// `instance_coords` is matched against `region_axes` positionally;
+    /// a missing entry is treated as `0.0` (the normalized default).
+    pub fn scalar(&self, instance_coords: &[f32]) -> f32 {
+        let mut s = 1.0f32;
+        for (i, axis) in self.region_axes.iter().enumerate() {
+            let coord = instance_coords.get(i).copied().unwrap_or(0.0);
+            let start = axis.start;
+            let peak = axis.peak;
+            let end = axis.end;
+            // Per §7.1.7, the axis is ignored (AS = 1) in three cases:
+            //  - the region span is invalid (peak not between start/end);
+            //  - start and end straddle zero with a non-zero peak (an
+            //    intentional "ignore this axis" encoding);
+            //  - the peak is exactly zero (the region does not vary on
+            //    this axis).
+            let axis_ignored = start > peak
+                || peak > end
+                || (start < 0.0 && end > 0.0 && peak != 0.0)
+                || peak == 0.0;
+            let as_ = if axis_ignored {
+                1.0
+            } else if coord < start || coord > end {
+                // Instance is out of the region's range on this axis.
+                0.0
+            } else if coord == peak {
+                1.0
+            } else if coord < peak {
+                (coord - start) / (peak - start)
+            } else {
+                (end - coord) / (end - peak)
+            };
+            s *= as_;
+            if s == 0.0 {
+                break;
+            }
+        }
+        s
+    }
+}
+
 /// One `ItemVariationData` subtable. In CFF2 only the `regionIndexes`
 /// array is meaningful; `itemCount` and `wordDeltaCount`
 /// (`shortDeltaCount`) are required to be `0`, so there are no delta
@@ -271,6 +322,30 @@ impl ItemVariationStore {
     /// (default `0`). `None` if `ivd` is out of range.
     pub fn item_variation_data_at(&self, ivd: usize) -> Option<&ItemVariationData> {
         self.item_variation_data.get(ivd)
+    }
+
+    /// Compute the per-region interpolation scalars for the
+    /// `ItemVariationData` subtable `ivd` (the CFF2 `vsindex`), given a
+    /// normalized instance coordinate tuple. The returned vector has one
+    /// scalar per *active* region (in the order of the subtable's
+    /// `regionIndexes`), exactly the layout the CFF2 `blend` operator
+    /// and `Cff2Interpreter` expect. `None` if `ivd` is out of range.
+    ///
+    /// `instance_coords` are normalized `[-1, 1]` axis values (e.g. from
+    /// `FvarTable::normalize_coords` refined by `avar`).
+    pub fn region_scalars(&self, ivd: usize, instance_coords: &[f32]) -> Option<Vec<f32>> {
+        let data = self.item_variation_data.get(ivd)?;
+        Some(
+            data.region_indexes
+                .iter()
+                .map(|&ri| {
+                    self.regions
+                        .get(ri as usize)
+                        .map(|r| r.scalar(instance_coords))
+                        .unwrap_or(0.0)
+                })
+                .collect(),
+        )
     }
 }
 
@@ -461,5 +536,81 @@ mod tests {
             vec![1, 2]
         );
         assert!(ivs.item_variation_data_at(2).is_none());
+    }
+
+    fn region(axes: &[(f32, f32, f32)]) -> VariationRegion {
+        VariationRegion {
+            region_axes: axes
+                .iter()
+                .map(|&(s, p, e)| RegionAxisCoordinates {
+                    start: s,
+                    peak: p,
+                    end: e,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn scalar_spec_two_axis_example() {
+        // §7.1.7-§7.1.8 Skia example: instance (0.2, 0.7).
+        // R1 peak (1,0): width peak 0 ⇒ ignored; weight non-intermediate
+        // (start 0, peak 1, end 1).
+        let r1 = region(&[(0.0, 1.0, 1.0), (0.0, 0.0, 0.0)]);
+        // R2 peak (0,1): weight ignored; width (0,1,1).
+        let r2 = region(&[(0.0, 0.0, 0.0), (0.0, 1.0, 1.0)]);
+        // R3 peak (1,1): both axes participate.
+        let r3 = region(&[(0.0, 1.0, 1.0), (0.0, 1.0, 1.0)]);
+        let coords = [0.2f32, 0.7f32];
+        assert!((r1.scalar(&coords) - 0.2).abs() < 1e-6);
+        assert!((r2.scalar(&coords) - 0.7).abs() < 1e-6);
+        // R3 = 0.2 * 0.7 = 0.14.
+        assert!((r3.scalar(&coords) - 0.14).abs() < 1e-6);
+    }
+
+    #[test]
+    fn scalar_peak_and_extremes() {
+        let r = region(&[(0.0, 1.0, 1.0)]);
+        assert_eq!(r.scalar(&[1.0]), 1.0); // at peak
+        assert_eq!(r.scalar(&[0.0]), 0.0); // at start
+        assert!((r.scalar(&[0.5]) - 0.5).abs() < 1e-6); // mid-rise
+                                                        // out of range (below start) ⇒ 0.
+        assert_eq!(r.scalar(&[-0.5]), 0.0);
+    }
+
+    #[test]
+    fn scalar_intermediate_region_falling_edge() {
+        // Intermediate region with a triangular shape peaking at 0.5.
+        let r = region(&[(0.0, 0.5, 1.0)]);
+        assert_eq!(r.scalar(&[0.5]), 1.0);
+        assert!((r.scalar(&[0.25]) - 0.5).abs() < 1e-6); // rising
+        assert!((r.scalar(&[0.75]) - 0.5).abs() < 1e-6); // falling
+    }
+
+    #[test]
+    fn region_scalars_for_subtable() {
+        // Build an IVS via parse() and verify region_scalars indexes by
+        // the subtable's regionIndexes.
+        let mut v = Vec::new();
+        v.extend_from_slice(&[0x00, 0x01]); // format
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x0C]); // regionListOffset = 12
+        v.extend_from_slice(&[0x00, 0x01]); // ivdCount = 1
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x1C]); // ivd[0] @ 28
+        assert_eq!(v.len(), 12);
+        v.extend_from_slice(&[0x00, 0x01]); // axisCount
+        v.extend_from_slice(&[0x00, 0x02]); // regionCount
+                                            // region0 weight (0,1,1)
+        v.extend_from_slice(&[0x00, 0x00, 0x40, 0x00, 0x40, 0x00]);
+        // region1 weight (start -1, peak -1, end 0)
+        v.extend_from_slice(&[0xC0, 0x00, 0xC0, 0x00, 0x00, 0x00]);
+        assert_eq!(v.len(), 28);
+        // IVD0: regionIndexes {0, 1}
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01]);
+        let ivs = ItemVariationStore::parse(&v).unwrap();
+        let s = ivs.region_scalars(0, &[0.5]).unwrap();
+        assert_eq!(s.len(), 2);
+        assert!((s[0] - 0.5).abs() < 1e-6); // region0 at 0.5
+        assert_eq!(s[1], 0.0); // region1 inactive for +0.5
+        assert!(ivs.region_scalars(9, &[0.5]).is_none());
     }
 }

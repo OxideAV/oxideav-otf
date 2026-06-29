@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- support the variable-font axis-definition tables and connect them to
+  the CFF2 variation interpreter (ISO/IEC 14496-22:2019 §7.1, §7.3):
+  - **`fvar`** (§7.3.3) — decode the variation axes
+    (tag / min / default / max / flags / `name` ID) and named instances
+    (subfamily + optional PostScript name ID, `0xFFFF` no-name sentinel
+    honoured). `VariationAxis::normalize` implements the §7.3.1.1
+    default normalization. Surfaced via `Font::fvar` /
+    `variation_axes` / `named_instances` / `axis_count` /
+    `has_variation_axes`.
+  - **`avar`** (§7.3.1) — decode the per-axis piecewise-linear segment
+    maps and apply the §7.3.1.3 modified-normalization process
+    (validated against the §7.3.1.4 worked example). Surfaced via
+    `Font::avar`.
+  - **region-scalar derivation** (§7.1.7) — `VariationRegion::scalar`
+    computes a region's interpolation scalar (product of per-axis
+    triangular scalars, with the three spec "ignore this axis" cases),
+    and `ItemVariationStore::region_scalars` yields the per-region
+    scalar vector for an `ItemVariationData` subtable (validated against
+    the §7.1.8 Skia two-axis example).
+  - **`Font::normalize_coords`** runs the full `fvar` → `avar`
+    normalization pipeline, and **`Font::glyph_outline_for_axes`**
+    chains user-scale axis coordinates → normalization → region scalars
+    → the CFF2 charstring interpreter, so a glyph instance can now be
+    decoded directly from axis values (previously the region-scalar
+    step was the caller's responsibility).
+
 - support the legacy **`kern`** table (ISO/IEC 14496-22:2019 §5.7.5),
   the OFF/Windows version-0 format: a 4-byte header (`version`,
   `nTables`) followed by subtables, each with its own `coverage`

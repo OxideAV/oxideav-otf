@@ -5,10 +5,12 @@
 //! own I/O. The four-byte ASCII table tags (`b"head"`, `b"cmap"`, …)
 //! are documented per-module.
 
+pub mod avar;
 pub mod cmap;
 pub mod cmap_uvs;
 pub mod context;
 pub mod device;
+pub mod fvar;
 pub mod gdef;
 pub mod gpos;
 pub mod gsub;

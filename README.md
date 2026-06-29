@@ -50,8 +50,9 @@ and typed views over the OpenType Layout tables. Highlights:
     delta vs `nominalWidthX` / `defaultWidthX`), including the
     5-operand seac form `[width?] adx ady bchar achar endchar`.
 - Selected sfnt tables for metadata: `head`, `hhea`, `maxp`, `hmtx`,
-  `cmap` (formats 0/4/6/12), `name`, `post` (every spec version), and
-  `OS/2` (versions 0..5, all six layouts).
+  `vhea` (v1.0 + v1.1), `vmtx`, `cmap` (formats 0/4/6/12), `name`,
+  `post` (every spec version), `OS/2` (versions 0..5, all six layouts),
+  and the legacy `kern` table (OFF version-0; subtable formats 0 + 2).
 
 ## Public API
 
@@ -475,15 +476,41 @@ views over:
   `Font::glyph_outline_var(gid, &region_scalars)` decodes a specific
   instance from caller-supplied per-region scalars.
 
+## Font variations (`fvar` / `avar`) and region-scalar derivation
+
+The crate now decodes the variable-font axis-definition tables and ties
+them to the CFF2 variation interpreter, so a caller can request a glyph
+outline directly from **user-scale axis coordinates** (e.g. `wght = 700`):
+
+- **`fvar`** (ISO/IEC 14496-22:2019 §7.3.3) — the design-space axes
+  (tag / min / default / max / flags / `name` ID) and the named
+  instances (subfamily + optional PostScript name ID, with the `0xFFFF`
+  no-PS-name sentinel handled). Surfaced via `Font::fvar`,
+  `variation_axes`, `named_instances`, `axis_count`,
+  `has_variation_axes`. `VariationAxis::normalize` implements the
+  §7.3.1.1 default normalization (default→0, min→-1, max→1, linear,
+  clamped).
+- **`avar`** (§7.3.1) — per-axis piecewise-linear segment maps that
+  refine the default normalization (§7.3.1.3 processing; verified
+  against the §7.3.1.4 worked example). Surfaced via `Font::avar`.
+- **Region-scalar derivation** (§7.1.7) — `VariationRegion::scalar`
+  computes a region's interpolation scalar from a normalized instance
+  tuple (the product of per-axis triangular scalars, with the spec's
+  three "ignore this axis" cases), and `ItemVariationStore::region_scalars`
+  produces the per-region scalar vector for an `ItemVariationData`
+  subtable. Validated against the §7.1.8 Skia two-axis example
+  (instance `(0.2, 0.7)` → R1 `0.2`, R2 `0.7`, R3 `0.14`).
+- **End-to-end glue** — `Font::normalize_coords(&user_coords)` runs the
+  full `fvar` → `avar` pipeline, and `Font::glyph_outline_for_axes(gid,
+  &user_coords)` chains normalization → region scalars → the CFF2
+  variation-aware charstring interpreter, closing the gap that
+  previously made region-scalar derivation the caller's job.
+
 ## Out of scope
 
-- The CFF2 region-scalar derivation from `fvar`/`avar` axis settings
-  (the OpenType *Font Variations Common Table Formats* region-scalar
-  algorithm). `Font::glyph_outline_var` consumes the `k` per-region
-  interpolation scalars; computing them from normalized axis
-  coordinates is the shaping client's responsibility (the algorithm is
-  referenced by, but not staged in, the CFF2 doc). `GDEF.itemVarStore`
-  is likewise surfaced as a raw offset only.
+- `GDEF.itemVarStore` is surfaced as a raw offset only (the metrics-/
+  positioning-variation `ItemVariationStore` carrying its own delta
+  sets — distinct from the CFF2 delta-free IVS — is not yet decoded).
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
 - The AGL Specification §6 component-name decomposition algorithm
   (`f_f_i` → `ffi`, `uniXXXX` → `U+XXXX`, etc.) — the static AGL 2.0
@@ -495,8 +522,10 @@ views over:
   `ReverseChainSingleSubst`: input Coverage → `substituteGlyphIDs` with
   backtrack / lookahead Coverage context, reachable through
   `GsubTable::reverse_chain_single_subst` and the type-7 extension
-  `ExtensionSubst::as_reverse_chain_single_subst`). The `kern` table
-  remains deferred (no `kern` chapter is staged under
+  `ExtensionSubst::as_reverse_chain_single_subst`). The legacy `kern`
+  table is now decoded separately (see the sfnt-metadata list above);
+  modern fonts express kerning through GPOS pair adjustment. (Historical
+  note: no `kern` chapter was staged under
   `docs/text/opentype/`).
 - (none for `post` — the 258-entry standard-Macintosh glyph-name set is
   now staged and applied: `PostTable::glyph_name` resolves formats 1.0

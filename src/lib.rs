@@ -46,17 +46,21 @@ pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
 use crate::cff::Cff;
 use crate::parser::TableDirectory;
 use crate::tables::{
-    cmap::CmapTable, gdef::GdefTable, gpos::GposTable, gsub::GsubTable, head::HeadTable,
-    hhea::HheaTable, hmtx::HmtxTable, kern::KernTable, maxp::MaxpTable, name::NameTable,
-    os2::Os2Table, vhea::VheaTable, vmtx::VmtxTable,
+    avar::AvarTable, cmap::CmapTable, fvar::FvarTable, gdef::GdefTable, gpos::GposTable,
+    gsub::GsubTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable, kern::KernTable,
+    maxp::MaxpTable, name::NameTable, os2::Os2Table, vhea::VheaTable, vmtx::VmtxTable,
 };
 
+pub use crate::tables::avar::{AvarTable as AvarView, AxisValueMap, SegmentMap};
 pub use crate::tables::cmap_uvs::{CmapUvs, UvsMapping};
 pub use crate::tables::context::{
     ChainedSequenceContext, ChainedSequenceRule, SequenceContext, SequenceLookupRecord,
     SequenceRule,
 };
 pub use crate::tables::device::{DeviceOrVariationIndex, DeviceTable, VariationIndexTable};
+pub use crate::tables::fvar::{
+    FvarTable as FvarView, NamedInstance, VariationAxis, FVAR_AXIS_HIDDEN,
+};
 pub use crate::tables::gdef::{
     AttachList, AttachPoint, CaretValue, ClassDef, Coverage, CoverageIter, GlyphClass,
     LigCaretList, LigGlyph, MarkGlyphSets,
@@ -278,6 +282,13 @@ pub struct Font<'a> {
     /// `kern` table for compatibility; we decode the OFF/Windows
     /// version-0 format (subtable formats 0 and 2).
     kern: Option<KernTable<'a>>,
+    /// `fvar` — font variations table. Present in variable fonts;
+    /// defines the design-space axes and named instances, and drives
+    /// user→normalized coordinate normalization.
+    fvar: Option<FvarTable>,
+    /// `avar` — axis variations table. Optional; refines `fvar`'s
+    /// default normalization with per-axis segment maps.
+    avar: Option<AvarTable>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -387,6 +398,18 @@ impl<'a> Font<'a> {
             None => None,
         };
 
+        // `fvar` / `avar` — variable-font axis definitions and the
+        // normalization refinement. Both optional (present only in
+        // variable fonts); `avar` only makes sense alongside `fvar`.
+        let fvar = match dir.find(b"fvar", bytes) {
+            Some(slice) => Some(FvarTable::parse(slice)?),
+            None => None,
+        };
+        let avar = match (&fvar, dir.find(b"avar", bytes)) {
+            (Some(_), Some(slice)) => AvarTable::parse(slice).ok(),
+            _ => None,
+        };
+
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
             CffFlavour::Cff2(Box::new(Cff2::parse(cff2_bytes)?))
@@ -412,6 +435,8 @@ impl<'a> Font<'a> {
             gsub,
             gpos,
             kern,
+            fvar,
+            avar,
             cff,
         })
     }
@@ -685,6 +710,102 @@ impl<'a> Font<'a> {
             .as_ref()
             .map(|k| k.kerning(left, right))
             .unwrap_or(0)
+    }
+
+    // ---- font variations (fvar / avar) ------------------------------------
+
+    /// Whether this font carries an `fvar` table with at least one
+    /// variation axis. (Distinct from [`Font::is_variable`], which keys
+    /// off the CFF2 `VariationStoreOffset`; a font may have `fvar` axes
+    /// for a TrueType-outline sibling while this CFF view is static.)
+    pub fn has_variation_axes(&self) -> bool {
+        self.fvar.as_ref().is_some_and(|f| f.axis_count() > 0)
+    }
+
+    /// The `fvar` table view, if present. Exposes the variation axes
+    /// (tag / min / default / max / flags / name ID) and named instances.
+    pub fn fvar(&self) -> Option<&FvarTable> {
+        self.fvar.as_ref()
+    }
+
+    /// The `avar` table view, if present.
+    pub fn avar(&self) -> Option<&AvarTable> {
+        self.avar.as_ref()
+    }
+
+    /// Number of variation axes (`fvar.axisCount`); `0` for a
+    /// non-variable font.
+    pub fn axis_count(&self) -> usize {
+        self.fvar.as_ref().map(|f| f.axis_count()).unwrap_or(0)
+    }
+
+    /// The variation axes in axis order (empty for a non-variable font).
+    pub fn variation_axes(&self) -> &[VariationAxis] {
+        self.fvar.as_ref().map(|f| f.axes()).unwrap_or(&[])
+    }
+
+    /// The named instances (empty for a non-variable font).
+    pub fn named_instances(&self) -> &[NamedInstance] {
+        self.fvar.as_ref().map(|f| f.instances()).unwrap_or(&[])
+    }
+
+    /// Normalize a user-scale axis-coordinate tuple to the `[-1, 1]`
+    /// scale every variation table consumes. This is the **full**
+    /// normalization pipeline (ISO/IEC 14496-22:2019 §7.3.1.1 +
+    /// §7.3.1.3): `fvar` default normalization followed by the `avar`
+    /// segment-map refinement (when an `avar` table is present).
+    ///
+    /// `user_coords` is matched positionally against the axes; a short
+    /// slice fills remaining axes with their defaults, a long slice
+    /// ignores the surplus. The result has `axis_count` entries (empty
+    /// for a non-variable font).
+    pub fn normalize_coords(&self, user_coords: &[f32]) -> Vec<f32> {
+        let Some(fvar) = self.fvar.as_ref() else {
+            return Vec::new();
+        };
+        let normalized = fvar.normalize_coords(user_coords);
+        match self.avar.as_ref() {
+            Some(avar) => avar.apply(&normalized),
+            None => normalized,
+        }
+    }
+
+    /// Decode a glyph outline for a specific variation instance,
+    /// expressed in **user-scale axis coordinates** (e.g. `wght = 700`).
+    ///
+    /// This is the convenience that ties the variable-font tables
+    /// together: it normalizes `user_coords` through `fvar` + `avar`,
+    /// derives the per-region interpolation scalars from the CFF2
+    /// `ItemVariationStore`'s default `ItemVariationData` (the algorithm
+    /// of §7.1.7), and feeds them to the CFF2 variation-aware charstring
+    /// interpreter. For a CFF1 (non-variable) font the static outline is
+    /// returned and `user_coords` is ignored.
+    ///
+    /// Callers that already hold normalized region scalars can keep using
+    /// the lower-level [`Font::glyph_outline_var`].
+    pub fn glyph_outline_for_axes(
+        &self,
+        glyph_id: u16,
+        user_coords: &[f32],
+    ) -> Result<CubicOutline, Error> {
+        if glyph_id >= self.maxp.num_glyphs {
+            return Err(Error::GlyphOutOfRange(glyph_id));
+        }
+        match &self.cff {
+            CffFlavour::Cff1(c) => c.glyph_outline(glyph_id),
+            CffFlavour::Cff2(c) => {
+                let normalized = self.normalize_coords(user_coords);
+                // The default ItemVariationData (vsindex 0) drives the
+                // region scalars `glyph_outline_var` expects. A CFF2 font
+                // without a VariationStore is non-variable: pass an empty
+                // scalar slice (default instance).
+                let scalars = c
+                    .variation_store()
+                    .and_then(|ivs| ivs.region_scalars(0, &normalized))
+                    .unwrap_or_default();
+                c.glyph_outline_var(glyph_id as u32, &scalars)
+            }
+        }
     }
 
     /// Glyph name (from CFF charset / strings) — useful for diagnostics
