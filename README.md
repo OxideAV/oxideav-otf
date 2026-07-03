@@ -1,5 +1,7 @@
 # oxideav-otf
 
+[![CI](https://github.com/OxideAV/oxideav-otf/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-otf/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-otf.svg)](https://crates.io/crates/oxideav-otf) [![docs.rs](https://docs.rs/oxideav-otf/badge.svg)](https://docs.rs/oxideav-otf) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Pure-Rust OpenType / CFF font parser for the
 [oxideav](https://github.com/OxideAV) framework. Sibling to
 [`oxideav-ttf`](https://github.com/OxideAV/oxideav-ttf): TTF handles
