@@ -35,11 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **variable-font shaping**: `ShapeOptions::coords` (user-scale fvar
   axis values) applies HVAR advance deltas at position init and
-  resolves ValueRecord `*DeviceOffset` `VariationIndex` tables
-  against the GDEF `ItemVariationStore` at the fvar→avar-normalized
-  instance (§7.2.3; GPOS "GPOS table and OpenType Font Variations").
-  `GdefTable::item_variation_store` now decodes the v1.3
-  `itemVarStore` (previously a raw offset only).
+  resolves ValueRecord `*DeviceOffset` **and Anchor format-3
+  `x`/`yDeviceOffset`** `VariationIndex` tables against the GDEF
+  `ItemVariationStore` at the fvar→avar-normalized instance (§7.2.3;
+  GPOS "GPOS table and OpenType Font Variations") — attachment
+  anchors move with the instance. `GdefTable::item_variation_store`
+  now decodes the v1.3 `itemVarStore` (previously a raw offset only);
+  `Anchor` gains a `table_offset` field so format-3 device offsets
+  (Anchor-relative per spec) can be rebased into the owning subtable;
+  MarkBasePos / MarkLigPos / MarkMarkPos / CursivePos expose `raw()`.
 
 - **FeatureVariations** (§6.3 "Feature variations"): new
   `FeatureVariations` / `FeatureTableSubstitution` decoders in

@@ -1089,6 +1089,13 @@ pub struct Anchor {
     /// Format-3 raw `yDeviceOffset` (`0` = NULL; always `0` for formats
     /// 1 and 2). Relative to the start of the Anchor table.
     pub y_device_offset: u16,
+    /// Byte offset of this Anchor table within the slice it was
+    /// parsed from (the `off` argument of [`Anchor::parse`]) — for
+    /// anchors decoded by the GPOS typed views this is the offset
+    /// within the owning subtable, letting a client rebase the
+    /// format-3 Device / VariationIndex offsets (which are relative
+    /// to the Anchor table start).
+    pub table_offset: usize,
 }
 
 impl Anchor {
@@ -1105,6 +1112,7 @@ impl Anchor {
                 format,
                 x,
                 y,
+                table_offset: off,
                 ..Anchor::default()
             }),
             2 => {
@@ -1114,6 +1122,7 @@ impl Anchor {
                     x,
                     y,
                     anchor_point: Some(anchor_point),
+                    table_offset: off,
                     ..Anchor::default()
                 })
             }
@@ -1127,6 +1136,7 @@ impl Anchor {
                     anchor_point: None,
                     x_device_offset,
                     y_device_offset,
+                    table_offset: off,
                 })
             }
             _ => Err(Error::BadStructure("GPOS/Anchor: unknown format")),
@@ -1341,6 +1351,13 @@ impl<'a> MarkBasePos<'a> {
     /// The base [`Coverage`] table (lists every base glyph).
     pub fn base_coverage(&self) -> Coverage<'a> {
         self.base_coverage
+    }
+
+    /// The raw subtable bytes (index 0 = start of the MarkBasePos
+    /// subtable) — [`Anchor::table_offset`] values from this
+    /// subtable's anchors index into it.
+    pub fn raw(&self) -> &'a [u8] {
+        self.bytes
     }
 
     /// The decoded [`MarkRecord`] for `mark_glyph`, or `None` if the
@@ -1605,6 +1622,12 @@ impl<'a> MarkLigPos<'a> {
     /// The ligature [`Coverage`] table (lists every ligature glyph).
     pub fn ligature_coverage(&self) -> Coverage<'a> {
         self.ligature_coverage
+    }
+
+    /// The raw subtable bytes (index 0 = start of the MarkLigPos
+    /// subtable).
+    pub fn raw(&self) -> &'a [u8] {
+        self.bytes
     }
 
     /// The decoded [`MarkRecord`] for `mark_glyph`, or `None` if the
@@ -1968,6 +1991,12 @@ impl<'a> MarkMarkPos<'a> {
         self.mark2_coverage
     }
 
+    /// The raw subtable bytes (index 0 = start of the MarkMarkPos
+    /// subtable).
+    pub fn raw(&self) -> &'a [u8] {
+        self.bytes
+    }
+
     /// The decoded [`MarkRecord`] for the attaching `mark1` glyph, or
     /// `None` if the glyph is not in the `mark1` Coverage table.
     ///
@@ -2201,6 +2230,13 @@ impl<'a> CursivePos<'a> {
     /// The [`Coverage`] table listing every glyph with cursive data.
     pub fn coverage(&self) -> Coverage<'a> {
         self.coverage
+    }
+
+    /// The raw subtable bytes (index 0 = start of the CursivePos
+    /// subtable) — [`Anchor::table_offset`] values from this
+    /// subtable's anchors index into it.
+    pub fn raw(&self) -> &'a [u8] {
+        self.bytes
     }
 
     /// The decoded [`EntryExit`] record for `glyph`, or `None` if the

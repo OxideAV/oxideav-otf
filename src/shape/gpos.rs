@@ -116,6 +116,35 @@ pub(crate) fn variation_delta(
     store.delta(outer, inner, normalized).round() as i32
 }
 
+/// Resolve an [`Anchor`]'s effective design-unit coordinates,
+/// applying format-3 VariationIndex deltas (rebased via
+/// `Anchor::table_offset` into the owning subtable's bytes) when
+/// shaping a variable instance. Per-ppem Device tables are not
+/// applied (design-unit output).
+fn anchor_coords(
+    anchor: &crate::tables::gpos::Anchor,
+    subtable: &[u8],
+    gdef: Option<&GdefTable<'_>>,
+    normalized: &[f32],
+) -> (i32, i32) {
+    let mut x = anchor.x as i32;
+    let mut y = anchor.y as i32;
+    if !normalized.is_empty() && anchor.format == 3 && anchor.table_offset < subtable.len() {
+        let at = &subtable[anchor.table_offset..];
+        if let Some(Ok(dev)) = anchor.x_device(at) {
+            if let Some(vi) = dev.as_variation_index() {
+                x += variation_delta(gdef, vi.outer_index, vi.inner_index, normalized);
+            }
+        }
+        if let Some(Ok(dev)) = anchor.y_device(at) {
+            if let Some(vi) = dev.as_variation_index() {
+                y += variation_delta(gdef, vi.outer_index, vi.inner_index, normalized);
+            }
+        }
+    }
+    (x, y)
+}
+
 /// Apply GPOS lookup `planned.lookup_index` over the whole run.
 pub(crate) fn apply_lookup(
     gpos: &GposTable<'_>,
@@ -182,19 +211,19 @@ pub(crate) fn try_apply_at(
             GPOS_LOOKUP_TYPE_CURSIVE => {
                 let cp = gpos.cursive_pos(lookup_index, s)?.ok()?;
                 let rtl = lookup.flag().right_to_left();
-                try_cursive(&cp, rtl, filter, buffer, positions, pos)
+                try_cursive(&cp, rtl, gdef, filter, buffer, positions, pos, normalized)
             }
             GPOS_LOOKUP_TYPE_MARK_TO_BASE => {
                 let mb = gpos.mark_base_pos(lookup_index, s)?.ok()?;
-                try_mark_base(&mb, gdef, filter, buffer, positions, pos)
+                try_mark_base(&mb, gdef, filter, buffer, positions, pos, normalized)
             }
             GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE => {
                 let ml = gpos.mark_lig_pos(lookup_index, s)?.ok()?;
-                try_mark_lig(&ml, gdef, filter, buffer, positions, pos)
+                try_mark_lig(&ml, gdef, filter, buffer, positions, pos, normalized)
             }
             GPOS_LOOKUP_TYPE_MARK_TO_MARK => {
                 let mm = gpos.mark_mark_pos(lookup_index, s)?.ok()?;
-                try_mark_mark(&mm, filter, buffer, positions, pos)
+                try_mark_mark(&mm, gdef, filter, buffer, positions, pos, normalized)
             }
             GPOS_LOOKUP_TYPE_CONTEXT => {
                 let ctx = gpos.context_pos(lookup_index, s)?.ok()?;
@@ -224,19 +253,19 @@ pub(crate) fn try_apply_at(
                     GPOS_LOOKUP_TYPE_CURSIVE => {
                         let cp = ext.as_cursive_pos().ok()?;
                         let rtl = lookup.flag().right_to_left();
-                        try_cursive(&cp, rtl, filter, buffer, positions, pos)
+                        try_cursive(&cp, rtl, gdef, filter, buffer, positions, pos, normalized)
                     }
                     GPOS_LOOKUP_TYPE_MARK_TO_BASE => {
                         let mb = ext.as_mark_base_pos().ok()?;
-                        try_mark_base(&mb, gdef, filter, buffer, positions, pos)
+                        try_mark_base(&mb, gdef, filter, buffer, positions, pos, normalized)
                     }
                     GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE => {
                         let ml = ext.as_mark_lig_pos().ok()?;
-                        try_mark_lig(&ml, gdef, filter, buffer, positions, pos)
+                        try_mark_lig(&ml, gdef, filter, buffer, positions, pos, normalized)
                     }
                     GPOS_LOOKUP_TYPE_MARK_TO_MARK => {
                         let mm = ext.as_mark_mark_pos().ok()?;
-                        try_mark_mark(&mm, filter, buffer, positions, pos)
+                        try_mark_mark(&mm, gdef, filter, buffer, positions, pos, normalized)
                     }
                     GPOS_LOOKUP_TYPE_CONTEXT => {
                         let ctx = ext.as_context_pos().ok()?;
@@ -357,6 +386,7 @@ fn try_mark_base(
     buffer: &[GlyphInfo],
     positions: &mut [Pos],
     pos: usize,
+    normalized: &[f32],
 ) -> Option<usize> {
     let mark = buffer[pos].glyph;
     mb.mark_coverage().index_of(mark)?;
@@ -384,8 +414,8 @@ fn try_mark_base(
         positions,
         base_pos,
         pos,
-        (att.base_anchor.x as i32, att.base_anchor.y as i32),
-        (att.mark_anchor.x as i32, att.mark_anchor.y as i32),
+        anchor_coords(&att.base_anchor, mb.raw(), gdef, normalized),
+        anchor_coords(&att.mark_anchor, mb.raw(), gdef, normalized),
     );
     Some(pos + 1)
 }
@@ -399,10 +429,12 @@ fn try_mark_base(
 /// backward step lands on the relevant mark.
 fn try_mark_mark(
     mm: &MarkMarkPos<'_>,
+    gdef: Option<&GdefTable<'_>>,
     filter: &SkipFilter<'_, '_>,
     buffer: &[GlyphInfo],
     positions: &mut [Pos],
     pos: usize,
+    normalized: &[f32],
 ) -> Option<usize> {
     let mark1 = buffer[pos].glyph;
     mm.mark1_coverage().index_of(mark1)?;
@@ -412,8 +444,8 @@ fn try_mark_mark(
         positions,
         mark2_pos,
         pos,
-        (att.mark2_anchor.x as i32, att.mark2_anchor.y as i32),
-        (att.mark1_anchor.x as i32, att.mark1_anchor.y as i32),
+        anchor_coords(&att.mark2_anchor, mm.raw(), gdef, normalized),
+        anchor_coords(&att.mark1_anchor, mm.raw(), gdef, normalized),
     );
     Some(pos + 1)
 }
@@ -438,18 +470,21 @@ fn try_mark_mark(
 /// matched input sequence keeps its initial position ... and the
 /// cross-stream positions of the preceding, connected glyphs are
 /// adjusted", so the *leading* glyph moves instead.
+#[allow(clippy::too_many_arguments)]
 fn try_cursive(
     cp: &CursivePos<'_>,
     rtl_flag: bool,
+    gdef: Option<&GdefTable<'_>>,
     filter: &SkipFilter<'_, '_>,
     buffer: &[GlyphInfo],
     positions: &mut [Pos],
     pos: usize,
+    normalized: &[f32],
 ) -> Option<usize> {
     let next = super::buffer::next_unskipped(buffer, filter, pos)?;
     let att = cp.attachment(buffer[pos].glyph, buffer[next].glyph)?.ok()?;
-    let exit = (att.exit_anchor.x as i32, att.exit_anchor.y as i32);
-    let entry = (att.entry_anchor.x as i32, att.entry_anchor.y as i32);
+    let exit = anchor_coords(&att.exit_anchor, cp.raw(), gdef, normalized);
+    let entry = anchor_coords(&att.entry_anchor, cp.raw(), gdef, normalized);
 
     positions[pos].x_advance =
         positions[pos].x_offset + exit.0 - entry.0 - positions[next].x_offset;
@@ -473,6 +508,7 @@ fn try_cursive(
 /// consumed *inside* the ligature pattern remembers the component
 /// that preceded it); a mark following the whole ligature associates
 /// with the last component.
+#[allow(clippy::too_many_arguments)]
 fn try_mark_lig(
     ml: &MarkLigPos<'_>,
     gdef: Option<&GdefTable<'_>>,
@@ -480,6 +516,7 @@ fn try_mark_lig(
     buffer: &[GlyphInfo],
     positions: &mut [Pos],
     pos: usize,
+    normalized: &[f32],
 ) -> Option<usize> {
     let mark = buffer[pos].glyph;
     ml.mark_coverage().index_of(mark)?;
@@ -524,8 +561,8 @@ fn try_mark_lig(
         positions,
         lig_pos,
         pos,
-        (att.ligature_anchor.x as i32, att.ligature_anchor.y as i32),
-        (att.mark_anchor.x as i32, att.mark_anchor.y as i32),
+        anchor_coords(&att.ligature_anchor, ml.raw(), gdef, normalized),
+        anchor_coords(&att.mark_anchor, ml.raw(), gdef, normalized),
     );
     Some(pos + 1)
 }

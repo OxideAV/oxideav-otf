@@ -588,6 +588,48 @@ fn gpos_single_var_subtable() -> Vec<u8> {
     b
 }
 
+/// GPOS MarkBasePosFormat1 whose base anchor is *format 3* with a
+/// Y-axis VariationIndex (delta set (0, 0)): mark gid 3 (class 0,
+/// anchor (5, 30)), base gid 2 (anchor (10, 200) + yDevice).
+fn gpos_mark_base_var_subtable() -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&be16(1)); // format
+    b.extend_from_slice(&be16(0)); // markCoverageOffset (patch @2)
+    b.extend_from_slice(&be16(0)); // baseCoverageOffset (patch @4)
+    b.extend_from_slice(&be16(1)); // markClassCount
+    b.extend_from_slice(&be16(0)); // markArrayOffset (patch @8)
+    b.extend_from_slice(&be16(0)); // baseArrayOffset (patch @10)
+    let mark_cov = b.len();
+    b[2..4].copy_from_slice(&be16(mark_cov as u16));
+    b.extend_from_slice(&coverage(&[3]));
+    let base_cov = b.len();
+    b[4..6].copy_from_slice(&be16(base_cov as u16));
+    b.extend_from_slice(&coverage(&[2]));
+    // MarkArray: 1 record, class 0, format-1 anchor (5, 30).
+    let mark_array = b.len();
+    b[8..10].copy_from_slice(&be16(mark_array as u16));
+    b.extend_from_slice(&be16(1)); // markCount
+    b.extend_from_slice(&be16(0)); // class
+    b.extend_from_slice(&be16(6)); // anchorOffset (rel to MarkArray)
+    b.extend_from_slice(&anchor(5, 30));
+    // BaseArray: 1 BaseRecord × 1 class → format-3 anchor.
+    let base_array = b.len();
+    b[10..12].copy_from_slice(&be16(base_array as u16));
+    b.extend_from_slice(&be16(1)); // baseCount
+    b.extend_from_slice(&be16(4)); // BaseRecord anchor offset (rel to BaseArray)
+                                   // Anchor format 3: (10, 200), NULL xDevice, yDevice at +10.
+    b.extend_from_slice(&be16(3));
+    b.extend_from_slice(&10i16.to_be_bytes());
+    b.extend_from_slice(&200i16.to_be_bytes());
+    b.extend_from_slice(&be16(0)); // xDeviceOffset = NULL
+    b.extend_from_slice(&be16(10)); // yDeviceOffset (rel to Anchor start)
+                                    // VariationIndex table: (0, 0), deltaFormat 0x8000.
+    b.extend_from_slice(&be16(0));
+    b.extend_from_slice(&be16(0));
+    b.extend_from_slice(&be16(0x8000));
+    b
+}
+
 /// The synthetic variable font: the base font plus fvar / HVAR /
 /// GDEF-v1.3-with-IVS, and a GPOS whose `dist` feature adjusts 'a'.
 fn build_var_font() -> Vec<u8> {
@@ -646,9 +688,16 @@ fn build_var_font() -> Vec<u8> {
 
     // HVAR deltas at wght=1.0: gid 1 +40, gid 5 +100.
     let hvar = hvar_table(&[0, 40, 0, 0, 0, 100]);
-    // GPOS delta-set (0,0): +80 on the dist xAdvance.
+    // GPOS delta-set (0,0): +80 on the dist xAdvance and on the
+    // format-3 base-anchor Y.
     let gdef = gdef_v13_table(80);
-    let gpos = layout_table(&[*b"dist"], &[(1, 0x0000, gpos_single_var_subtable())]);
+    let gpos = layout_table(
+        &[*b"dist", *b"mark"],
+        &[
+            (1, 0x0000, gpos_single_var_subtable()),
+            (4, 0x0000, gpos_mark_base_var_subtable()),
+        ],
+    );
     let fvar = fvar_table();
 
     let mut tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
@@ -738,6 +787,26 @@ fn variable_shape_default_coords_matches_no_coords() {
     };
     let run = font.shape("a", &opts).unwrap();
     assert_eq!(run[0].x_advance, 500 + 25);
+}
+
+#[test]
+fn anchor_format3_variation_index_moves_with_instance() {
+    // "bc": the mark (gid 3) attaches to b (gid 2). Default instance:
+    // x = 10 - 5 - adv(b 600) = -595, y = 200 - 30 = 170. At wght=900
+    // the base anchor's Y VariationIndex adds the delta-set (0,0)
+    // value (+80): y = 250. X is unchanged (NULL xDevice), and b has
+    // no HVAR row so its advance stays 600.
+    let bytes = build_var_font();
+    let font = Font::from_bytes(&bytes).unwrap();
+    let run = font.shape("bc", &ShapeOptions::default()).unwrap();
+    assert_eq!(run[1].glyph, 3);
+    assert_eq!((run[1].x_offset, run[1].y_offset), (-595, 170));
+    let heavy = ShapeOptions {
+        coords: vec![900.0],
+        ..ShapeOptions::default()
+    };
+    let run = font.shape("bc", &heavy).unwrap();
+    assert_eq!((run[1].x_offset, run[1].y_offset), (-595, 250));
 }
 
 #[test]

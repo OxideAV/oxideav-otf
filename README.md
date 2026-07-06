@@ -444,18 +444,19 @@ What the engine implements:
   mark-to-base / mark-to-ligature (component-aware) / mark-to-mark
   anchor attachment, contextual + chained contextual, extension.
 - **Variable instances** — `ShapeOptions::coords`: HVAR advance
-  deltas at position init; ValueRecord `*DeviceOffset` VariationIndex
-  tables resolved against the GDEF `ItemVariationStore`; GSUB/GPOS
-  v1.1 `FeatureVariations` (ConditionSet / ConditionFormat1 axis
-  ranges + FeatureTableSubstitution) swap feature tables per instance.
+  deltas at position init; ValueRecord `*DeviceOffset` and Anchor
+  format-3 `x`/`yDeviceOffset` VariationIndex tables resolved against
+  the GDEF `ItemVariationStore` (anchors move with the instance);
+  GSUB/GPOS v1.1 `FeatureVariations` (ConditionSet / ConditionFormat1
+  axis ranges + FeatureTableSubstitution) swap feature tables per
+  instance.
 - **Legacy `kern` fallback** — applied only when the font offers no
   GPOS `kern` feature for the resolved script.
 
 Scope: horizontal left-to-right layout. Script-specific preprocessing
 (bidi reordering, Arabic joining, Indic reordering, Unicode
 normalization) is out of scope, as are per-ppem `Device` corrections
-(shaping stays in design units) and Anchor format-3 device
-refinement.
+(shaping stays in design units).
 
 Validation: the `tests/shaping.rs` expectations (including a 53-glyph
 paragraph with ligatures, kerning, and figures) were produced by an
@@ -619,8 +620,8 @@ outline directly from **user-scale axis coordinates** (e.g. `wght = 700`):
 - Shaping is horizontal LTR only; script-specific preprocessing
   (bidi, joining analysis, Indic reordering, Unicode normalization)
   belongs to a higher layer, per the spec's own scoping. Per-ppem
-  `Device` corrections and Anchor format-3 device refinement are not
-  applied during shaping (design-unit output).
+  `Device` corrections are not applied during shaping (design-unit
+  output; `VariationIndex` deltas *are* applied).
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
 - The AGL Specification §6 component-name decomposition algorithm
   (`f_f_i` → `ffi`, `uniXXXX` → `U+XXXX`, etc.) — the static AGL 2.0
