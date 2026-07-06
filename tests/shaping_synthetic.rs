@@ -483,3 +483,272 @@ fn ligature_component_bookkeeping_survives_typed_views() {
     let att1 = ml.attachment(3, 4, 1).unwrap().unwrap();
     assert_eq!((att1.ligature_anchor.x, att1.ligature_anchor.y), (700, 320));
 }
+
+// ---------------------------------------------------------------------------
+// Variable-font shaping: HVAR advances + GPOS VariationIndex deltas
+// ---------------------------------------------------------------------------
+
+/// Single-axis, one-region ItemVariationStore (peak at normalized
+/// +1.0) with one int16 delta column; `rows[i]` = delta-set row i.
+fn ivs_one_region(rows: &[i16]) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&be16(1)); // format
+    b.extend_from_slice(&0u32.to_be_bytes()); // regionListOffset (patch @2)
+    b.extend_from_slice(&be16(1)); // itemVariationDataCount
+    b.extend_from_slice(&0u32.to_be_bytes()); // ivdOffsets[0] (patch @8)
+    let region_list = b.len();
+    b[2..6].copy_from_slice(&(region_list as u32).to_be_bytes());
+    b.extend_from_slice(&be16(1)); // axisCount
+    b.extend_from_slice(&be16(1)); // regionCount
+    b.extend_from_slice(&be16(0)); // start = 0.0 (F2DOT14)
+    b.extend_from_slice(&be16(0x4000)); // peak = 1.0
+    b.extend_from_slice(&be16(0x4000)); // end = 1.0
+    let ivd = b.len();
+    b[8..12].copy_from_slice(&(ivd as u32).to_be_bytes());
+    b.extend_from_slice(&be16(rows.len() as u16)); // itemCount
+    b.extend_from_slice(&be16(1)); // shortDeltaCount
+    b.extend_from_slice(&be16(1)); // regionIndexCount
+    b.extend_from_slice(&be16(0)); // regionIndexes[0]
+    for &d in rows {
+        b.extend_from_slice(&d.to_be_bytes());
+    }
+    b
+}
+
+/// fvar with one wght axis (min 100, default 400, max 900).
+fn fvar_table() -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&be16(1)); // majorVersion
+    b.extend_from_slice(&be16(0)); // minorVersion
+    b.extend_from_slice(&be16(16)); // axesArrayOffset
+    b.extend_from_slice(&be16(2)); // reserved
+    b.extend_from_slice(&be16(1)); // axisCount
+    b.extend_from_slice(&be16(20)); // axisSize
+    b.extend_from_slice(&be16(0)); // instanceCount
+    b.extend_from_slice(&be16(0)); // instanceSize
+    b.extend_from_slice(b"wght");
+    b.extend_from_slice(&(100i32 << 16).to_be_bytes()); // min (Fixed)
+    b.extend_from_slice(&(400i32 << 16).to_be_bytes()); // default
+    b.extend_from_slice(&(900i32 << 16).to_be_bytes()); // max
+    b.extend_from_slice(&be16(0)); // flags
+    b.extend_from_slice(&be16(256)); // axisNameID
+    b
+}
+
+/// HVAR: implicit glyph-ID advance mapping over a per-glyph IVS.
+fn hvar_table(advance_deltas: &[i16]) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&0x00010000u32.to_be_bytes()); // version
+    b.extend_from_slice(&20u32.to_be_bytes()); // itemVariationStoreOffset
+    b.extend_from_slice(&0u32.to_be_bytes()); // advanceWidthMappingOffset
+    b.extend_from_slice(&0u32.to_be_bytes()); // lsbMappingOffset
+    b.extend_from_slice(&0u32.to_be_bytes()); // rsbMappingOffset
+    assert_eq!(b.len(), 20);
+    b.extend_from_slice(&ivs_one_region(advance_deltas));
+    b
+}
+
+/// GDEF v1.3 with the glyph classes plus an ItemVariationStore whose
+/// delta-set (0, 0) carries `gpos_delta`.
+fn gdef_v13_table(gpos_delta: i16) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&be16(1)); // majorVersion
+    b.extend_from_slice(&be16(3)); // minorVersion
+    b.extend_from_slice(&be16(18)); // glyphClassDefOffset
+    b.extend_from_slice(&be16(0)); // attachListOffset
+    b.extend_from_slice(&be16(0)); // ligCaretListOffset
+    b.extend_from_slice(&be16(0)); // markAttachClassDefOffset
+    b.extend_from_slice(&be16(0)); // markGlyphSetsDefOffset
+    b.extend_from_slice(&0u32.to_be_bytes()); // itemVarStoreOffset (patch @14)
+    assert_eq!(b.len(), 18);
+    b.extend_from_slice(&classdef(&[(1, 2, 1), (3, 3, 3), (4, 4, 2), (5, 5, 1)]));
+    let ivs = b.len();
+    b[14..18].copy_from_slice(&(ivs as u32).to_be_bytes());
+    b.extend_from_slice(&ivs_one_region(&[gpos_delta]));
+    b
+}
+
+/// GPOS SinglePos format 1 on gid 1 with xAdvance +25 and an
+/// X_ADVANCE_DEVICE VariationIndex table (delta set (0, 0)).
+fn gpos_single_var_subtable() -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&be16(1)); // format
+    b.extend_from_slice(&be16(0)); // coverageOffset (patch @2)
+    b.extend_from_slice(&be16(0x0044)); // X_ADVANCE | X_ADVANCE_DEVICE
+    b.extend_from_slice(&25i16.to_be_bytes()); // xAdvance
+    b.extend_from_slice(&be16(0)); // xAdvDeviceOffset (patch @8)
+    let cov = b.len();
+    b[2..4].copy_from_slice(&be16(cov as u16));
+    b.extend_from_slice(&coverage(&[1]));
+    let vidx = b.len();
+    b[8..10].copy_from_slice(&be16(vidx as u16));
+    b.extend_from_slice(&be16(0)); // deltaSetOuterIndex
+    b.extend_from_slice(&be16(0)); // deltaSetInnerIndex
+    b.extend_from_slice(&be16(0x8000)); // deltaFormat = VARIATION_INDEX
+    b
+}
+
+/// The synthetic variable font: the base font plus fvar / HVAR /
+/// GDEF-v1.3-with-IVS, and a GPOS whose `dist` feature adjusts 'a'.
+fn build_var_font() -> Vec<u8> {
+    let num_glyphs = 6u16;
+    let advances: [u16; 6] = [0, 500, 600, 0, 900, 550];
+
+    let mut head = vec![0u8; 54];
+    head[0..4].copy_from_slice(&0x00010000u32.to_be_bytes());
+    head[12..16].copy_from_slice(&0x5F0F3CF5u32.to_be_bytes());
+    head[18..20].copy_from_slice(&1000u16.to_be_bytes());
+    let mut hhea = vec![0u8; 36];
+    hhea[0..4].copy_from_slice(&0x00010000u32.to_be_bytes());
+    hhea[34..36].copy_from_slice(&num_glyphs.to_be_bytes());
+    let mut maxp = vec![0u8; 6];
+    maxp[0..4].copy_from_slice(&0x00005000u32.to_be_bytes());
+    maxp[4..6].copy_from_slice(&num_glyphs.to_be_bytes());
+    let mut hmtx = Vec::new();
+    for adv in advances {
+        hmtx.extend_from_slice(&adv.to_be_bytes());
+        hmtx.extend_from_slice(&0i16.to_be_bytes());
+    }
+    let mut cmap = Vec::new();
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&be16(1));
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&12u32.to_be_bytes());
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&be16(262));
+    cmap.extend_from_slice(&be16(0));
+    let mut ids = [0u8; 256];
+    ids[b'a' as usize] = 1;
+    ids[b'b' as usize] = 2;
+    ids[b'c' as usize] = 3;
+    ids[b'd' as usize] = 5;
+    cmap.extend_from_slice(&ids);
+    let mut name = vec![0u8; 6];
+    name[4..6].copy_from_slice(&be16(6));
+    let cff2: Vec<u8> = {
+        let mut v = Vec::new();
+        v.extend_from_slice(&[2, 0, 5, 0, 5]);
+        v.push((14 + 139) as u8);
+        v.push(17);
+        v.push((22 + 139) as u8);
+        v.extend_from_slice(&[12, 36]);
+        v.extend_from_slice(&[0, 0, 0, 0]);
+        v.extend_from_slice(&[0, 0, 0, 1]);
+        v.push(1);
+        v.extend_from_slice(&[1, 2]);
+        v.push(0x01);
+        v.extend_from_slice(&[0, 0, 0, 1]);
+        v.push(1);
+        v.extend_from_slice(&[1, 1]);
+        v
+    };
+
+    // HVAR deltas at wght=1.0: gid 1 +40, gid 5 +100.
+    let hvar = hvar_table(&[0, 40, 0, 0, 0, 100]);
+    // GPOS delta-set (0,0): +80 on the dist xAdvance.
+    let gdef = gdef_v13_table(80);
+    let gpos = layout_table(&[*b"dist"], &[(1, 0x0000, gpos_single_var_subtable())]);
+    let fvar = fvar_table();
+
+    let mut tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"CFF2", cff2),
+        (b"GDEF", gdef),
+        (b"GPOS", gpos),
+        (b"HVAR", hvar),
+        (b"cmap", cmap),
+        (b"fvar", fvar),
+        (b"head", head),
+        (b"hhea", hhea),
+        (b"hmtx", hmtx),
+        (b"maxp", maxp),
+        (b"name", name),
+    ];
+    tables.sort_by(|a, b| a.0.cmp(b.0));
+    let n = tables.len() as u16;
+    let header_size = 12 + 16 * n as usize;
+    let mut offsets = Vec::new();
+    let mut cursor = header_size;
+    for (_t, payload) in &tables {
+        offsets.push(cursor);
+        cursor += payload.len();
+        while cursor % 4 != 0 {
+            cursor += 1;
+        }
+    }
+    let mut out = Vec::with_capacity(cursor);
+    out.extend_from_slice(&0x4F54544Fu32.to_be_bytes());
+    out.extend_from_slice(&n.to_be_bytes());
+    out.extend_from_slice(&[0u8; 6]);
+    for (i, (tag, payload)) in tables.iter().enumerate() {
+        out.extend_from_slice(*tag);
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&(offsets[i] as u32).to_be_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    }
+    for (i, (_tag, payload)) in tables.iter().enumerate() {
+        while out.len() < offsets[i] {
+            out.push(0);
+        }
+        out.extend_from_slice(payload);
+    }
+    out
+}
+
+#[test]
+fn variable_shape_default_instance() {
+    // No coords: hmtx advance + the static xAdvance (+25); the
+    // VariationIndex delta stays unresolved ("if no VariationIndex
+    // table is used ... that value is used for all instances", and
+    // the default instance's region scalar is 0 anyway).
+    let bytes = build_var_font();
+    let font = Font::from_bytes(&bytes).unwrap();
+    assert!(font.has_variation_axes());
+    let run = font.shape("a", &ShapeOptions::default()).unwrap();
+    assert_eq!(run[0].x_advance, 500 + 25);
+}
+
+#[test]
+fn variable_shape_max_weight_applies_hvar_and_gpos_deltas() {
+    // wght=900 normalizes to +1.0 → region scalar 1.0: the advance
+    // takes the HVAR delta (+40) and the GPOS VariationIndex delta
+    // (+80) on top of hmtx (+500) and the static xAdvance (+25).
+    let bytes = build_var_font();
+    let font = Font::from_bytes(&bytes).unwrap();
+    let opts = ShapeOptions {
+        coords: vec![900.0],
+        ..ShapeOptions::default()
+    };
+    let run = font.shape("a", &opts).unwrap();
+    assert_eq!(run[0].x_advance, 500 + 40 + 25 + 80);
+    // A glyph with only an HVAR row: 550 + 100.
+    let run_d = font.shape("d", &opts).unwrap();
+    assert_eq!(run_d[0].x_advance, 550 + 100);
+}
+
+#[test]
+fn variable_shape_default_coords_matches_no_coords() {
+    // Explicit default coordinates normalize to 0 → all deltas scale
+    // to zero, identical to the no-coords result.
+    let bytes = build_var_font();
+    let font = Font::from_bytes(&bytes).unwrap();
+    let opts = ShapeOptions {
+        coords: vec![400.0],
+        ..ShapeOptions::default()
+    };
+    let run = font.shape("a", &opts).unwrap();
+    assert_eq!(run[0].x_advance, 500 + 25);
+}
+
+#[test]
+fn gdef_item_variation_store_decodes() {
+    // The GDEF v1.3 IVS is reachable through the typed view and
+    // resolves delta-set (0, 0) to +80 at normalized +1.0.
+    let bytes = build_var_font();
+    let font = Font::from_bytes(&bytes).unwrap();
+    let gdef = font.gdef().unwrap();
+    assert!(gdef.has_item_var_store());
+    let store = gdef.item_variation_store().unwrap().unwrap();
+    assert_eq!(store.delta(0, 0, &[1.0]).round() as i32, 80);
+    assert_eq!(store.delta(0, 0, &[0.0]).round() as i32, 0);
+}
