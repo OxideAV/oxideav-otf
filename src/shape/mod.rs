@@ -40,7 +40,7 @@ pub(crate) mod buffer;
 pub(crate) mod gpos;
 pub(crate) mod gsub;
 
-use crate::tables::layout::{FeatureList, LangSys, Script, ScriptList};
+use crate::tables::layout::{FeatureList, FeatureTableSubstitution, LangSys, Script, ScriptList};
 use crate::Error;
 use crate::Font;
 use buffer::GlyphInfo;
@@ -126,8 +126,12 @@ pub struct ShapeOptions {
 }
 
 /// The default-enabled GSUB features (crate policy; see module docs).
-const GSUB_DEFAULT_FEATURES: [[u8; 4]; 6] =
-    [*b"ccmp", *b"locl", *b"liga", *b"clig", *b"calt", *b"rlig"];
+/// `rvrn` (required variation alternates) participates so that
+/// FeatureVariations-substituted feature tables take effect on
+/// variable-font instances.
+const GSUB_DEFAULT_FEATURES: [[u8; 4]; 7] = [
+    *b"ccmp", *b"locl", *b"liga", *b"clig", *b"calt", *b"rlig", *b"rvrn",
+];
 
 /// The default-enabled GPOS features (crate policy; see module docs).
 const GPOS_DEFAULT_FEATURES: [[u8; 4]; 5] = [*b"kern", *b"mark", *b"mkmk", *b"curs", *b"dist"];
@@ -168,9 +172,16 @@ fn resolve_lang_sys<'a>(
 /// arrange them "numerically into their LookupList order". When two
 /// features reference the same lookup, the first (lowest feature
 /// index) wins the value slot.
+///
+/// `subst` is the FeatureVariations substitution selected for the
+/// current variable-font instance (if any): a feature index it
+/// covers resolves to its *alternate* feature table instead of the
+/// FeatureList one, keeping the original tag association (chapter 2
+/// §"Feature variations").
 pub(crate) fn build_plan(
     scripts: &ScriptList<'_>,
     features: &FeatureList<'_>,
+    subst: Option<&FeatureTableSubstitution<'_>>,
     defaults: &[[u8; 4]],
     options: &ShapeOptions,
 ) -> Vec<PlannedLookup> {
@@ -194,8 +205,14 @@ pub(crate) fn build_plan(
 
     let mut planned: Vec<PlannedLookup> = Vec::new();
     let mut add_feature = |feature_index: u16, value: u32| {
-        let Some(Ok(feature)) = features.feature(feature_index) else {
-            return;
+        let alternate = subst.and_then(|s| s.alternate_feature(feature_index));
+        let feature = match alternate {
+            Some(Ok(alt)) => alt,
+            Some(Err(_)) => return,
+            None => match features.feature(feature_index) {
+                Some(Ok(f)) => f,
+                _ => return,
+            },
         };
         for li in feature.lookup_indices() {
             planned.push(PlannedLookup {
@@ -275,12 +292,28 @@ impl<'a> Font<'a> {
             .map(|(i, ch)| GlyphInfo::new(self.glyph_index(ch).unwrap_or(0), i as u32))
             .collect();
 
+        // Variable-font instance (used by FeatureVariations condition
+        // evaluation, HVAR advances, and VariationIndex deltas).
+        let normalized = if options.coords.is_empty() {
+            Vec::new()
+        } else {
+            self.normalize_coords(&options.coords)
+        };
+
         // 2. GSUB substitution pass.
         if let Some(gsub_table) = self.gsub() {
+            let subst = gsub_table
+                .feature_variations()
+                .and_then(|fv| fv.ok())
+                .and_then(|fv| fv.matching_substitution(&normalized));
             let plan = match (gsub_table.script_list(), gsub_table.feature_list()) {
-                (Ok(scripts), Ok(features)) => {
-                    build_plan(&scripts, &features, &GSUB_DEFAULT_FEATURES, options)
-                }
+                (Ok(scripts), Ok(features)) => build_plan(
+                    &scripts,
+                    &features,
+                    subst.as_ref(),
+                    &GSUB_DEFAULT_FEATURES,
+                    options,
+                ),
                 _ => Vec::new(),
             };
             for p in &plan {
@@ -289,14 +322,13 @@ impl<'a> Font<'a> {
         }
 
         // 3. GPOS positioning pass over hmtx advances.
-        let normalized = if options.coords.is_empty() {
-            Vec::new()
-        } else {
-            self.normalize_coords(&options.coords)
-        };
         let mut positions = gpos::init_positions(self, &glyphs, &normalized);
         let mut gpos_kerned = false;
         if let Some(gpos_table) = self.gpos() {
+            let subst = gpos_table
+                .feature_variations()
+                .and_then(|fv| fv.ok())
+                .and_then(|fv| fv.matching_substitution(&normalized));
             let plan = match (gpos_table.script_list(), gpos_table.feature_list()) {
                 (Ok(scripts), Ok(features)) => {
                     gpos_kerned = stage_has_enabled_feature(
@@ -306,7 +338,13 @@ impl<'a> Font<'a> {
                         &GPOS_DEFAULT_FEATURES,
                         options,
                     );
-                    build_plan(&scripts, &features, &GPOS_DEFAULT_FEATURES, options)
+                    build_plan(
+                        &scripts,
+                        &features,
+                        subst.as_ref(),
+                        &GPOS_DEFAULT_FEATURES,
+                        options,
+                    )
                 }
                 _ => Vec::new(),
             };

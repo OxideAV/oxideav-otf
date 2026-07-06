@@ -37,7 +37,9 @@ use crate::parser::{read_i16, read_u16, read_u32};
 use crate::tables::context::{ChainedSequenceContext, SequenceContext};
 use crate::tables::device::DeviceOrVariationIndex;
 use crate::tables::gdef::{ClassDef, Coverage};
-use crate::tables::layout::{FeatureList, LayoutHeader, Lookup, LookupList, Script, ScriptList};
+use crate::tables::layout::{
+    FeatureList, FeatureVariations, LayoutHeader, Lookup, LookupList, Script, ScriptList,
+};
 use crate::Error;
 
 /// GPOS Lookup Type 1 — single adjustment positioning.
@@ -2315,6 +2317,23 @@ impl<'a> GposTable<'a> {
     /// non-zero.
     pub fn has_feature_variations(&self) -> bool {
         self.header.minor >= 1 && self.header.feature_variations_off != 0
+    }
+
+    /// Parse the v1.1 `FeatureVariations` table, when present — the
+    /// variable-font mechanism that substitutes alternate feature
+    /// tables under axis-range conditions (chapter 2 §"Feature
+    /// variations").
+    pub fn feature_variations(&self) -> Option<Result<FeatureVariations<'a>, Error>> {
+        let off = self.header.feature_variations_off as usize;
+        if off == 0 {
+            return None;
+        }
+        if off >= self.bytes.len() {
+            return Some(Err(Error::BadStructure(
+                "featureVariationsOffset out of range",
+            )));
+        }
+        Some(FeatureVariations::parse(&self.bytes[off..]))
     }
 
     /// Raw table bytes.

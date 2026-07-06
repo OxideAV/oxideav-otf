@@ -752,3 +752,237 @@ fn gdef_item_variation_store_decodes() {
     assert_eq!(store.delta(0, 0, &[1.0]).round() as i32, 80);
     assert_eq!(store.delta(0, 0, &[0.0]).round() as i32, 0);
 }
+
+// ---------------------------------------------------------------------------
+// FeatureVariations: instance-conditional feature substitution (rvrn)
+// ---------------------------------------------------------------------------
+
+/// GSUB v1.1: an empty default `rvrn` feature whose FeatureVariations
+/// alternate (condition: wght-axis normalized value in [0.5, 1.0])
+/// carries lookup 0, a single substitution gid 1 → gid 2.
+fn gsub_v11_rvrn() -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&be16(1)); // majorVersion
+    b.extend_from_slice(&be16(1)); // minorVersion
+    b.extend_from_slice(&be16(0)); // scriptListOffset (patch @4)
+    b.extend_from_slice(&be16(0)); // featureListOffset (patch @6)
+    b.extend_from_slice(&be16(0)); // lookupListOffset (patch @8)
+    b.extend_from_slice(&0u32.to_be_bytes()); // featureVariationsOffset (patch @10)
+
+    // ScriptList: DFLT → default LangSys enabling feature 0.
+    let script_list = b.len();
+    b[4..6].copy_from_slice(&be16(script_list as u16));
+    b.extend_from_slice(&be16(1));
+    b.extend_from_slice(b"DFLT");
+    b.extend_from_slice(&be16(8));
+    b.extend_from_slice(&be16(4)); // defaultLangSysOffset
+    b.extend_from_slice(&be16(0)); // langSysCount
+    b.extend_from_slice(&be16(0)); // lookupOrder
+    b.extend_from_slice(&be16(0xFFFF)); // requiredFeatureIndex
+    b.extend_from_slice(&be16(1)); // featureIndexCount
+    b.extend_from_slice(&be16(0)); // featureIndices[0]
+
+    // FeatureList: 1 record 'rvrn' → empty default feature.
+    let feature_list = b.len();
+    b[6..8].copy_from_slice(&be16(feature_list as u16));
+    b.extend_from_slice(&be16(1));
+    b.extend_from_slice(b"rvrn");
+    b.extend_from_slice(&be16(8)); // featureOffset (rel to FeatureList)
+    b.extend_from_slice(&be16(0)); // featureParams
+    b.extend_from_slice(&be16(0)); // lookupIndexCount = 0 (no-op default)
+
+    // LookupList: lookup 0 = single subst format 2, gid 1 → gid 2.
+    let lookup_list = b.len();
+    b[8..10].copy_from_slice(&be16(lookup_list as u16));
+    b.extend_from_slice(&be16(1)); // lookupCount
+    b.extend_from_slice(&be16(4)); // lookupOffsets[0]
+    b.extend_from_slice(&be16(1)); // lookupType = single
+    b.extend_from_slice(&be16(0)); // lookupFlag
+    b.extend_from_slice(&be16(1)); // subTableCount
+    b.extend_from_slice(&be16(8)); // subtableOffsets[0]
+    b.extend_from_slice(&be16(2)); // SingleSubst format 2
+    b.extend_from_slice(&be16(8)); // coverageOffset
+    b.extend_from_slice(&be16(1)); // glyphCount
+    b.extend_from_slice(&be16(2)); // substituteGlyphIDs[0] = gid 2
+    b.extend_from_slice(&coverage(&[1]));
+
+    // FeatureVariations.
+    let fv = b.len();
+    b[10..14].copy_from_slice(&(fv as u32).to_be_bytes());
+    b.extend_from_slice(&be16(1)); // majorVersion
+    b.extend_from_slice(&be16(0)); // minorVersion
+    b.extend_from_slice(&1u32.to_be_bytes()); // recordCount
+    b.extend_from_slice(&0u32.to_be_bytes()); // conditionSetOffset (patch fv+8)
+    b.extend_from_slice(&0u32.to_be_bytes()); // ftsOffset (patch fv+12)
+
+    let cs = b.len() - fv;
+    b[fv + 8..fv + 12].copy_from_slice(&(cs as u32).to_be_bytes());
+    b.extend_from_slice(&be16(1)); // conditionCount
+    b.extend_from_slice(&6u32.to_be_bytes()); // conditionOffsets[0] (rel to CS)
+    b.extend_from_slice(&be16(1)); // ConditionFormat1
+    b.extend_from_slice(&be16(0)); // axisIndex
+    b.extend_from_slice(&be16(0x2000)); // filterRangeMinValue = 0.5
+    b.extend_from_slice(&be16(0x4000)); // filterRangeMaxValue = 1.0
+
+    let fts = b.len() - fv;
+    b[fv + 12..fv + 16].copy_from_slice(&(fts as u32).to_be_bytes());
+    b.extend_from_slice(&be16(1)); // majorVersion
+    b.extend_from_slice(&be16(0)); // minorVersion
+    b.extend_from_slice(&be16(1)); // substitutionCount
+    b.extend_from_slice(&be16(0)); // featureIndex = 0
+    b.extend_from_slice(&12u32.to_be_bytes()); // alternateFeatureOffset (rel to FTS)
+                                               // Alternate feature: 1 lookup, index 0.
+    b.extend_from_slice(&be16(0)); // featureParams
+    b.extend_from_slice(&be16(1)); // lookupIndexCount
+    b.extend_from_slice(&be16(0)); // lookupListIndices[0]
+    b
+}
+
+/// Variable font whose GSUB is the rvrn tower above (fvar as in
+/// `build_var_font`; no GPOS/HVAR needed).
+fn build_rvrn_font() -> Vec<u8> {
+    let num_glyphs = 6u16;
+    let advances: [u16; 6] = [0, 500, 600, 0, 900, 550];
+    let mut head = vec![0u8; 54];
+    head[0..4].copy_from_slice(&0x00010000u32.to_be_bytes());
+    head[12..16].copy_from_slice(&0x5F0F3CF5u32.to_be_bytes());
+    head[18..20].copy_from_slice(&1000u16.to_be_bytes());
+    let mut hhea = vec![0u8; 36];
+    hhea[0..4].copy_from_slice(&0x00010000u32.to_be_bytes());
+    hhea[34..36].copy_from_slice(&num_glyphs.to_be_bytes());
+    let mut maxp = vec![0u8; 6];
+    maxp[0..4].copy_from_slice(&0x00005000u32.to_be_bytes());
+    maxp[4..6].copy_from_slice(&num_glyphs.to_be_bytes());
+    let mut hmtx = Vec::new();
+    for adv in advances {
+        hmtx.extend_from_slice(&adv.to_be_bytes());
+        hmtx.extend_from_slice(&0i16.to_be_bytes());
+    }
+    let mut cmap = Vec::new();
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&be16(1));
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&12u32.to_be_bytes());
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&be16(262));
+    cmap.extend_from_slice(&be16(0));
+    let mut ids = [0u8; 256];
+    ids[b'a' as usize] = 1;
+    ids[b'b' as usize] = 2;
+    cmap.extend_from_slice(&ids);
+    let mut name = vec![0u8; 6];
+    name[4..6].copy_from_slice(&be16(6));
+    let cff2: Vec<u8> = {
+        let mut v = Vec::new();
+        v.extend_from_slice(&[2, 0, 5, 0, 5]);
+        v.push((14 + 139) as u8);
+        v.push(17);
+        v.push((22 + 139) as u8);
+        v.extend_from_slice(&[12, 36]);
+        v.extend_from_slice(&[0, 0, 0, 0]);
+        v.extend_from_slice(&[0, 0, 0, 1]);
+        v.push(1);
+        v.extend_from_slice(&[1, 2]);
+        v.push(0x01);
+        v.extend_from_slice(&[0, 0, 0, 1]);
+        v.push(1);
+        v.extend_from_slice(&[1, 1]);
+        v
+    };
+    let mut tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"CFF2", cff2),
+        (b"GSUB", gsub_v11_rvrn()),
+        (b"cmap", cmap),
+        (b"fvar", fvar_table()),
+        (b"head", head),
+        (b"hhea", hhea),
+        (b"hmtx", hmtx),
+        (b"maxp", maxp),
+        (b"name", name),
+    ];
+    tables.sort_by(|a, b| a.0.cmp(b.0));
+    let n = tables.len() as u16;
+    let header_size = 12 + 16 * n as usize;
+    let mut offsets = Vec::new();
+    let mut cursor = header_size;
+    for (_t, payload) in &tables {
+        offsets.push(cursor);
+        cursor += payload.len();
+        while cursor % 4 != 0 {
+            cursor += 1;
+        }
+    }
+    let mut out = Vec::with_capacity(cursor);
+    out.extend_from_slice(&0x4F54544Fu32.to_be_bytes());
+    out.extend_from_slice(&n.to_be_bytes());
+    out.extend_from_slice(&[0u8; 6]);
+    for (i, (tag, payload)) in tables.iter().enumerate() {
+        out.extend_from_slice(*tag);
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&(offsets[i] as u32).to_be_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    }
+    for (i, (_tag, payload)) in tables.iter().enumerate() {
+        while out.len() < offsets[i] {
+            out.push(0);
+        }
+        out.extend_from_slice(payload);
+    }
+    out
+}
+
+#[test]
+fn feature_variations_substitute_rvrn_at_heavy_weights() {
+    let bytes = build_rvrn_font();
+    let font = Font::from_bytes(&bytes).unwrap();
+
+    // Default instance: rvrn's default feature table is empty → 'a'
+    // stays gid 1.
+    let run = font.shape("a", &ShapeOptions::default()).unwrap();
+    assert_eq!(run[0].glyph, 1);
+
+    // wght=900 → normalized 1.0, inside [0.5, 1.0]: the alternate
+    // feature table (lookup 0) substitutes gid 1 → gid 2.
+    let heavy = ShapeOptions {
+        coords: vec![900.0],
+        ..ShapeOptions::default()
+    };
+    let run = font.shape("a", &heavy).unwrap();
+    assert_eq!(run[0].glyph, 2);
+
+    // The condition range is inclusive: wght=650 → normalized 0.5.
+    let mid = ShapeOptions {
+        coords: vec![650.0],
+        ..ShapeOptions::default()
+    };
+    let run = font.shape("a", &mid).unwrap();
+    assert_eq!(run[0].glyph, 2);
+
+    // Below the range: wght=500 → normalized 0.2 → default feature.
+    let light = ShapeOptions {
+        coords: vec![500.0],
+        ..ShapeOptions::default()
+    };
+    let run = font.shape("a", &light).unwrap();
+    assert_eq!(run[0].glyph, 1);
+}
+
+#[test]
+fn feature_variations_typed_view() {
+    let bytes = build_rvrn_font();
+    let font = Font::from_bytes(&bytes).unwrap();
+    let gsub = font.gsub().unwrap();
+    assert!(gsub.has_feature_variations());
+    let fv = gsub.feature_variations().unwrap().unwrap();
+    assert_eq!(fv.record_count(), 1);
+    // Out of range → no substitution selected.
+    assert!(fv.matching_substitution(&[0.2]).is_none());
+    let subst = fv.matching_substitution(&[1.0]).unwrap();
+    assert_eq!(subst.substitution_count(), 1);
+    let alt = subst.alternate_feature(0).unwrap().unwrap();
+    assert_eq!(alt.lookup_count(), 1);
+    assert_eq!(alt.lookup_index(0), Some(0));
+    // Feature index 1 has no record.
+    assert!(subst.alternate_feature(1).is_none());
+}

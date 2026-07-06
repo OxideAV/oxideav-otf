@@ -98,8 +98,9 @@ pub use crate::tables::kern::{
     KERN_COVERAGE_MINIMUM, KERN_COVERAGE_OVERRIDE,
 };
 pub use crate::tables::layout::{
-    Feature, FeatureList, FeatureListIter, LangSys, Lookup, LookupFlag, LookupList, LookupListIter,
-    Script, ScriptList, ScriptListIter, NO_REQUIRED_FEATURE,
+    Feature, FeatureList, FeatureListIter, FeatureTableSubstitution, FeatureVariations, LangSys,
+    Lookup, LookupFlag, LookupList, LookupListIter, Script, ScriptList, ScriptListIter,
+    NO_REQUIRED_FEATURE,
 };
 pub use crate::tables::mvar::{MvarTable as MvarView, ValueRecord as MvarValueRecord};
 pub use crate::tables::name::{NameId, NameRecord};

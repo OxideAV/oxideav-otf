@@ -25,7 +25,7 @@
 //! lookups decode their two- or four-byte windows on every call. The
 //! types are `Copy` so they can be passed around freely.
 
-use crate::parser::{read_u16, read_u32};
+use crate::parser::{read_f2dot14, read_u16, read_u32};
 use crate::Error;
 
 // ---------------------------------------------------------------------------
@@ -765,6 +765,203 @@ impl<'a> Lookup<'a> {
         } else {
             None
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FeatureVariations (GSUB/GPOS v1.1 header extension)
+// ---------------------------------------------------------------------------
+
+/// Parsed `FeatureVariations` table (chapter 2 §"Feature variations").
+///
+/// "It allows the default set of lookups for a given feature to be
+/// substituted with alternates of lookups under particular
+/// conditions" — the conditions being variable-font axis ranges
+/// (ConditionFormat1) over *normalized* axis values. Records are
+/// evaluated in order and the first whose condition set matches the
+/// runtime context supplies the [`FeatureTableSubstitution`]; a
+/// matching record whose substitution-table version is unsupported is
+/// rejected and evaluation continues (spec processing rules).
+///
+/// Layout:
+/// ```text
+///   0 / 2 / majorVersion = 1
+///   2 / 2 / minorVersion = 0
+///   4 / 4 / featureVariationRecordCount
+///   8 / 8 / featureVariationRecords[]   (2 × Offset32)
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct FeatureVariations<'a> {
+    bytes: &'a [u8],
+    count: u32,
+}
+
+impl<'a> FeatureVariations<'a> {
+    /// Validate the header + record array.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let major = read_u16(bytes, 0)?;
+        let minor = read_u16(bytes, 2)?;
+        if major != 1 || minor != 0 {
+            return Err(Error::BadStructure("FeatureVariations: version != 1.0"));
+        }
+        let count = read_u32(bytes, 4)?;
+        let need = 8usize
+            .checked_add((count as usize).checked_mul(8).ok_or(Error::BadStructure(
+                "FeatureVariations record count overflow",
+            ))?)
+            .ok_or(Error::BadStructure("FeatureVariations length overflow"))?;
+        if bytes.len() < need {
+            return Err(Error::UnexpectedEof);
+        }
+        Ok(Self { bytes, count })
+    }
+
+    /// Number of `FeatureVariationRecord`s.
+    pub fn record_count(&self) -> u32 {
+        self.count
+    }
+
+    /// Evaluate the condition sets against `normalized` (the
+    /// fvar→avar-normalized instance tuple) and return the
+    /// [`FeatureTableSubstitution`] of the first matching record.
+    ///
+    /// A NULL `conditionSetOffset` is "the universal condition: all
+    /// contexts are matched"; a NULL `featureTableSubstitutionOffset`
+    /// matches but substitutes nothing (`None` is returned, ending
+    /// evaluation per the first-match rule).
+    pub fn matching_substitution(
+        &self,
+        normalized: &[f32],
+    ) -> Option<FeatureTableSubstitution<'a>> {
+        for i in 0..self.count as usize {
+            let rec = 8 + i * 8;
+            let cond_off = read_u32(self.bytes, rec).ok()? as usize;
+            let subst_off = read_u32(self.bytes, rec + 4).ok()? as usize;
+            if !self.condition_set_matches(cond_off, normalized) {
+                continue;
+            }
+            if subst_off == 0 || subst_off >= self.bytes.len() {
+                return None;
+            }
+            match FeatureTableSubstitution::parse(&self.bytes[subst_off..]) {
+                Ok(subst) => return Some(subst),
+                // Unsupported substitution-table version: reject this
+                // record and keep evaluating.
+                Err(_) => continue,
+            }
+        }
+        None
+    }
+
+    /// Evaluate one ConditionSet (all conditions AND-ed; an empty set
+    /// or NULL offset matches everything; an unrecognized condition
+    /// format fails the set but not the whole table).
+    fn condition_set_matches(&self, cond_set_off: usize, normalized: &[f32]) -> bool {
+        if cond_set_off == 0 {
+            return true;
+        }
+        if cond_set_off >= self.bytes.len() {
+            return false;
+        }
+        let set = &self.bytes[cond_set_off..];
+        let Ok(cond_count) = read_u16(set, 0) else {
+            return false;
+        };
+        for i in 0..cond_count as usize {
+            let Ok(off) = read_u32(set, 2 + i * 4) else {
+                return false;
+            };
+            let off = off as usize;
+            if off >= set.len() {
+                return false;
+            }
+            let cond = &set[off..];
+            let Ok(format) = read_u16(cond, 0) else {
+                return false;
+            };
+            if format != 1 {
+                // Unknown condition format: "it should fail to match
+                // the condition set, but continue to test other
+                // condition sets".
+                return false;
+            }
+            let Ok(axis_index) = read_u16(cond, 2) else {
+                return false;
+            };
+            let (Ok(min), Ok(max)) = (read_f2dot14(cond, 4), read_f2dot14(cond, 6)) else {
+                return false;
+            };
+            let Some(&value) = normalized.get(axis_index as usize) else {
+                // Invalid axisIndex: the record is ignored.
+                return false;
+            };
+            if value < min || value > max {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Parsed `FeatureTableSubstitution` table.
+///
+/// Records are "ordered in increasing order of the FeatureIndex
+/// values"; alternate feature tables hang off 32-bit offsets from the
+/// start of this table and keep their original tag association.
+#[derive(Debug, Clone, Copy)]
+pub struct FeatureTableSubstitution<'a> {
+    bytes: &'a [u8],
+    count: u16,
+}
+
+impl<'a> FeatureTableSubstitution<'a> {
+    /// Validate the version + record array.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let major = read_u16(bytes, 0)?;
+        let minor = read_u16(bytes, 2)?;
+        if major != 1 || minor != 0 {
+            return Err(Error::BadStructure(
+                "FeatureTableSubstitution: version != 1.0",
+            ));
+        }
+        let count = read_u16(bytes, 4)?;
+        let need = 6usize
+            .checked_add((count as usize).checked_mul(6).ok_or(Error::BadStructure(
+                "FeatureTableSubstitution count overflow",
+            ))?)
+            .ok_or(Error::BadStructure("FeatureTableSubstitution overflow"))?;
+        if bytes.len() < need {
+            return Err(Error::UnexpectedEof);
+        }
+        Ok(Self { bytes, count })
+    }
+
+    /// Number of substitution records.
+    pub fn substitution_count(&self) -> u16 {
+        self.count
+    }
+
+    /// The alternate [`Feature`] for `feature_index`, or `None` when
+    /// no record substitutes that index ("if a record is encountered
+    /// with a higher feature index value, stop searching").
+    pub fn alternate_feature(&self, feature_index: u16) -> Option<Result<Feature<'a>, Error>> {
+        for i in 0..self.count as usize {
+            let rec = 6 + i * 6;
+            let fi = read_u16(self.bytes, rec).ok()?;
+            if fi == feature_index {
+                let off = read_u32(self.bytes, rec + 2).ok()? as usize;
+                if off == 0 || off >= self.bytes.len() {
+                    return Some(Err(Error::BadStructure(
+                        "FeatureTableSubstitution: alternate offset out of range",
+                    )));
+                }
+                return Some(Feature::parse(&self.bytes[off..]));
+            }
+            if fi > feature_index {
+                return None;
+            }
+        }
+        None
     }
 }
 
