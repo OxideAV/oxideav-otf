@@ -20,9 +20,11 @@
 use super::buffer::{GlyphInfo, SkipFilter};
 use super::{PlannedLookup, ShapeOptions};
 use crate::tables::gdef::GdefTable;
+use crate::tables::gdef::GlyphClass;
 use crate::tables::gpos::{
-    GposTable, PairPos, SinglePos, ValueRecord, GPOS_LOOKUP_TYPE_EXTENSION, GPOS_LOOKUP_TYPE_PAIR,
-    GPOS_LOOKUP_TYPE_SINGLE,
+    GposTable, MarkBasePos, MarkMarkPos, PairPos, SinglePos, ValueRecord,
+    GPOS_LOOKUP_TYPE_EXTENSION, GPOS_LOOKUP_TYPE_MARK_TO_BASE, GPOS_LOOKUP_TYPE_MARK_TO_MARK,
+    GPOS_LOOKUP_TYPE_PAIR, GPOS_LOOKUP_TYPE_SINGLE,
 };
 use crate::Font;
 
@@ -173,6 +175,14 @@ pub(crate) fn try_apply_at(
                 let pp = gpos.pair_pos(lookup_index, s)?.ok()?;
                 try_pair(&pp, gdef, filter, buffer, positions, pos, normalized)
             }
+            GPOS_LOOKUP_TYPE_MARK_TO_BASE => {
+                let mb = gpos.mark_base_pos(lookup_index, s)?.ok()?;
+                try_mark_base(&mb, gdef, filter, buffer, positions, pos)
+            }
+            GPOS_LOOKUP_TYPE_MARK_TO_MARK => {
+                let mm = gpos.mark_mark_pos(lookup_index, s)?.ok()?;
+                try_mark_mark(&mm, filter, buffer, positions, pos)
+            }
             GPOS_LOOKUP_TYPE_EXTENSION => {
                 let ext = gpos.extension_pos(lookup_index, s)?.ok()?;
                 let sub_bytes = ext.extension_subtable_bytes();
@@ -185,6 +195,14 @@ pub(crate) fn try_apply_at(
                     GPOS_LOOKUP_TYPE_PAIR => {
                         let pp = ext.as_pair_pos().ok()?;
                         try_pair(&pp, gdef, filter, buffer, positions, pos, normalized)
+                    }
+                    GPOS_LOOKUP_TYPE_MARK_TO_BASE => {
+                        let mb = ext.as_mark_base_pos().ok()?;
+                        try_mark_base(&mb, gdef, filter, buffer, positions, pos)
+                    }
+                    GPOS_LOOKUP_TYPE_MARK_TO_MARK => {
+                        let mm = ext.as_mark_mark_pos().ok()?;
+                        try_mark_mark(&mm, filter, buffer, positions, pos)
                     }
                     _ => None,
                 }
@@ -246,6 +264,113 @@ fn try_pair(
     } else {
         Some(second + 1)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Types 4 / 6 — mark attachment
+// ---------------------------------------------------------------------------
+
+/// Displace the glyph at `mark_pos` so its `mark_anchor` coincides
+/// with `base_anchor` on the glyph at `base_pos`.
+///
+/// Anchor coordinates are in the design space of their own glyph
+/// (origin at the glyph origin); the run positions glyphs by pen
+/// advances, so the mark offset removes the advances accumulated
+/// between the base origin and the mark origin and inherits the
+/// base's own placement offsets. "Placement of the base glyph and
+/// advances of both glyphs are not affected" (GPOS §"Lookup type 4").
+fn attach(
+    positions: &mut [Pos],
+    base_pos: usize,
+    mark_pos: usize,
+    base_anchor: (i32, i32),
+    mark_anchor: (i32, i32),
+) {
+    let mut adv_x = 0i32;
+    let mut adv_y = 0i32;
+    for p in positions.iter().take(mark_pos).skip(base_pos) {
+        adv_x += p.x_advance;
+        adv_y += p.y_advance;
+    }
+    positions[mark_pos].x_offset =
+        positions[base_pos].x_offset + base_anchor.0 - mark_anchor.0 - adv_x;
+    positions[mark_pos].y_offset =
+        positions[base_pos].y_offset + base_anchor.1 - mark_anchor.1 - adv_y;
+}
+
+/// GPOS type 4: attach a combining mark to its base glyph.
+///
+/// Spec: "To identify the base glyph that combines with a mark, the
+/// text-processing client must look backward in the glyph string from
+/// the mark to the preceding base glyph" — the backward search steps
+/// over other mark glyphs (GDEF class 3) and anything the lookup's
+/// own flags skip.
+fn try_mark_base(
+    mb: &MarkBasePos<'_>,
+    gdef: Option<&GdefTable<'_>>,
+    filter: &SkipFilter<'_, '_>,
+    buffer: &[GlyphInfo],
+    positions: &mut [Pos],
+    pos: usize,
+) -> Option<usize> {
+    let mark = buffer[pos].glyph;
+    mb.mark_coverage().index_of(mark)?;
+
+    // Backward search for the base: skip marks and filtered glyphs.
+    let mut base_pos = None;
+    let mut p = pos;
+    while p > 0 {
+        p -= 1;
+        let g = buffer[p].glyph;
+        if filter.skips(g) {
+            continue;
+        }
+        if let Some(gdef) = gdef {
+            if gdef.glyph_class(g) == Some(GlyphClass::Mark) {
+                continue;
+            }
+        }
+        base_pos = Some(p);
+        break;
+    }
+    let base_pos = base_pos?;
+    let att = mb.attachment(mark, buffer[base_pos].glyph)?.ok()?;
+    attach(
+        positions,
+        base_pos,
+        pos,
+        (att.base_anchor.x as i32, att.base_anchor.y as i32),
+        (att.mark_anchor.x as i32, att.mark_anchor.y as i32),
+    );
+    Some(pos + 1)
+}
+
+/// GPOS type 6: attach a mark (`mark1`) to a preceding mark (`mark2`).
+///
+/// Spec: "The mark2 glyph that combines with a mark1 glyph is the
+/// glyph preceding the mark1 glyph in glyph string order (skipping
+/// glyphs according to LookupFlags)" — mark-to-mark lookups typically
+/// carry a mark-attachment-class or mark-filtering-set flag so the
+/// backward step lands on the relevant mark.
+fn try_mark_mark(
+    mm: &MarkMarkPos<'_>,
+    filter: &SkipFilter<'_, '_>,
+    buffer: &[GlyphInfo],
+    positions: &mut [Pos],
+    pos: usize,
+) -> Option<usize> {
+    let mark1 = buffer[pos].glyph;
+    mm.mark1_coverage().index_of(mark1)?;
+    let mark2_pos = super::buffer::prev_unskipped(buffer, filter, pos)?;
+    let att = mm.attachment(mark1, buffer[mark2_pos].glyph)?.ok()?;
+    attach(
+        positions,
+        mark2_pos,
+        pos,
+        (att.mark2_anchor.x as i32, att.mark2_anchor.y as i32),
+        (att.mark1_anchor.x as i32, att.mark1_anchor.y as i32),
+    );
+    Some(pos + 1)
 }
 
 // ---------------------------------------------------------------------------

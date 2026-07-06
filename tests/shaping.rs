@@ -254,3 +254,91 @@ fn explicit_script_language_selection() {
     let default = shape("office", &ShapeOptions::default());
     assert_eq!(explicit, default);
 }
+
+// ---------------------------------------------------------------------------
+// GPOS — mark attachment (mark / mkmk, on by default)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mark_to_base_combining_acute() {
+    // T + U+0301 (no precomposed form exists, so the mark survives as
+    // its own glyph and GPOS mark-to-base positions it).
+    let run = shape("T\u{0301}", &ShapeOptions::default());
+    assert_eq!(glyphs(&run), vec![21, 2304]);
+    assert_eq!(advances(&run), vec![536, 0]);
+    assert_eq!(run[1].x_offset, -269);
+    assert_eq!(run[1].y_offset, 0);
+}
+
+#[test]
+fn mark_attachment_between_ligature_components_blocks_liga() {
+    // f + U+0301 + i: the combining mark sits between f and i; the
+    // fixture's liga lookup does not set IGNORE_MARKS, so no fi
+    // ligature forms, and the mark attaches to the f.
+    let run = shape("f\u{0301}i", &ShapeOptions::default());
+    assert_eq!(glyphs(&run), vec![33, 2304, 36]);
+    assert_eq!(clusters(&run), vec![0, 1, 2]);
+    assert_eq!(run[1].x_offset, -74);
+    assert_eq!(run[1].y_offset, 50);
+    assert_eq!(advances(&run), vec![292, 0, 246]);
+}
+
+#[test]
+fn mark_stacking_two_acutes() {
+    // T + U+0301 + U+0301: both marks position over the T (the
+    // fixture's mkmk data yields the same offset for the second).
+    let run = shape("T\u{0301}\u{0301}", &ShapeOptions::default());
+    assert_eq!(glyphs(&run), vec![21, 2304, 2304]);
+    assert_eq!(run[1].x_offset, -269);
+    assert_eq!(run[2].x_offset, -269);
+    assert_eq!(advances(&run), vec![536, 0, 0]);
+}
+
+#[test]
+fn mark_after_ligature_attaches_without_reforming() {
+    // f + f + U+0301 + i: the f_f ligature forms (both components
+    // precede the mark), the mark follows the ligature, i remains.
+    let run = shape("ff\u{0301}i", &ShapeOptions::default());
+    assert_eq!(glyphs(&run), vec![687, 2304, 36]);
+    assert_eq!(advances(&run), vec![577, 0, 246]);
+}
+
+#[test]
+fn mark_to_base_matches_typed_anchor_views() {
+    // Cross-check the shaped offset against the MarkBasePos typed
+    // view: offset = base_anchor - mark_anchor - base_advance.
+    let bytes = fixture();
+    let font = Font::from_bytes(&bytes).unwrap();
+    let t = font.glyph_index('T').unwrap();
+    let acute = 2304u16; // U+0301 mark glyph (from the shaped run)
+    let gpos = font.gpos().unwrap();
+    let mut expected = None;
+    'outer: for i in 0..gpos.lookup_count() {
+        let l = gpos.lookup(i).unwrap();
+        if l.lookup_type() != oxideav_otf::GPOS_LOOKUP_TYPE_MARK_TO_BASE {
+            continue;
+        }
+        for s in 0..l.subtable_count() {
+            let mb = gpos.mark_base_pos(i, s).unwrap().unwrap();
+            if let Some(Ok(att)) = mb.attachment(acute, t) {
+                expected = Some((
+                    att.base_anchor.x as i32
+                        - att.mark_anchor.x as i32
+                        - font.glyph_advance(t) as i32,
+                    att.base_anchor.y as i32 - att.mark_anchor.y as i32,
+                ));
+                break 'outer;
+            }
+        }
+    }
+    let (ex, ey) = expected.expect("fixture attaches acute to T");
+    let run = shape("T\u{0301}", &ShapeOptions::default());
+    assert_eq!((run[1].x_offset, run[1].y_offset), (ex, ey));
+}
+
+#[test]
+fn mark_positioning_disabled() {
+    let run = shape("T\u{0301}", &features(&[(*b"mark", 0)]));
+    assert_eq!(run[1].x_offset, 0);
+    assert_eq!(run[1].y_offset, 0);
+}
