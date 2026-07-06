@@ -986,3 +986,233 @@ fn feature_variations_typed_view() {
     // Feature index 1 has no record.
     assert!(subst.alternate_feature(1).is_none());
 }
+
+// ---------------------------------------------------------------------------
+// GSUB multiple substitution + reverse chain, legacy kern fallback
+// ---------------------------------------------------------------------------
+
+/// GSUB with:
+///   feature 'ccmp' → lookup 0: multiple subst gid 1 → [gid 2, gid 3]
+///   feature 'calt' → lookup 1: reverse-chain single subst gid 2 →
+///     gid 5 when preceded (backtrack) by gid 1.
+fn gsub_multiple_and_reverse() -> Vec<u8> {
+    // Multiple subst format 1.
+    let mut multi = Vec::new();
+    multi.extend_from_slice(&be16(1)); // format
+    multi.extend_from_slice(&be16(0)); // coverageOffset (patch @2)
+    multi.extend_from_slice(&be16(1)); // sequenceCount
+    multi.extend_from_slice(&be16(0)); // sequenceOffsets[0] (patch @6)
+    let cov = multi.len();
+    multi[2..4].copy_from_slice(&be16(cov as u16));
+    multi.extend_from_slice(&coverage(&[1]));
+    let seq = multi.len();
+    multi[6..8].copy_from_slice(&be16(seq as u16));
+    multi.extend_from_slice(&be16(2)); // glyphCount
+    multi.extend_from_slice(&be16(2)); // substituteGlyphIDs[0]
+    multi.extend_from_slice(&be16(3)); // substituteGlyphIDs[1]
+
+    // Reverse chain single subst format 1.
+    let mut rev = Vec::new();
+    rev.extend_from_slice(&be16(1)); // format
+    rev.extend_from_slice(&be16(0)); // coverageOffset (patch @2)
+    rev.extend_from_slice(&be16(1)); // backtrackGlyphCount
+    rev.extend_from_slice(&be16(0)); // backtrackCoverageOffsets[0] (patch @6)
+    rev.extend_from_slice(&be16(0)); // lookaheadGlyphCount
+    rev.extend_from_slice(&be16(1)); // glyphCount
+    rev.extend_from_slice(&be16(5)); // substituteGlyphIDs[0]
+    let rcov = rev.len();
+    rev[2..4].copy_from_slice(&be16(rcov as u16));
+    rev.extend_from_slice(&coverage(&[2]));
+    let bcov = rev.len();
+    rev[6..8].copy_from_slice(&be16(bcov as u16));
+    rev.extend_from_slice(&coverage(&[1]));
+
+    layout_table(&[*b"ccmp", *b"calt"], &[(2, 0, multi), (8, 0, rev)])
+}
+
+/// Legacy kern table (version 0, one horizontal format-0 subtable):
+/// pair (gid 2, gid 5) → -60.
+fn legacy_kern_table() -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&be16(0)); // version
+    b.extend_from_slice(&be16(1)); // nTables
+    let sub_len = 6 + 8 + 6; // header + format-0 header + 1 pair
+    b.extend_from_slice(&be16(0)); // subtable version
+    b.extend_from_slice(&be16(sub_len as u16)); // length
+    b.extend_from_slice(&be16(0x0001)); // coverage: horizontal, format 0
+    b.extend_from_slice(&be16(1)); // nPairs
+    b.extend_from_slice(&be16(6)); // searchRange
+    b.extend_from_slice(&be16(0)); // entrySelector
+    b.extend_from_slice(&be16(0)); // rangeShift
+    b.extend_from_slice(&be16(2)); // left
+    b.extend_from_slice(&be16(5)); // right
+    b.extend_from_slice(&(-60i16).to_be_bytes()); // value
+    b
+}
+
+/// Font with the multiple/reverse GSUB and a legacy kern table but no
+/// GPOS (so the kern fallback engages).
+fn build_kern_fallback_font() -> Vec<u8> {
+    let num_glyphs = 6u16;
+    let advances: [u16; 6] = [0, 500, 600, 0, 900, 550];
+    let mut head = vec![0u8; 54];
+    head[0..4].copy_from_slice(&0x00010000u32.to_be_bytes());
+    head[12..16].copy_from_slice(&0x5F0F3CF5u32.to_be_bytes());
+    head[18..20].copy_from_slice(&1000u16.to_be_bytes());
+    let mut hhea = vec![0u8; 36];
+    hhea[0..4].copy_from_slice(&0x00010000u32.to_be_bytes());
+    hhea[34..36].copy_from_slice(&num_glyphs.to_be_bytes());
+    let mut maxp = vec![0u8; 6];
+    maxp[0..4].copy_from_slice(&0x00005000u32.to_be_bytes());
+    maxp[4..6].copy_from_slice(&num_glyphs.to_be_bytes());
+    let mut hmtx = Vec::new();
+    for adv in advances {
+        hmtx.extend_from_slice(&adv.to_be_bytes());
+        hmtx.extend_from_slice(&0i16.to_be_bytes());
+    }
+    let mut cmap = Vec::new();
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&be16(1));
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&12u32.to_be_bytes());
+    cmap.extend_from_slice(&be16(0));
+    cmap.extend_from_slice(&be16(262));
+    cmap.extend_from_slice(&be16(0));
+    let mut ids = [0u8; 256];
+    ids[b'a' as usize] = 1;
+    ids[b'b' as usize] = 2;
+    ids[b'd' as usize] = 5;
+    cmap.extend_from_slice(&ids);
+    let mut name = vec![0u8; 6];
+    name[4..6].copy_from_slice(&be16(6));
+    let cff2: Vec<u8> = {
+        let mut v = Vec::new();
+        v.extend_from_slice(&[2, 0, 5, 0, 5]);
+        v.push((14 + 139) as u8);
+        v.push(17);
+        v.push((22 + 139) as u8);
+        v.extend_from_slice(&[12, 36]);
+        v.extend_from_slice(&[0, 0, 0, 0]);
+        v.extend_from_slice(&[0, 0, 0, 1]);
+        v.push(1);
+        v.extend_from_slice(&[1, 2]);
+        v.push(0x01);
+        v.extend_from_slice(&[0, 0, 0, 1]);
+        v.push(1);
+        v.extend_from_slice(&[1, 1]);
+        v
+    };
+    let mut tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"CFF2", cff2),
+        (b"GSUB", gsub_multiple_and_reverse()),
+        (b"cmap", cmap),
+        (b"head", head),
+        (b"hhea", hhea),
+        (b"hmtx", hmtx),
+        (b"kern", legacy_kern_table()),
+        (b"maxp", maxp),
+        (b"name", name),
+    ];
+    tables.sort_by(|a, b| a.0.cmp(b.0));
+    let n = tables.len() as u16;
+    let header_size = 12 + 16 * n as usize;
+    let mut offsets = Vec::new();
+    let mut cursor = header_size;
+    for (_t, payload) in &tables {
+        offsets.push(cursor);
+        cursor += payload.len();
+        while cursor % 4 != 0 {
+            cursor += 1;
+        }
+    }
+    let mut out = Vec::with_capacity(cursor);
+    out.extend_from_slice(&0x4F54544Fu32.to_be_bytes());
+    out.extend_from_slice(&n.to_be_bytes());
+    out.extend_from_slice(&[0u8; 6]);
+    for (i, (tag, payload)) in tables.iter().enumerate() {
+        out.extend_from_slice(*tag);
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&(offsets[i] as u32).to_be_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    }
+    for (i, (_tag, payload)) in tables.iter().enumerate() {
+        while out.len() < offsets[i] {
+            out.push(0);
+        }
+        out.extend_from_slice(payload);
+    }
+    out
+}
+
+#[test]
+fn multiple_substitution_then_reverse_chain() {
+    // 'a' → ccmp multiple subst → [b, m]; then the calt reverse-chain
+    // lookup rewrites b → d because its backtrack (a... which was
+    // itself replaced by b as position 0's output — the backtrack
+    // coverage {a} no longer matches) — verify exact semantics:
+    // buffer after lookup 0 is [b(gid2), m(gid3)]; reverse-chain
+    // processes end-to-start; gid2 at position 0 has NO preceding
+    // glyph, so no substitution happens.
+    let bytes = build_kern_fallback_font();
+    let font = Font::from_bytes(&bytes).unwrap();
+    let run = font.shape("a", &ShapeOptions::default()).unwrap();
+    assert_eq!(run.iter().map(|g| g.glyph).collect::<Vec<_>>(), vec![2, 3]);
+    // Both outputs inherit the input cluster.
+    assert_eq!(run[0].cluster, 0);
+    assert_eq!(run[1].cluster, 0);
+
+    // "ab": position 1's b IS preceded by a → reverse chain rewrites
+    // it to d. (Then a expands to [b, m] via ccmp? No — ccmp ran
+    // FIRST, LookupList order: lookup 0 = ccmp, so "ab" becomes
+    // [b, m, b]; the final b is preceded (skipping nothing) by m, not
+    // a → no rewrite.) Use "b" preceded by an explicit d-something:
+    // text "ab" exercises exactly the ccmp-then-calt ordering.
+    let run = font.shape("ab", &ShapeOptions::default()).unwrap();
+    assert_eq!(
+        run.iter().map(|g| g.glyph).collect::<Vec<_>>(),
+        vec![2, 3, 2]
+    );
+}
+
+#[test]
+fn reverse_chain_rewrites_with_backtrack() {
+    // Disable ccmp so 'a' stays gid 1: "ab" = [a, b]; the reverse
+    // chain sees b preceded by a and substitutes gid 5.
+    let bytes = build_kern_fallback_font();
+    let font = Font::from_bytes(&bytes).unwrap();
+    let opts = ShapeOptions {
+        features: vec![oxideav_otf::FeatureSetting::new(*b"ccmp", 0)],
+        ..ShapeOptions::default()
+    };
+    let run = font.shape("ab", &opts).unwrap();
+    assert_eq!(run.iter().map(|g| g.glyph).collect::<Vec<_>>(), vec![1, 5]);
+    // Without the backtrack context the coverage alone must not fire.
+    let run = font.shape("b", &opts).unwrap();
+    assert_eq!(run[0].glyph, 2);
+}
+
+#[test]
+fn legacy_kern_fallback_without_gpos() {
+    // No GPOS in this font: the kern table supplies (b, d) → -60.
+    let bytes = build_kern_fallback_font();
+    let font = Font::from_bytes(&bytes).unwrap();
+    let opts = ShapeOptions {
+        features: vec![oxideav_otf::FeatureSetting::new(*b"ccmp", 0)],
+        ..ShapeOptions::default()
+    };
+    let run = font.shape("bd", &opts).unwrap();
+    assert_eq!(run[0].x_advance, 600 - 60);
+    assert_eq!(run[1].x_advance, 550);
+
+    // kern=0 disables the fallback.
+    let nokern = ShapeOptions {
+        features: vec![
+            oxideav_otf::FeatureSetting::new(*b"ccmp", 0),
+            oxideav_otf::FeatureSetting::new(*b"kern", 0),
+        ],
+        ..ShapeOptions::default()
+    };
+    let run = font.shape("bd", &nokern).unwrap();
+    assert_eq!(run[0].x_advance, 600);
+}
