@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- **text shaping**: new `shape` module and `Font::shape(text,
+  &ShapeOptions) -> Vec<ShapedGlyph>` — a full
+  cmap → GSUB → GPOS pipeline per the OpenType Layout chapter-2
+  processing model (ISO/IEC 14496-22:2019 §6.3): script/langsys
+  resolution with `DFLT`→`latn` fallback, required-feature handling,
+  default-enabled feature sets (GSUB `ccmp locl liga clig calt rlig
+  rvrn`, GPOS `kern mark mkmk curs dist`; per-feature user override
+  with 0=off / 1=on / ≥2=alternate index), lookups merged and applied
+  in LookupList order, and LookupFlag skip filtering (GDEF glyph
+  classes, mark-attachment-class filter, mark filtering sets, with
+  the spec's supersession rules). GSUB application covers all eight
+  lookup types (multiple-subst splicing, skip-aware ligature matching
+  with cluster merge + ligature-component tracking, nested contextual
+  records under their own flags with a depth cap, end-to-start
+  reverse chaining); GPOS covers all nine (pair valueFormat2==0
+  cursor rule, cursive exit/entry alignment with the RIGHT_TO_LEFT
+  cross-stream rule, mark-to-base/-ligature/-mark anchor attachment,
+  contextual nesting, extension wrappers). Legacy `kern` kicks in
+  only when no GPOS `kern` feature exists for the resolved script.
+  Fixture expectations (incl. a 53-glyph paragraph) validated against
+  an independent system shaping binary (black-box); synthetic
+  byte-built fonts cover the cursive / mark-to-ligature / contextual
+  positioning / legacy-kern paths with hand-computed geometry.
+
+- **variable-font shaping**: `ShapeOptions::coords` (user-scale fvar
+  axis values) applies HVAR advance deltas at position init and
+  resolves ValueRecord `*DeviceOffset` `VariationIndex` tables
+  against the GDEF `ItemVariationStore` at the fvar→avar-normalized
+  instance (§7.2.3; GPOS "GPOS table and OpenType Font Variations").
+  `GdefTable::item_variation_store` now decodes the v1.3
+  `itemVarStore` (previously a raw offset only).
+
+- **FeatureVariations** (§6.3 "Feature variations"): new
+  `FeatureVariations` / `FeatureTableSubstitution` decoders in
+  `tables::layout` — record-ordered condition-set evaluation
+  (ConditionFormat1 normalized axis ranges, inclusive bounds, AND
+  conjunction, NULL set = universal, unknown formats fail the set,
+  unsupported substitution versions reject the record), Offset32
+  alternate feature tables. Exposed via
+  `GsubTable::feature_variations` / `GposTable::feature_variations`
+  and consumed by `Font::shape` (`rvrn` joins the default GSUB set).
+
+- new supporting accessors: `SinglePos::raw`, `PairPos::raw`,
+  `PairPos::value_device_base` (ValueRecord device offsets are
+  PairSet-relative in PairPosFormat1 per the spec's "immediate
+  parent" rule).
+
 - support the **`VORG`** vertical origin table (ISO/IEC 14496-22:2019
   §5.4): the `defaultVertOriginY` plus the sorted
   `vertOriginYMetrics` array (glyph index → explicit vertical-origin Y).

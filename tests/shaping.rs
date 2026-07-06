@@ -342,3 +342,79 @@ fn mark_positioning_disabled() {
     assert_eq!(run[1].x_offset, 0);
     assert_eq!(run[1].y_offset, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Wholesale paragraph comparison against the black-box validator
+// ---------------------------------------------------------------------------
+
+#[test]
+fn paragraph_matches_reference_shaper() {
+    // Full default-feature shaping of a mixed run (ligatures, kerning
+    // around punctuation and capitals, digits, the percent sign);
+    // glyph IDs, clusters, and advances all transcribed from the
+    // independent shaping binary.
+    let run = shape(
+        "The quick brown fox flies off with waffles; VAT: 71%",
+        &ShapeOptions::default(),
+    );
+    let expected: &[(u16, u32, i32)] = &[
+        (21, 0, 536),
+        (35, 1, 544),
+        (32, 2, 496),
+        (1, 3, 200),
+        (44, 4, 555),
+        (48, 5, 544),
+        (36, 6, 246),
+        (30, 7, 456),
+        (38, 8, 495),
+        (1, 9, 200),
+        (29, 10, 553),
+        (45, 11, 337),
+        (42, 12, 538),
+        (50, 13, 719),
+        (41, 14, 547),
+        (1, 15, 200),
+        (33, 16, 282),
+        (42, 17, 525),
+        (51, 18, 446),
+        (1, 19, 200),
+        (33, 20, 292),
+        (39, 21, 255),
+        (36, 22, 246),
+        (32, 23, 496),
+        (46, 24, 419),
+        (1, 25, 200),
+        (42, 26, 542),
+        (687, 27, 577),
+        (1, 29, 200),
+        (50, 30, 719),
+        (36, 31, 246),
+        (47, 32, 338),
+        (35, 33, 544),
+        (1, 34, 200),
+        (50, 35, 709),
+        (28, 36, 504),
+        (687, 37, 577),
+        (39, 39, 255),
+        (32, 40, 496),
+        (46, 41, 419),
+        (1390, 42, 249),
+        (1, 43, 200),
+        (23, 44, 501),
+        (2, 45, 489),
+        (21, 46, 516),
+        (1389, 47, 249),
+        (1, 48, 200),
+        (1340, 49, 497),
+        (1334, 50, 497),
+        (2140, 51, 824),
+    ];
+    assert_eq!(run.len(), expected.len());
+    for (i, (g, e)) in run.iter().zip(expected).enumerate() {
+        assert_eq!(
+            (g.glyph, g.cluster, g.x_advance),
+            *e,
+            "glyph {i} diverges from the reference shaper"
+        );
+    }
+}

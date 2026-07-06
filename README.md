@@ -12,7 +12,9 @@ TrueType outlines (quadratic Beziers); OTF handles CFF outlines
 
 The crate parses an sfnt/OTF container into a `Font` and exposes
 metadata, glyph metrics, glyph outlines (CFF Type 2 → cubic Beziers),
-and typed views over the OpenType Layout tables. Highlights:
+typed views over the OpenType Layout tables, and a **text-shaping
+pipeline** (`Font::shape`) that runs GSUB substitution and GPOS
+positioning end to end. Highlights:
 
 - sfnt + table directory walker (recognises `OTTO`, `0x00010000`, `true`).
 - CFF (Adobe TN5176, version 1):
@@ -383,14 +385,95 @@ for contour in &outline.contours {
 }
 ```
 
+## Text shaping
+
+`Font::shape(text, &ShapeOptions)` maps characters through `cmap`,
+applies GSUB substitution and GPOS positioning per the OpenType Layout
+chapter-2 processing model, and returns positioned glyphs:
+
+```rust
+use oxideav_otf::{FeatureSetting, Font, ShapeOptions};
+
+let bytes = std::fs::read("SourceSans3-Regular.otf")?;
+let font = Font::from_bytes(&bytes)?;
+
+// Default features: liga forms the f_f ligature, kern adjusts pairs.
+for g in font.shape("office", &ShapeOptions::default())? {
+    let _ = (g.glyph, g.cluster, g.x_advance, g.x_offset, g.y_offset);
+}
+
+// Feature control: 0 = off, 1 = on, >= 2 selects the n'th alternate
+// for GSUB AlternateSets (e.g. aalt=2).
+let opts = ShapeOptions {
+    features: vec![
+        FeatureSetting::new(*b"liga", 0),
+        FeatureSetting::new(*b"smcp", 1),
+    ],
+    ..ShapeOptions::default()
+};
+let _ = font.shape("Hello", &opts)?;
+
+// Variable fonts: user-scale axis coordinates select the instance —
+// HVAR advance deltas, GPOS VariationIndex deltas (via the GDEF
+// ItemVariationStore), and FeatureVariations condition sets all key
+// off the fvar→avar-normalized tuple.
+let heavy = ShapeOptions { coords: vec![700.0], ..ShapeOptions::default() };
+let _ = font.shape("Hello", &heavy)?;
+```
+
+What the engine implements:
+
+- **Plan building** — script/langsys resolution (`DFLT` → `latn`
+  fallback), required-feature handling, default-enabled feature sets
+  (GSUB `ccmp locl liga clig calt rlig rvrn`; GPOS `kern mark mkmk
+  curs dist` — a crate policy the caller can override per feature),
+  lookup indices merged and applied in LookupList order.
+- **LookupFlag filtering** — IGNORE_BASE_GLYPHS / IGNORE_LIGATURES /
+  IGNORE_MARKS over the GDEF glyph classes, the mark-attachment-class
+  filter, and mark filtering sets, with the spec's supersession rules;
+  skipped glyphs are invisible to pattern matching.
+- **GSUB** — all eight lookup types: single, multiple (sequence
+  splice), alternate (value-selected), ligature (skip-aware matching,
+  cluster merge, ligature-component tracking), contextual + chained
+  contextual (formats 1/2/3, nested lookups under their own flags,
+  depth-capped), extension, and reverse-chaining single substitution
+  (end-to-start).
+- **GPOS** — all nine lookup types: single/pair ValueRecord
+  adjustment (valueFormat2==0 cursor rule), cursive attachment
+  (exit/entry alignment incl. the RIGHT_TO_LEFT cross-stream rule),
+  mark-to-base / mark-to-ligature (component-aware) / mark-to-mark
+  anchor attachment, contextual + chained contextual, extension.
+- **Variable instances** — `ShapeOptions::coords`: HVAR advance
+  deltas at position init; ValueRecord `*DeviceOffset` VariationIndex
+  tables resolved against the GDEF `ItemVariationStore`; GSUB/GPOS
+  v1.1 `FeatureVariations` (ConditionSet / ConditionFormat1 axis
+  ranges + FeatureTableSubstitution) swap feature tables per instance.
+- **Legacy `kern` fallback** — applied only when the font offers no
+  GPOS `kern` feature for the resolved script.
+
+Scope: horizontal left-to-right layout. Script-specific preprocessing
+(bidi reordering, Arabic joining, Indic reordering, Unicode
+normalization) is out of scope, as are per-ppem `Device` corrections
+(shaping stays in design units) and Anchor format-3 device
+refinement.
+
+Validation: the `tests/shaping.rs` expectations (including a 53-glyph
+paragraph with ligatures, kerning, and figures) were produced by an
+independent system shaping engine run as a black-box validator;
+`tests/shaping_synthetic.rs` covers cursive/mark-to-ligature/
+contextual-positioning/FeatureVariations/legacy-kern paths with
+hand-computed geometry over synthetic byte-built fonts.
+
 ## OpenType Layout and advanced tables
 
 Beyond the core CFF parsing and glyph outlines, the crate provides typed
 views over:
 
 - **`GDEF`** — glyph-class and mark-attach-class lookups
-  (`glyph_class` / `mark_attach_class`); `itemVarStore` is surfaced as a
-  raw offset only.
+  (`glyph_class` / `mark_attach_class`); the v1.3 `itemVarStore` is
+  decoded (`GdefTable::item_variation_store`) into the delta-set
+  `ItemVariationStore` the GPOS `VariationIndex` tables resolve
+  against.
 - **`GSUB`** — script / feature / lookup-list enumeration plus typed
   decoders for **every** lookup type: single (type 1), multiple (type 2),
   alternate (type 3), ligature (type 4), contextual (type 5), chained
@@ -533,9 +616,11 @@ outline directly from **user-scale axis coordinates** (e.g. `wght = 700`):
 
 ## Out of scope
 
-- `GDEF.itemVarStore` is surfaced as a raw offset only (the metrics-/
-  positioning-variation `ItemVariationStore` carrying its own delta
-  sets — distinct from the CFF2 delta-free IVS — is not yet decoded).
+- Shaping is horizontal LTR only; script-specific preprocessing
+  (bidi, joining analysis, Indic reordering, Unicode normalization)
+  belongs to a higher layer, per the spec's own scoping. Per-ppem
+  `Device` corrections and Anchor format-3 device refinement are not
+  applied during shaping (design-unit output).
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
 - The AGL Specification §6 component-name decomposition algorithm
   (`f_f_i` → `ffi`, `uniXXXX` → `U+XXXX`, etc.) — the static AGL 2.0
