@@ -536,6 +536,7 @@ fn try_mark_lig(
 
 /// Apply a nested lookup (from a `SequenceLookupRecord`) at one
 /// position, with the nested lookup's own flags.
+#[allow(clippy::too_many_arguments)]
 fn apply_nested(
     gpos: &GposTable<'_>,
     gdef: Option<&GdefTable<'_>>,
