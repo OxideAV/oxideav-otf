@@ -17,14 +17,18 @@
 //! corrections; shaping here stays in design units, so they are not
 //! applied.
 
+use super::buffer::{match_backtrack, match_input, match_lookahead, LIG_COMPONENT_NONE};
 use super::buffer::{GlyphInfo, SkipFilter};
+use super::MAX_NESTING_DEPTH;
 use super::{PlannedLookup, ShapeOptions};
+use crate::tables::context::{ChainedSequenceContext, SequenceContext, SequenceLookupRecord};
 use crate::tables::gdef::GdefTable;
 use crate::tables::gdef::GlyphClass;
 use crate::tables::gpos::{
-    GposTable, MarkBasePos, MarkMarkPos, PairPos, SinglePos, ValueRecord,
-    GPOS_LOOKUP_TYPE_EXTENSION, GPOS_LOOKUP_TYPE_MARK_TO_BASE, GPOS_LOOKUP_TYPE_MARK_TO_MARK,
-    GPOS_LOOKUP_TYPE_PAIR, GPOS_LOOKUP_TYPE_SINGLE,
+    CursivePos, GposTable, MarkBasePos, MarkLigPos, MarkMarkPos, PairPos, SinglePos, ValueRecord,
+    GPOS_LOOKUP_TYPE_CHAINED_CONTEXT, GPOS_LOOKUP_TYPE_CONTEXT, GPOS_LOOKUP_TYPE_CURSIVE,
+    GPOS_LOOKUP_TYPE_EXTENSION, GPOS_LOOKUP_TYPE_MARK_TO_BASE, GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE,
+    GPOS_LOOKUP_TYPE_MARK_TO_MARK, GPOS_LOOKUP_TYPE_PAIR, GPOS_LOOKUP_TYPE_SINGLE,
 };
 use crate::Font;
 
@@ -175,13 +179,34 @@ pub(crate) fn try_apply_at(
                 let pp = gpos.pair_pos(lookup_index, s)?.ok()?;
                 try_pair(&pp, gdef, filter, buffer, positions, pos, normalized)
             }
+            GPOS_LOOKUP_TYPE_CURSIVE => {
+                let cp = gpos.cursive_pos(lookup_index, s)?.ok()?;
+                let rtl = lookup.flag().right_to_left();
+                try_cursive(&cp, rtl, filter, buffer, positions, pos)
+            }
             GPOS_LOOKUP_TYPE_MARK_TO_BASE => {
                 let mb = gpos.mark_base_pos(lookup_index, s)?.ok()?;
                 try_mark_base(&mb, gdef, filter, buffer, positions, pos)
             }
+            GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE => {
+                let ml = gpos.mark_lig_pos(lookup_index, s)?.ok()?;
+                try_mark_lig(&ml, gdef, filter, buffer, positions, pos)
+            }
             GPOS_LOOKUP_TYPE_MARK_TO_MARK => {
                 let mm = gpos.mark_mark_pos(lookup_index, s)?.ok()?;
                 try_mark_mark(&mm, filter, buffer, positions, pos)
+            }
+            GPOS_LOOKUP_TYPE_CONTEXT => {
+                let ctx = gpos.context_pos(lookup_index, s)?.ok()?;
+                try_context(
+                    gpos, gdef, &ctx, filter, buffer, positions, pos, normalized, depth,
+                )
+            }
+            GPOS_LOOKUP_TYPE_CHAINED_CONTEXT => {
+                let ctx = gpos.chained_context_pos(lookup_index, s)?.ok()?;
+                try_chained_context(
+                    gpos, gdef, &ctx, filter, buffer, positions, pos, normalized, depth,
+                )
             }
             GPOS_LOOKUP_TYPE_EXTENSION => {
                 let ext = gpos.extension_pos(lookup_index, s)?.ok()?;
@@ -196,13 +221,34 @@ pub(crate) fn try_apply_at(
                         let pp = ext.as_pair_pos().ok()?;
                         try_pair(&pp, gdef, filter, buffer, positions, pos, normalized)
                     }
+                    GPOS_LOOKUP_TYPE_CURSIVE => {
+                        let cp = ext.as_cursive_pos().ok()?;
+                        let rtl = lookup.flag().right_to_left();
+                        try_cursive(&cp, rtl, filter, buffer, positions, pos)
+                    }
                     GPOS_LOOKUP_TYPE_MARK_TO_BASE => {
                         let mb = ext.as_mark_base_pos().ok()?;
                         try_mark_base(&mb, gdef, filter, buffer, positions, pos)
                     }
+                    GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE => {
+                        let ml = ext.as_mark_lig_pos().ok()?;
+                        try_mark_lig(&ml, gdef, filter, buffer, positions, pos)
+                    }
                     GPOS_LOOKUP_TYPE_MARK_TO_MARK => {
                         let mm = ext.as_mark_mark_pos().ok()?;
                         try_mark_mark(&mm, filter, buffer, positions, pos)
+                    }
+                    GPOS_LOOKUP_TYPE_CONTEXT => {
+                        let ctx = ext.as_context_pos().ok()?;
+                        try_context(
+                            gpos, gdef, &ctx, filter, buffer, positions, pos, normalized, depth,
+                        )
+                    }
+                    GPOS_LOOKUP_TYPE_CHAINED_CONTEXT => {
+                        let ctx = ext.as_chained_context_pos().ok()?;
+                        try_chained_context(
+                            gpos, gdef, &ctx, filter, buffer, positions, pos, normalized, depth,
+                        )
                     }
                     _ => None,
                 }
@@ -212,7 +258,6 @@ pub(crate) fn try_apply_at(
         if next.is_some() {
             return next;
         }
-        let _ = depth;
     }
     None
 }
@@ -371,6 +416,392 @@ fn try_mark_mark(
         (att.mark1_anchor.x as i32, att.mark1_anchor.y as i32),
     );
     Some(pos + 1)
+}
+
+// ---------------------------------------------------------------------------
+// Type 3 — cursive attachment
+// ---------------------------------------------------------------------------
+
+/// GPOS type 3: join two adjacent covered glyphs by aligning the exit
+/// anchor of the first with the entry anchor of the second (GPOS
+/// §"Lookup type 3": "a text-processing client aligns the exit anchor
+/// point of a glyph with the entry anchor point of the following
+/// glyph").
+///
+/// In horizontal LTR layout the in-stream alignment lands on the
+/// first glyph's advance (the pen must sit on the exit anchor when
+/// the second glyph starts, whose entry anchor then pins the ink):
+/// `advance₁ = offset₁ + exit.x − entry.x − offset₂`. The
+/// cross-stream (Y) alignment shifts a placement offset: with the
+/// `RIGHT_TO_LEFT` lookup flag clear the *following* glyph moves to
+/// the leading glyph's exit height; with it set "the last glyph in a
+/// matched input sequence keeps its initial position ... and the
+/// cross-stream positions of the preceding, connected glyphs are
+/// adjusted", so the *leading* glyph moves instead.
+fn try_cursive(
+    cp: &CursivePos<'_>,
+    rtl_flag: bool,
+    filter: &SkipFilter<'_, '_>,
+    buffer: &[GlyphInfo],
+    positions: &mut [Pos],
+    pos: usize,
+) -> Option<usize> {
+    let next = super::buffer::next_unskipped(buffer, filter, pos)?;
+    let att = cp.attachment(buffer[pos].glyph, buffer[next].glyph)?.ok()?;
+    let exit = (att.exit_anchor.x as i32, att.exit_anchor.y as i32);
+    let entry = (att.entry_anchor.x as i32, att.entry_anchor.y as i32);
+
+    positions[pos].x_advance =
+        positions[pos].x_offset + exit.0 - entry.0 - positions[next].x_offset;
+    if rtl_flag {
+        positions[pos].y_offset = positions[next].y_offset + entry.1 - exit.1;
+    } else {
+        positions[next].y_offset = positions[pos].y_offset + exit.1 - entry.1;
+    }
+    // The joined glyph is the next candidate (its own exit may join
+    // the glyph after it).
+    Some(next)
+}
+
+// ---------------------------------------------------------------------------
+// Type 5 — mark-to-ligature attachment
+// ---------------------------------------------------------------------------
+
+/// GPOS type 5: attach a combining mark to a component of a preceding
+/// ligature glyph. The component index comes from the ligature
+/// bookkeeping recorded during GSUB ligature substitution (a mark
+/// consumed *inside* the ligature pattern remembers the component
+/// that preceded it); a mark following the whole ligature associates
+/// with the last component.
+fn try_mark_lig(
+    ml: &MarkLigPos<'_>,
+    gdef: Option<&GdefTable<'_>>,
+    filter: &SkipFilter<'_, '_>,
+    buffer: &[GlyphInfo],
+    positions: &mut [Pos],
+    pos: usize,
+) -> Option<usize> {
+    let mark = buffer[pos].glyph;
+    ml.mark_coverage().index_of(mark)?;
+
+    // Backward search for the ligature glyph: skip marks and
+    // flag-filtered glyphs (same walk as mark-to-base).
+    let mut lig_pos = None;
+    let mut p = pos;
+    while p > 0 {
+        p -= 1;
+        let g = buffer[p].glyph;
+        if filter.skips(g) {
+            continue;
+        }
+        if let Some(gdef) = gdef {
+            if gdef.glyph_class(g) == Some(GlyphClass::Mark) {
+                continue;
+            }
+        }
+        lig_pos = Some(p);
+        break;
+    }
+    let lig_pos = lig_pos?;
+    let lig_glyph = buffer[lig_pos].glyph;
+
+    // Component selection: the recorded in-pattern component, else
+    // the ligature's last component.
+    let comp_count = match ml.component_count(lig_glyph)? {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    if comp_count == 0 {
+        return None;
+    }
+    let component = if buffer[pos].lig_component != LIG_COMPONENT_NONE {
+        buffer[pos].lig_component.min(comp_count - 1)
+    } else {
+        comp_count - 1
+    };
+    let att = ml.attachment(mark, lig_glyph, component)?.ok()?;
+    attach(
+        positions,
+        lig_pos,
+        pos,
+        (att.ligature_anchor.x as i32, att.ligature_anchor.y as i32),
+        (att.mark_anchor.x as i32, att.mark_anchor.y as i32),
+    );
+    Some(pos + 1)
+}
+
+// ---------------------------------------------------------------------------
+// Types 7 / 8 — contextual positioning
+// ---------------------------------------------------------------------------
+
+/// Apply a nested lookup (from a `SequenceLookupRecord`) at one
+/// position, with the nested lookup's own flags.
+fn apply_nested(
+    gpos: &GposTable<'_>,
+    gdef: Option<&GdefTable<'_>>,
+    lookup_index: u16,
+    buffer: &[GlyphInfo],
+    positions: &mut [Pos],
+    pos: usize,
+    normalized: &[f32],
+    depth: usize,
+) {
+    if depth > MAX_NESTING_DEPTH {
+        return;
+    }
+    let Some(lookup) = gpos.lookup(lookup_index) else {
+        return;
+    };
+    let filter = SkipFilter::new(lookup.flag(), lookup.mark_filtering_set(), gdef);
+    if filter.skips(buffer[pos].glyph) {
+        return;
+    }
+    let _ = try_apply_at(
+        gpos,
+        gdef,
+        lookup_index,
+        &filter,
+        buffer,
+        positions,
+        pos,
+        normalized,
+        depth,
+    );
+}
+
+/// Run the nested-lookup records of a matched (chained) context.
+/// GPOS never changes the buffer length, so matched positions stay
+/// valid throughout.
+#[allow(clippy::too_many_arguments)]
+fn apply_context_records(
+    gpos: &GposTable<'_>,
+    gdef: Option<&GdefTable<'_>>,
+    positions_matched: &[usize],
+    records: &[SequenceLookupRecord],
+    buffer: &[GlyphInfo],
+    positions: &mut [Pos],
+    normalized: &[f32],
+    depth: usize,
+) -> usize {
+    for rec in records {
+        let k = rec.sequence_index as usize;
+        if k >= positions_matched.len() {
+            continue;
+        }
+        apply_nested(
+            gpos,
+            gdef,
+            rec.lookup_list_index,
+            buffer,
+            positions,
+            positions_matched[k],
+            normalized,
+            depth + 1,
+        );
+    }
+    positions_matched.last().copied().unwrap_or(0) + 1
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_context(
+    gpos: &GposTable<'_>,
+    gdef: Option<&GdefTable<'_>>,
+    ctx: &SequenceContext<'_>,
+    filter: &SkipFilter<'_, '_>,
+    buffer: &[GlyphInfo],
+    positions: &mut [Pos],
+    pos: usize,
+    normalized: &[f32],
+    depth: usize,
+) -> Option<usize> {
+    let g = buffer[pos].glyph;
+    match ctx {
+        SequenceContext::Format1 {
+            coverage,
+            rule_sets,
+        } => {
+            let cov = coverage.index_of(g)? as usize;
+            for rule in rule_sets.get(cov)? {
+                if let Some(matched) =
+                    match_input(buffer, filter, pos, 1 + rule.input.len(), |k, gl| {
+                        gl == rule.input[k - 1]
+                    })
+                {
+                    return Some(apply_context_records(
+                        gpos,
+                        gdef,
+                        &matched,
+                        &rule.lookups,
+                        buffer,
+                        positions,
+                        normalized,
+                        depth,
+                    ));
+                }
+            }
+            None
+        }
+        SequenceContext::Format2 {
+            coverage,
+            class_def,
+            rule_sets,
+        } => {
+            coverage.index_of(g)?;
+            let class = class_def.class_of(g) as usize;
+            for rule in rule_sets.get(class)? {
+                if let Some(matched) =
+                    match_input(buffer, filter, pos, 1 + rule.input.len(), |k, gl| {
+                        class_def.class_of(gl) == rule.input[k - 1]
+                    })
+                {
+                    return Some(apply_context_records(
+                        gpos,
+                        gdef,
+                        &matched,
+                        &rule.lookups,
+                        buffer,
+                        positions,
+                        normalized,
+                        depth,
+                    ));
+                }
+            }
+            None
+        }
+        SequenceContext::Format3 { coverages, lookups } => {
+            if coverages.is_empty() || !coverages[0].contains(g) {
+                return None;
+            }
+            let matched = match_input(buffer, filter, pos, coverages.len(), |k, gl| {
+                coverages[k].contains(gl)
+            })?;
+            Some(apply_context_records(
+                gpos, gdef, &matched, lookups, buffer, positions, normalized, depth,
+            ))
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_chained_context(
+    gpos: &GposTable<'_>,
+    gdef: Option<&GdefTable<'_>>,
+    ctx: &ChainedSequenceContext<'_>,
+    filter: &SkipFilter<'_, '_>,
+    buffer: &[GlyphInfo],
+    positions: &mut [Pos],
+    pos: usize,
+    normalized: &[f32],
+    depth: usize,
+) -> Option<usize> {
+    let g = buffer[pos].glyph;
+    match ctx {
+        ChainedSequenceContext::Format1 {
+            coverage,
+            rule_sets,
+        } => {
+            let cov = coverage.index_of(g)? as usize;
+            for rule in rule_sets.get(cov)? {
+                let Some(matched) =
+                    match_input(buffer, filter, pos, 1 + rule.input.len(), |k, gl| {
+                        gl == rule.input[k - 1]
+                    })
+                else {
+                    continue;
+                };
+                if !match_backtrack(buffer, filter, pos, rule.backtrack.len(), |k, gl| {
+                    gl == rule.backtrack[k]
+                }) {
+                    continue;
+                }
+                let last = *matched.last().unwrap_or(&pos);
+                if !match_lookahead(buffer, filter, last, rule.lookahead.len(), |k, gl| {
+                    gl == rule.lookahead[k]
+                }) {
+                    continue;
+                }
+                return Some(apply_context_records(
+                    gpos,
+                    gdef,
+                    &matched,
+                    &rule.lookups,
+                    buffer,
+                    positions,
+                    normalized,
+                    depth,
+                ));
+            }
+            None
+        }
+        ChainedSequenceContext::Format2 {
+            coverage,
+            backtrack_class_def,
+            input_class_def,
+            lookahead_class_def,
+            rule_sets,
+        } => {
+            coverage.index_of(g)?;
+            let class = input_class_def.class_of(g) as usize;
+            for rule in rule_sets.get(class)? {
+                let Some(matched) =
+                    match_input(buffer, filter, pos, 1 + rule.input.len(), |k, gl| {
+                        input_class_def.class_of(gl) == rule.input[k - 1]
+                    })
+                else {
+                    continue;
+                };
+                if !match_backtrack(buffer, filter, pos, rule.backtrack.len(), |k, gl| {
+                    backtrack_class_def.class_of(gl) == rule.backtrack[k]
+                }) {
+                    continue;
+                }
+                let last = *matched.last().unwrap_or(&pos);
+                if !match_lookahead(buffer, filter, last, rule.lookahead.len(), |k, gl| {
+                    lookahead_class_def.class_of(gl) == rule.lookahead[k]
+                }) {
+                    continue;
+                }
+                return Some(apply_context_records(
+                    gpos,
+                    gdef,
+                    &matched,
+                    &rule.lookups,
+                    buffer,
+                    positions,
+                    normalized,
+                    depth,
+                ));
+            }
+            None
+        }
+        ChainedSequenceContext::Format3 {
+            backtrack,
+            input,
+            lookahead,
+            lookups,
+        } => {
+            if input.is_empty() || !input[0].contains(g) {
+                return None;
+            }
+            let matched = match_input(buffer, filter, pos, input.len(), |k, gl| {
+                input[k].contains(gl)
+            })?;
+            if !match_backtrack(buffer, filter, pos, backtrack.len(), |k, gl| {
+                backtrack[k].contains(gl)
+            }) {
+                return None;
+            }
+            let last = *matched.last().unwrap_or(&pos);
+            if !match_lookahead(buffer, filter, last, lookahead.len(), |k, gl| {
+                lookahead[k].contains(gl)
+            }) {
+                return None;
+            }
+            Some(apply_context_records(
+                gpos, gdef, &matched, lookups, buffer, positions, normalized, depth,
+            ))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
