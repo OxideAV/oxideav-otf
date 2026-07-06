@@ -257,6 +257,88 @@ mod tests {
         assert!(!f.skips(42));
     }
 
+    /// Synthetic GDEF v1.2: glyphs 1..=2 base, 3..=4 mark;
+    /// MarkAttachClassDef 3→1, 4→2; one mark glyph set = {3}.
+    fn gdef_bytes() -> Vec<u8> {
+        fn be(v: u16) -> [u8; 2] {
+            v.to_be_bytes()
+        }
+        let mut b = Vec::new();
+        b.extend_from_slice(&be(1)); // majorVersion
+        b.extend_from_slice(&be(2)); // minorVersion
+        b.extend_from_slice(&be(0)); // glyphClassDefOffset (patch @4)
+        b.extend_from_slice(&be(0)); // attachListOffset
+        b.extend_from_slice(&be(0)); // ligCaretListOffset
+        b.extend_from_slice(&be(0)); // markAttachClassDefOffset (patch @10)
+        b.extend_from_slice(&be(0)); // markGlyphSetsDefOffset (patch @12)
+        let classes = b.len();
+        b[4..6].copy_from_slice(&be(classes as u16));
+        // ClassDef fmt 2: (1..2 → 1 base), (3..4 → 3 mark).
+        b.extend_from_slice(&be(2));
+        b.extend_from_slice(&be(2));
+        b.extend_from_slice(&[0, 1, 0, 2, 0, 1]);
+        b.extend_from_slice(&[0, 3, 0, 4, 0, 3]);
+        let attach = b.len();
+        b[10..12].copy_from_slice(&be(attach as u16));
+        // MarkAttachClassDef fmt 2: 3 → class 1, 4 → class 2.
+        b.extend_from_slice(&be(2));
+        b.extend_from_slice(&be(2));
+        b.extend_from_slice(&[0, 3, 0, 3, 0, 1]);
+        b.extend_from_slice(&[0, 4, 0, 4, 0, 2]);
+        let sets = b.len();
+        b[12..14].copy_from_slice(&be(sets as u16));
+        // MarkGlyphSets: format 1, 1 set, Offset32 → coverage {3}.
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&8u32.to_be_bytes());
+        b.extend_from_slice(&be(1)); // coverage format 1
+        b.extend_from_slice(&be(1)); // glyphCount
+        b.extend_from_slice(&be(3)); // glyph 3
+        b
+    }
+
+    #[test]
+    fn skip_filter_supersession_rules() {
+        let bytes = gdef_bytes();
+        let gdef = crate::tables::gdef::GdefTable::parse(&bytes).unwrap();
+        let g = Some(&gdef);
+
+        // IGNORE_MARKS skips every mark, no base.
+        let f = SkipFilter::new(LookupFlag(LookupFlag::IGNORE_MARKS), None, g);
+        assert!(f.skips(3) && f.skips(4) && !f.skips(1));
+
+        // Mark-attachment-class filter: only class-1 marks processed.
+        let f = SkipFilter::new(LookupFlag(0x0100), None, g);
+        assert!(!f.skips(3) && f.skips(4) && !f.skips(1));
+
+        // Mark filtering set {3}: glyph 4 skipped.
+        let f = SkipFilter::new(LookupFlag(LookupFlag::USE_MARK_FILTERING_SET), Some(0), g);
+        assert!(!f.skips(3) && f.skips(4));
+
+        // "A mark filtering set supersedes any mark attachment class
+        // indication": the class-2 filter alone would keep glyph 4,
+        // but the set {3} wins.
+        let f = SkipFilter::new(
+            LookupFlag(LookupFlag::USE_MARK_FILTERING_SET | 0x0200),
+            Some(0),
+            g,
+        );
+        assert!(!f.skips(3) && f.skips(4));
+
+        // "IGNORE_MARKS supersedes any mark filtering set or mark
+        // attachment class": everything mark-classed is skipped.
+        let f = SkipFilter::new(
+            LookupFlag(LookupFlag::IGNORE_MARKS | LookupFlag::USE_MARK_FILTERING_SET | 0x0100),
+            Some(0),
+            g,
+        );
+        assert!(f.skips(3) && f.skips(4) && !f.skips(2));
+
+        // IGNORE_BASE_GLYPHS / IGNORE_LIGATURES leave marks alone.
+        let f = SkipFilter::new(LookupFlag(LookupFlag::IGNORE_BASE_GLYPHS), None, g);
+        assert!(f.skips(1) && !f.skips(3));
+    }
+
     #[test]
     fn match_input_contiguous() {
         let b = buf(&[1, 2, 3, 4]);
