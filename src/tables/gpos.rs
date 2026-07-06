@@ -338,6 +338,15 @@ impl<'a> SinglePos<'a> {
         self.value_format
     }
 
+    /// The raw subtable bytes (index 0 = start of the SinglePos
+    /// subtable). Device / VariationIndex offsets inside this
+    /// subtable's `ValueRecord`s are measured "from beginning of the
+    /// immediate parent table", which for SinglePos is the subtable
+    /// itself.
+    pub fn raw(&self) -> &'a [u8] {
+        self.bytes
+    }
+
     /// The subtable's [`Coverage`] table.
     pub fn coverage(&self) -> Coverage<'a> {
         self.coverage
@@ -581,6 +590,38 @@ impl<'a> PairPos<'a> {
     /// The subtable's [`Coverage`] table (lists every first glyph).
     pub fn coverage(&self) -> Coverage<'a> {
         self.coverage
+    }
+
+    /// The raw subtable bytes (index 0 = start of the PairPos
+    /// subtable).
+    pub fn raw(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    /// The base offset (within [`PairPos::raw`]) that Device /
+    /// VariationIndex offsets inside this subtable's `ValueRecord`s
+    /// are measured from, for pairs whose first glyph is
+    /// `first_glyph`. Per the spec's ValueRecord definition the
+    /// "immediate parent table" is the PairPosFormat2 subtable itself
+    /// (base 0) but the *PairSet* table within a PairPosFormat1
+    /// subtable. `None` when `first_glyph` is not covered or the
+    /// PairSet offset is out of range.
+    pub fn value_device_base(&self, first_glyph: u16) -> Option<usize> {
+        let idx = self.coverage.index_of(first_glyph)?;
+        match self.inner {
+            PairPosInner::Format1 { pair_set_count } => {
+                if idx >= pair_set_count {
+                    return None;
+                }
+                let off_pos = 10 + idx as usize * 2;
+                let pair_set_off = read_u16(self.bytes, off_pos).ok()? as usize;
+                if pair_set_off == 0 || pair_set_off >= self.bytes.len() {
+                    return None;
+                }
+                Some(pair_set_off)
+            }
+            PairPosInner::Format2 { .. } => Some(0),
+        }
     }
 
     /// Read the `(valueRecord1, valueRecord2)` pair at byte `off`,

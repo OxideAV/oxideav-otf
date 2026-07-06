@@ -566,10 +566,30 @@ impl<'a> GdefTable<'a> {
     }
 
     /// Raw byte offset within the GDEF table for the item-variation
-    /// store; 0 if absent or pre-v1.3. The store itself is left raw —
-    /// `ItemVariationStore` decoding lives in a future round.
+    /// store; 0 if absent or pre-v1.3. See
+    /// [`GdefTable::item_variation_store`] for the decoded form.
     pub fn item_var_store_offset(&self) -> u32 {
         self.item_var_store_off
+    }
+
+    /// Decode the GDEF `ItemVariationStore` (v1.3+) — the delta-set
+    /// store the GPOS/GDEF/JSTF `VariationIndex` tables resolve
+    /// against in a variable font (GPOS chapter §"GPOS table and
+    /// OpenType Font Variations": "Variation data for adjustment of
+    /// GPOS X or Y values is stored within an ItemVariationStore
+    /// table located within the GDEF table").
+    ///
+    /// `None` when absent (pre-v1.3 or NULL offset).
+    pub fn item_variation_store(
+        &self,
+    ) -> Option<Result<crate::tables::ivs::ItemVariationStore, Error>> {
+        if self.item_var_store_off == 0 {
+            return None;
+        }
+        Some(crate::tables::ivs::ItemVariationStore::parse_at(
+            self.bytes,
+            self.item_var_store_off as usize,
+        ))
     }
 
     // -- GlyphClassDef sub-table ------------------------------------------

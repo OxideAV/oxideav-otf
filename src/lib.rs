@@ -34,6 +34,7 @@ pub mod cff;
 pub mod cff2;
 pub mod outline;
 pub mod parser;
+pub mod shape;
 pub mod tables;
 
 pub use cff::{PrivateHints, RegistryOrdering, TopMetadata};
@@ -42,6 +43,7 @@ pub use cff2::{
     RegionAxisCoordinates, VariationRegion, DEFAULT_FONT_MATRIX,
 };
 pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
+pub use shape::{FeatureSetting, ShapeOptions, ShapedGlyph};
 
 use crate::cff::Cff;
 use crate::parser::TableDirectory;
