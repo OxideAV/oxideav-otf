@@ -40,7 +40,7 @@
 //! subtable's regions.
 
 use crate::cff2::varstore::{RegionAxisCoordinates, VariationRegion};
-use crate::parser::{read_f2dot14, read_u16, read_u32};
+use crate::parser::{read_f2dot14, read_u16, read_u32, read_u8};
 use crate::Error;
 
 /// One delta-set-storing `ItemVariationData` subtable.
@@ -198,15 +198,25 @@ impl ItemVariationStore {
     }
 }
 
-/// A `DeltaSetIndexMap` table (ISO/IEC 14496-22:2019 §7.3.5.2): maps a
-/// glyph ID (the array index) to a delta-set `(outer, inner)` index
-/// pair, in a packed representation.
+/// A `DeltaSetIndexMap` table (ISO/IEC 14496-22:2019 §7.3.5.2 + the
+/// format-0/format-1 header): maps an array index (a glyph ID, an axis
+/// index, or a COLR variation index) to a delta-set `(outer, inner)`
+/// index pair, in a packed representation.
 ///
-/// The 16-bit-`mapCount` form decoded here has the layout
-/// `entryFormat(2) mapCount(2) mapData[]`. The `entryFormat` packs the
-/// inner-index bit count (low 4 bits, minus 1) and the per-entry byte
-/// size (bits 4-5, minus 1). A glyph ID past `mapCount - 1` clamps to
-/// the last entry.
+/// Two header forms are decoded:
+///
+/// - **Format 0** — `format(1) entryFormat(1) mapCount(2) mapData[]`.
+///   This is byte-identical to the ISO 14496-22:2019 headerless
+///   `entryFormat(2) mapCount(2)` form used by `HVAR`/`VVAR`, because
+///   the legacy 16-bit `entryFormat`'s high byte is permanently
+///   reserved (zero) — the same byte the formatted header reads as
+///   `format = 0`.
+/// - **Format 1** — `format(1) entryFormat(1) mapCount(4) mapData[]`,
+///   allowing a 32-bit entry count (used by `COLR` v1 and `avar` v2).
+///
+/// The `entryFormat` byte packs the inner-index bit count (low 4 bits,
+/// minus 1) and the per-entry byte size (bits 4-5, minus 1). An index
+/// past `mapCount - 1` clamps to the last entry.
 #[derive(Debug, Clone)]
 pub struct DeltaSetIndexMap {
     inner_bit_count: u32,
@@ -217,20 +227,30 @@ pub struct DeltaSetIndexMap {
 }
 
 impl DeltaSetIndexMap {
-    /// Parse a 16-bit-`mapCount` DeltaSetIndexMap at `offset` within
+    /// Parse a DeltaSetIndexMap (format 0 or 1) at `offset` within
     /// `parent`.
     pub fn parse_at(parent: &[u8], offset: usize) -> Result<Self, Error> {
-        if offset + 4 > parent.len() {
-            return Err(Error::UnexpectedEof);
-        }
-        let entry_format = read_u16(parent, offset)?;
-        let map_count = read_u16(parent, offset + 2)? as usize;
+        let format = read_u8(parent, offset)?;
+        let entry_format = read_u8(parent, offset + 1)? as u16;
+        let (map_count, data_start) = match format {
+            0 => (read_u16(parent, offset + 2)? as usize, offset + 4),
+            1 => (read_u32(parent, offset + 2)? as usize, offset + 6),
+            _ => {
+                return Err(Error::BadStructure("DeltaSetIndexMap: unknown format"));
+            }
+        };
         let inner_bit_count = (entry_format & 0x000F) as u32 + 1;
         let entry_size = (((entry_format & 0x0030) >> 4) + 1) as usize;
-        let data_start = offset + 4;
-        let data_len = entry_size * map_count;
+        let data_len = entry_size
+            .checked_mul(map_count)
+            .ok_or(Error::UnexpectedEof)?;
         let data = parent
-            .get(data_start..data_start + data_len)
+            .get(
+                data_start
+                    ..data_start
+                        .checked_add(data_len)
+                        .ok_or(Error::UnexpectedEof)?,
+            )
             .ok_or(Error::UnexpectedEof)?
             .to_vec();
         Ok(Self {
@@ -245,10 +265,18 @@ impl DeltaSetIndexMap {
     /// index pair. A glyph past the last entry clamps to the last entry
     /// (per spec).
     pub fn index(&self, glyph_id: u16) -> (u16, u16) {
+        self.index_u32(glyph_id as u32)
+    }
+
+    /// Resolve a 32-bit map index (a `COLR` `varIndexBase`-derived
+    /// index or an `avar` v2 axis index) to its `(outerIndex,
+    /// innerIndex)` delta-set index pair. An index past the last entry
+    /// clamps to the last entry (per spec).
+    pub fn index_u32(&self, idx: u32) -> (u16, u16) {
         if self.map_count == 0 {
             return (0, 0);
         }
-        let i = (glyph_id as usize).min(self.map_count - 1);
+        let i = (idx as usize).min(self.map_count - 1);
         let off = i * self.entry_size;
         let mut entry: u32 = 0;
         for b in 0..self.entry_size {
@@ -390,5 +418,34 @@ mod tests {
         assert_eq!(m.index(2), (2, 0));
         // glyph past the end clamps to the last entry.
         assert_eq!(m.index(99), (2, 0));
+    }
+
+    #[test]
+    fn delta_set_index_map_format_1() {
+        // format 1: uint32 mapCount. inner bit count 8 (low nibble 7),
+        // entry size 2 (bits 4-5 = 1).
+        let mut p = Vec::new();
+        p.push(1u8); // format
+        p.push(0x17u8); // entryFormat
+        p.extend_from_slice(&2u32.to_be_bytes()); // mapCount
+                                                  // entry = (outer << 8) | inner.
+        p.extend_from_slice(&0x0103u16.to_be_bytes()); // idx0 -> (1, 3)
+        p.extend_from_slice(&0x0210u16.to_be_bytes()); // idx1 -> (2, 16)
+
+        let m = DeltaSetIndexMap::parse_at(&p, 0).unwrap();
+        assert_eq!(m.map_count(), 2);
+        assert_eq!(m.index_u32(0), (1, 3));
+        assert_eq!(m.index_u32(1), (2, 16));
+        // clamps to the last entry, including far past u16 range.
+        assert_eq!(m.index_u32(0x0001_0000), (2, 16));
+    }
+
+    #[test]
+    fn delta_set_index_map_rejects_unknown_format() {
+        let p = [7u8, 0x13, 0, 1, 0, 0];
+        assert!(matches!(
+            DeltaSetIndexMap::parse_at(&p, 0),
+            Err(Error::BadStructure(_))
+        ));
     }
 }
