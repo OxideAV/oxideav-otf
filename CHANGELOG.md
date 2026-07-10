@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   format-1 headers (byte-compatible with the legacy headerless
   `HVAR`/`VVAR` form) and resolves 32-bit map indices (`index_u32`)
   for `COLR` variation indices.
+- **Feature-tag registry**: new `feature_tags` module carrying the
+  complete OpenType Layout *Registered features* vocabulary — all 243
+  registered tags (124 fixed entries plus the `cv01`–`cv99` Character
+  Variant and `ss01`–`ss20` Stylistic Set ranges) with friendly names
+  and one-line function summaries. `feature_tag`,
+  `is_registered_feature_tag`, and the `registered_feature_tags()`
+  enumeration (ranges expanded in their alphabetical registry slots).
 - **avar version 2**: the `axisIndexMap` + `varStore` cross-axis
   delta mechanism. `AvarTable::apply` now runs the full three-stage
   normalization — default normalization input, v1 segment maps, then

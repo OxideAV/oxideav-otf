@@ -32,6 +32,7 @@
 pub mod agl;
 pub mod cff;
 pub mod cff2;
+pub mod feature_tags;
 pub mod outline;
 pub mod parser;
 pub mod shape;
@@ -41,6 +42,10 @@ pub use cff::{PrivateHints, RegistryOrdering, TopMetadata};
 pub use cff2::{
     Cff2, Cff2Header, Cff2Op, Cff2TopDict, ItemVariationData, ItemVariationStore,
     RegionAxisCoordinates, VariationRegion, DEFAULT_FONT_MATRIX,
+};
+pub use feature_tags::{
+    feature_tag, is_registered_feature_tag, registered_feature_tags, FeatureTag, FeatureTagRecord,
+    FEATURE_TAG_REGISTRY, REGISTERED_FEATURE_TAG_COUNT,
 };
 pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
 pub use shape::{FeatureSetting, ShapeOptions, ShapedGlyph};

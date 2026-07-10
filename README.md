@@ -549,6 +549,12 @@ views over:
   and `OS/2` versions 0–5.
 - **AGL** — the static Adobe Glyph List 2.0 table for glyph-name
   resolution (`agl_glyph_name`).
+- **Feature-tag registry** (`feature_tags`) — the complete OpenType
+  Layout *Registered features* vocabulary: all 243 registered tags
+  (124 fixed entries plus the `cv01`–`cv99` and `ss01`–`ss20` ranges,
+  resolved with their 1-based index), each with its friendly name and
+  a one-line function summary. `feature_tag([u8; 4])` /
+  `is_registered_feature_tag` / `registered_feature_tags()`.
 - **CFF2** (variable-font CFF, OpenType 1.9.1) — header, Top DICT,
   Global Subr / CharString / Font DICT INDEXes, the per-FontDICT
   PrivateDICT (default `vsindex` + LocalSubrINDEX), the FontDICTSelect
