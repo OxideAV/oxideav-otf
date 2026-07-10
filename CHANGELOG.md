@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   format-1 headers (byte-compatible with the legacy headerless
   `HVAR`/`VVAR` form) and resolves 32-bit map indices (`index_u32`)
   for `COLR` variation indices.
+- **avar version 2**: the `axisIndexMap` + `varStore` cross-axis
+  delta mechanism. `AvarTable::apply` now runs the full three-stage
+  normalization — default normalization input, v1 segment maps, then
+  per-axis deltas interpolated from the intermediate coordinates
+  (axis → delta-set through the `axisIndexMap` or the identity
+  mapping, F2DOT14 integer add, clamp to `[-1, 1]`) — so
+  `Font::normalize_coords` transparently supports designspace
+  warping, axis cloning, and parametric-axis fonts.
 - **text shaping**: new `shape` module and `Font::shape(text,
   &ShapeOptions) -> Vec<ShapedGlyph>` — a full
   cmap → GSUB → GPOS pipeline per the OpenType Layout chapter-2

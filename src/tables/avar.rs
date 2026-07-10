@@ -32,8 +32,25 @@
 //! between the preceding record (`startSeg`) and `endSeg`. A segment map
 //! with no records (or one missing the required -1/0/+1 anchors) is the
 //! identity.
+//!
+//! **Version 2** appends two offsets after the segment-maps array (whose
+//! count may then be zero):
+//!
+//! ```text
+//! Offset32To<DeltaSetIndexMap>   axisIndexMapOffset
+//! Offset32To<ItemVariationStore> varStoreOffset
+//! ```
+//!
+//! enabling **cross-axis** remapping: after the v1 segment-map stage,
+//! a per-axis delta is interpolated from `varStore` using the
+//! intermediate coordinates themselves (the delta-set for axis *i* is
+//! found through `axisIndexMap`, or is *i* directly when the map is
+//! absent), added to the axis coordinate in F2DOT14 integer units
+//! (deltas are stored as true value × 16384), and clamped to `[-1, 1]`.
+//! The resulting coordinates drive all downstream variation data.
 
-use crate::parser::{read_f2dot14, read_u16};
+use crate::parser::{read_f2dot14, read_u16, read_u32};
+use crate::tables::ivs::{DeltaSetIndexMap, ItemVariationStore};
 use crate::Error;
 
 /// One `(fromCoordinate, toCoordinate)` correspondence in a segment map.
@@ -91,10 +108,27 @@ impl SegmentMap {
     }
 }
 
-/// A parsed `avar` table — one segment map per axis.
+/// A parsed `avar` table — one segment map per axis, plus (version 2)
+/// the cross-axis delta mapping.
+///
+/// Version 2 appends two offsets to the version-1 layout: an
+/// `axisIndexMap` (`DeltaSetIndexMap`) mapping `fvar` axis indices to
+/// delta-set indices, and a `varStore` (`ItemVariationStore`) whose
+/// interpolated deltas — computed from the *segment-mapped*
+/// intermediate coordinates — are added to the axis coordinates and
+/// clamped to `[-1, 1]`. This enables designspace warping, axis
+/// cloning (higher-order interpolation), and parametric-axis fonts.
 #[derive(Debug, Clone)]
 pub struct AvarTable {
+    major_version: u16,
     segment_maps: Vec<SegmentMap>,
+    /// v2 `axisIndexMap`: `fvar` axis index → delta-set index. When
+    /// absent, the axis index itself is the delta-set index (high 16
+    /// bits outer, low 16 inner).
+    axis_index_map: Option<DeltaSetIndexMap>,
+    /// v2 `varStore`: per-axis interpolated coordinate deltas, stored
+    /// in F2DOT14 integer units (16384 = +1.0).
+    var_store: Option<ItemVariationStore>,
 }
 
 impl AvarTable {
@@ -103,11 +137,13 @@ impl AvarTable {
             return Err(Error::UnexpectedEof);
         }
         let major = read_u16(bytes, 0)?;
-        if major != 1 {
+        if major != 1 && major != 2 {
             return Err(Error::BadStructure("avar: unsupported majorVersion"));
         }
+        // v2 names this field axisSegmentMapCount: it may be 0 (no v1
+        // segment maps at all), otherwise it must equal fvar.axisCount.
         let axis_count = read_u16(bytes, 6)? as usize;
-        let mut segment_maps = Vec::with_capacity(axis_count);
+        let mut segment_maps = Vec::with_capacity(axis_count.min(bytes.len() / 2));
         let mut off = 8usize;
         for _ in 0..axis_count {
             if off + 2 > bytes.len() {
@@ -115,7 +151,7 @@ impl AvarTable {
             }
             let n = read_u16(bytes, off)? as usize;
             off += 2;
-            let mut maps = Vec::with_capacity(n);
+            let mut maps = Vec::with_capacity(n.min(bytes.len() / 4));
             for _ in 0..n {
                 if off + 4 > bytes.len() {
                     return Err(Error::UnexpectedEof);
@@ -128,7 +164,34 @@ impl AvarTable {
             }
             segment_maps.push(SegmentMap { maps });
         }
-        Ok(Self { segment_maps })
+        let (axis_index_map, var_store) = if major >= 2 {
+            let axis_index_map_offset = read_u32(bytes, off)? as usize;
+            let var_store_offset = read_u32(bytes, off + 4)? as usize;
+            let map = if axis_index_map_offset != 0 {
+                Some(DeltaSetIndexMap::parse_at(bytes, axis_index_map_offset)?)
+            } else {
+                None
+            };
+            let store = if var_store_offset != 0 {
+                Some(ItemVariationStore::parse_at(bytes, var_store_offset)?)
+            } else {
+                None
+            };
+            (map, store)
+        } else {
+            (None, None)
+        };
+        Ok(Self {
+            major_version: major,
+            segment_maps,
+            axis_index_map,
+            var_store,
+        })
+    }
+
+    /// The table's `majorVersion` (1 or 2).
+    pub fn major_version(&self) -> u16 {
+        self.major_version
     }
 
     /// The per-axis segment maps, in axis order.
@@ -136,20 +199,64 @@ impl AvarTable {
         &self.segment_maps
     }
 
-    /// Number of axes (`axisCount`).
+    /// Number of segment maps (`axisCount` in v1, `axisSegmentMapCount`
+    /// in v2 — a v2 table may carry zero segment maps and still remap
+    /// axes through its delta store).
     pub fn axis_count(&self) -> usize {
         self.segment_maps.len()
     }
 
-    /// Apply each axis's segment map to a default-normalized coordinate
-    /// tuple in place-by-value. Axes beyond the table's `axisCount` (or
-    /// for which the table has no map) pass through unchanged.
+    /// The v2 `axisIndexMap`, when present.
+    pub fn axis_index_map(&self) -> Option<&DeltaSetIndexMap> {
+        self.axis_index_map.as_ref()
+    }
+
+    /// The v2 `varStore`, when present.
+    pub fn var_store(&self) -> Option<&ItemVariationStore> {
+        self.var_store.as_ref()
+    }
+
+    /// Apply the table to a default-normalized coordinate tuple.
+    ///
+    /// Stage 1 (v1): each axis's coordinate runs through its segment
+    /// map; axes beyond the table's segment-map count (or with no
+    /// usable map) pass through unchanged. Stage 2 (v2 only): using
+    /// the stage-1 *intermediate* coordinates, a per-axis delta is
+    /// interpolated from the `varStore` (axis → delta-set via
+    /// `axisIndexMap`, or the axis index directly when absent), added
+    /// to the coordinate in F2DOT14 integer units, and the result is
+    /// clamped to `[-1, 1]`.
     pub fn apply(&self, normalized: &[f32]) -> Vec<f32> {
-        normalized
+        let mut out: Vec<f32> = normalized
             .iter()
             .enumerate()
             .map(|(i, &v)| self.segment_maps.get(i).map(|sm| sm.apply(v)).unwrap_or(v))
-            .collect()
+            .collect();
+        let Some(store) = self.var_store.as_ref() else {
+            return out;
+        };
+        // Every axis's delta is interpolated against the same
+        // intermediate coordinate tuple (deltas do not cascade), so
+        // snapshot before adjusting.
+        let intermediate = out.clone();
+        for (i, v) in out.iter_mut().enumerate() {
+            let var_idx = i as u32;
+            let (outer, inner) = match self.axis_index_map.as_ref() {
+                Some(map) => map.index_u32(var_idx),
+                None => ((var_idx >> 16) as u16, (var_idx & 0xFFFF) as u16),
+            };
+            if outer == 0xFFFF && inner == 0xFFFF {
+                // "No variation data" mapping.
+                continue;
+            }
+            let delta = store.delta(outer, inner, &intermediate);
+            // The reference algorithm works in F2DOT14 integer units:
+            // round the interpolated delta, add, clamp to ±16384
+            // (±1.0), then convert back.
+            let v_f2 = (*v * 16384.0).round() + delta.round();
+            *v = v_f2.clamp(-16384.0, 16384.0) / 16384.0;
+        }
+        out
     }
 }
 
@@ -228,5 +335,166 @@ mod tests {
         let mut b = vec![0u8; 8];
         b[0..2].copy_from_slice(&3u16.to_be_bytes());
         assert!(matches!(AvarTable::parse(&b), Err(Error::BadStructure(_))));
+    }
+
+    // ---- version 2 ----------------------------------------------------------
+
+    /// A two-axis `ItemVariationStore`: one region peaking on axis 0
+    /// (start 0, peak 1, end 1; axis 1 ignored), one `ItemVariationData`
+    /// with the given int16 delta rows.
+    fn v2_store(rows: &[i16]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&1u16.to_be_bytes()); // format
+        v.extend_from_slice(&12u32.to_be_bytes()); // regionListOffset
+        v.extend_from_slice(&1u16.to_be_bytes()); // ivdCount
+        v.extend_from_slice(&28u32.to_be_bytes()); // ivd[0]
+        assert_eq!(v.len(), 12);
+        v.extend_from_slice(&2u16.to_be_bytes()); // axisCount
+        v.extend_from_slice(&1u16.to_be_bytes()); // regionCount
+        v.extend_from_slice(&f2(0.0)); // axis0 start
+        v.extend_from_slice(&f2(1.0)); // axis0 peak
+        v.extend_from_slice(&f2(1.0)); // axis0 end
+        v.extend_from_slice(&f2(0.0)); // axis1 start (peak 0 = ignored)
+        v.extend_from_slice(&f2(0.0));
+        v.extend_from_slice(&f2(0.0));
+        assert_eq!(v.len(), 28);
+        v.extend_from_slice(&(rows.len() as u16).to_be_bytes()); // itemCount
+        v.extend_from_slice(&1u16.to_be_bytes()); // shortDeltaCount
+        v.extend_from_slice(&1u16.to_be_bytes()); // regionIndexCount
+        v.extend_from_slice(&0u16.to_be_bytes()); // regionIndex 0
+        for &d in rows {
+            v.extend_from_slice(&d.to_be_bytes());
+        }
+        v
+    }
+
+    /// Build a two-axis avar v2 table: identity segment maps, an
+    /// optional axisIndexMap blob, and a varStore blob.
+    fn build_v2(axis_index_map: Option<&[u8]>, store: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&2u16.to_be_bytes()); // major
+        b.extend_from_slice(&0u16.to_be_bytes()); // minor
+        b.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        b.extend_from_slice(&2u16.to_be_bytes()); // axisSegmentMapCount
+        for _ in 0..2 {
+            // identity segment map: -1/-1, 0/0, +1/+1.
+            b.extend_from_slice(&3u16.to_be_bytes());
+            for v in [-1.0f32, 0.0, 1.0] {
+                b.extend_from_slice(&f2(v));
+                b.extend_from_slice(&f2(v));
+            }
+        }
+        let header_end = b.len() + 8;
+        let map_at = if axis_index_map.is_some() {
+            header_end
+        } else {
+            0
+        };
+        let store_at = header_end + axis_index_map.map_or(0, |m| m.len());
+        b.extend_from_slice(&(map_at as u32).to_be_bytes());
+        b.extend_from_slice(&(store_at as u32).to_be_bytes());
+        if let Some(m) = axis_index_map {
+            b.extend_from_slice(m);
+        }
+        b.extend_from_slice(store);
+        b
+    }
+
+    #[test]
+    fn v2_identity_axis_mapping_deltas() {
+        // No axisIndexMap: axis i uses delta-set (0, i). Row 0 shifts
+        // axis 0 by -0.5 at full coordinate; row 1 shifts axis 1 by
+        // +axis0-coordinate (cross-axis remap).
+        let b = build_v2(None, &v2_store(&[-8192, 16384]));
+        let a = AvarTable::parse(&b).unwrap();
+        assert_eq!(a.major_version(), 2);
+        assert!(a.axis_index_map().is_none());
+        assert!(a.var_store().is_some());
+
+        let out = a.apply(&[1.0, 0.0]);
+        assert!((out[0] - 0.5).abs() < 1e-4, "{out:?}");
+        assert!((out[1] - 1.0).abs() < 1e-4, "{out:?}");
+        // At half coordinate the region scalar halves both deltas.
+        let out = a.apply(&[0.5, 0.0]);
+        assert!((out[0] - 0.25).abs() < 1e-4, "{out:?}");
+        assert!((out[1] - 0.5).abs() < 1e-4, "{out:?}");
+        // At the default instance nothing moves.
+        assert_eq!(a.apply(&[0.0, 0.0]), vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn v2_axis_index_map_and_clamp() {
+        // axisIndexMap (format 0, 4-byte entries, 16 inner bits):
+        // axis 0 → 0xFFFFFFFF (no variation data), axis 1 → (0, 0).
+        let mut m = vec![0u8, 0x3F];
+        m.extend_from_slice(&2u16.to_be_bytes());
+        m.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        m.extend_from_slice(&0u32.to_be_bytes());
+        // Row 0: +1.0 delta driven by axis 0's coordinate.
+        let b = build_v2(Some(&m), &v2_store(&[16384]));
+        let a = AvarTable::parse(&b).unwrap();
+        assert!(a.axis_index_map().is_some());
+
+        // Axis 0 is unmapped (sentinel) and keeps its value; axis 1
+        // gains +1.0 but clamps to the [-1, 1] range.
+        let out = a.apply(&[1.0, 0.75]);
+        assert!((out[0] - 1.0).abs() < 1e-4, "{out:?}");
+        assert!((out[1] - 1.0).abs() < 1e-4, "{out:?}");
+        // Negative side clamp: drive axis 1 down past -1.
+        let b2 = build_v2(Some(&m), &v2_store(&[-16384]));
+        let a2 = AvarTable::parse(&b2).unwrap();
+        let out = a2.apply(&[1.0, -0.75]);
+        assert!((out[1] + 1.0).abs() < 1e-4, "{out:?}");
+    }
+
+    #[test]
+    fn v2_segment_maps_feed_delta_stage() {
+        // Axis 0's segment map warps 0.5 → 0.65 (spec example); the
+        // delta stage must interpolate against the *intermediate*
+        // coordinate: with row 1 = +1.0 scaled by axis 0's region
+        // scalar, axis 1 becomes 0.65, not 0.5.
+        let maps: &[(f32, f32)] = &[
+            (-1.0, -1.0),
+            (-0.75, -0.5),
+            (0.0, 0.0),
+            (0.4, 0.4),
+            (0.6, 0.9),
+            (1.0, 1.0),
+        ];
+        let mut b = Vec::new();
+        b.extend_from_slice(&2u16.to_be_bytes());
+        b.extend_from_slice(&0u16.to_be_bytes());
+        b.extend_from_slice(&0u16.to_be_bytes());
+        b.extend_from_slice(&2u16.to_be_bytes());
+        b.extend_from_slice(&(maps.len() as u16).to_be_bytes());
+        for (from, to) in maps {
+            b.extend_from_slice(&f2(*from));
+            b.extend_from_slice(&f2(*to));
+        }
+        b.extend_from_slice(&0u16.to_be_bytes()); // axis 1: no maps
+        let store_at = b.len() + 8;
+        b.extend_from_slice(&0u32.to_be_bytes()); // no axisIndexMap
+        b.extend_from_slice(&(store_at as u32).to_be_bytes());
+        b.extend_from_slice(&v2_store(&[0, 16384]));
+
+        let a = AvarTable::parse(&b).unwrap();
+        let out = a.apply(&[0.5, 0.0]);
+        assert!((out[0] - 0.65).abs() < 0.01, "{out:?}");
+        assert!((out[1] - 0.65).abs() < 0.01, "{out:?}");
+    }
+
+    #[test]
+    fn v2_without_store_is_v1_behavior() {
+        let b = build_v2(None, &[]);
+        // varStore offset points at empty data → parse fails… build a
+        // variant with a zero varStore offset instead.
+        let mut b2 = b[..b.len() - 8].to_vec();
+        b2.extend_from_slice(&0u32.to_be_bytes());
+        b2.extend_from_slice(&0u32.to_be_bytes());
+        let a = AvarTable::parse(&b2).unwrap();
+        assert!(a.var_store().is_none());
+        let out = a.apply(&[0.37, -0.2]);
+        assert!((out[0] - 0.37).abs() < 1e-4, "{out:?}");
+        assert!((out[1] + 0.2).abs() < 1e-4, "{out:?}");
     }
 }

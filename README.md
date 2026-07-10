@@ -600,6 +600,15 @@ outline directly from **user-scale axis coordinates** (e.g. `wght = 700`):
 - **`avar`** (§7.3.1) — per-axis piecewise-linear segment maps that
   refine the default normalization (§7.3.1.3 processing; verified
   against the §7.3.1.4 worked example). Surfaced via `Font::avar`.
+  **Version 2** is decoded too: the `axisIndexMap`
+  (`DeltaSetIndexMap`) + `varStore` (`ItemVariationStore`)
+  cross-axis delta mechanism. `AvarTable::apply` runs the full
+  three-stage pipeline — default normalization input → v1 segment
+  maps → per-axis interpolated deltas computed from the intermediate
+  coordinates themselves (F2DOT14 integer arithmetic, clamped to
+  `[-1, 1]`) — so designspace warping, axis cloning / HOI, and
+  parametric axes resolve through the ordinary
+  `Font::normalize_coords` path.
 - **Region-scalar derivation** (§7.1.7) — `VariationRegion::scalar`
   computes a region's interpolation scalar from a normalized instance
   tuple (the product of per-axis triangular scalars, with the spec's
