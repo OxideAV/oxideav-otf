@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- **COLR color table (versions 0 and 1)**: new `tables::colr` module
+  and `Font::colr()`. Version 0 layered color glyphs
+  (`v0_layers(gid)`) and the version-1 **paint graph**: all 32 paint
+  formats decode into a typed `Paint` enum — `PaintColrLayers`,
+  solid fills, linear / radial / sweep gradients (with `ColorLine`
+  stops sorted per spec and the sweep-angle ±360° bias applied),
+  `PaintGlyph` clipping, `PaintColrGlyph` reuse, the full
+  translate / scale / rotate / skew / `Affine2x3` transform family,
+  and `PaintComposite` with the 28 composite / blend modes.
+  `PaintVar*` formats, `VarColorLine` stops, and format-2 clip boxes
+  resolve their delta sets against the COLR-embedded
+  `ItemVariationStore` + `DeltaSetIndexMap` under the `varIndexBase`
+  base/sequence rules (0xFFFFFFFF sentinel, clamp-to-last-entry,
+  0xFFFF/0xFFFF no-data mapping, implicit identity map). The
+  `ClipList` answers per-glyph (variable, outward-rounded) clip
+  boxes; `validate_color_glyph` walks the DAG with cycle detection
+  and `is_bounded` implements the spec's boundedness rules.
+  Unrecognized future paint formats surface as `Paint::Unknown`;
+  unrecognized extend / composite modes fall back to pad / clear per
+  spec.
+- `DeltaSetIndexMap` now decodes both the format-0 and the 32-bit
+  format-1 headers (byte-compatible with the legacy headerless
+  `HVAR`/`VVAR` form) and resolves 32-bit map indices (`index_u32`)
+  for `COLR` variation indices.
 - **text shaping**: new `shape` module and `Font::shape(text,
   &ShapeOptions) -> Vec<ShapedGlyph>` — a full
   cmap → GSUB → GPOS pipeline per the OpenType Layout chapter-2

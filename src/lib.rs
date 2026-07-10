@@ -48,10 +48,11 @@ pub use shape::{FeatureSetting, ShapeOptions, ShapedGlyph};
 use crate::cff::Cff;
 use crate::parser::TableDirectory;
 use crate::tables::{
-    avar::AvarTable, base::BaseTable, cmap::CmapTable, fvar::FvarTable, gdef::GdefTable,
-    gpos::GposTable, gsub::GsubTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable,
-    kern::KernTable, maxp::MaxpTable, mvar::MvarTable, name::NameTable, os2::Os2Table,
-    stat::StatTable, vhea::VheaTable, vmtx::VmtxTable, vorg::VorgTable, xvar::MetricsVariations,
+    avar::AvarTable, base::BaseTable, cmap::CmapTable, colr::ColrTable, fvar::FvarTable,
+    gdef::GdefTable, gpos::GposTable, gsub::GsubTable, head::HeadTable, hhea::HheaTable,
+    hmtx::HmtxTable, kern::KernTable, maxp::MaxpTable, mvar::MvarTable, name::NameTable,
+    os2::Os2Table, stat::StatTable, vhea::VheaTable, vmtx::VmtxTable, vorg::VorgTable,
+    xvar::MetricsVariations,
 };
 
 pub use crate::tables::avar::{AvarTable as AvarView, AxisValueMap, SegmentMap};
@@ -59,6 +60,10 @@ pub use crate::tables::base::{
     AxisTable as BaseAxisTable, BaseAxis, BaseScript, BaseTable as BaseView,
 };
 pub use crate::tables::cmap_uvs::{CmapUvs, UvsMapping};
+pub use crate::tables::colr::{
+    Affine2x3, BaseGlyphRecord, ClipBox, ColorLine, ColorStop, ColrTable as ColrView,
+    CompositeMode, Extend, LayerRecord, Paint, PaintRef, COLR_FOREGROUND_PALETTE_INDEX,
+};
 pub use crate::tables::context::{
     ChainedSequenceContext, ChainedSequenceRule, SequenceContext, SequenceLookupRecord,
     SequenceRule,
@@ -328,6 +333,10 @@ pub struct Font<'a> {
     /// `VORG` — vertical origin table. Optional CFF-OFF table giving the
     /// Y coordinate of each glyph's vertical origin directly.
     vorg: Option<VorgTable>,
+    /// `COLR` — color table. Optional; version-0 layered color glyphs
+    /// and/or the version-1 paint-graph color glyphs (with their
+    /// embedded variation data).
+    colr: Option<ColrTable<'a>>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -480,6 +489,12 @@ impl<'a> Font<'a> {
             Some(slice) => VorgTable::parse(slice).ok(),
             None => None,
         };
+        // `COLR` is optional; tolerate a malformed table (the font's
+        // monochrome outlines remain usable without it).
+        let colr = match dir.find(b"COLR", bytes) {
+            Some(slice) => ColrTable::parse(slice).ok(),
+            None => None,
+        };
 
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
@@ -514,6 +529,7 @@ impl<'a> Font<'a> {
             vvar,
             base,
             vorg,
+            colr,
             cff,
         })
     }
@@ -808,6 +824,14 @@ impl<'a> Font<'a> {
     /// The `avar` table view, if present.
     pub fn avar(&self) -> Option<&AvarTable> {
         self.avar.as_ref()
+    }
+
+    /// The `COLR` color-table view, if present. Version-1 color glyphs
+    /// resolve their variable paints against normalized instance
+    /// coordinates — pass the result of [`Font::normalize_coords`] to
+    /// [`tables::colr::ColrTable::paint`].
+    pub fn colr(&self) -> Option<&ColrTable<'a>> {
+        self.colr.as_ref()
     }
 
     /// Number of variation axes (`fvar.axisCount`); `0` for a

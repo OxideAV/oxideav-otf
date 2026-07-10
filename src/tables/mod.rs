@@ -9,6 +9,7 @@ pub mod avar;
 pub mod base;
 pub mod cmap;
 pub mod cmap_uvs;
+pub mod colr;
 pub mod context;
 pub mod device;
 pub mod fvar;

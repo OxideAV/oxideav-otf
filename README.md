@@ -562,6 +562,26 @@ views over:
   `Font::glyph_outline` decodes the **default variation instance**;
   `Font::glyph_outline_var(gid, &region_scalars)` decodes a specific
   instance from caller-supplied per-region scalars.
+- **`COLR`** (versions 0 and 1) — `Font::colr()` surfaces both color-glyph
+  models. Version 0: `v0_layers(gid)` returns the bottom-up
+  `(glyphID, paletteIndex)` layer run. Version 1: the full **paint
+  graph** — `base_glyph_paint(gid)` finds the root and
+  `ColrTable::paint(PaintRef, coords)` decodes any of the 32 paint
+  formats into the typed `Paint` enum (solid fills, linear / radial /
+  sweep gradients with sorted `ColorLine` stops, glyph clips,
+  cross-glyph reuse, the full translate / scale / rotate / skew /
+  `Affine2x3` transform family, and Porter-Duff + blend-mode
+  compositing). The 14 `PaintVar*` formats, `VarColorLine` stops, and
+  format-2 clip boxes resolve their delta sets against the
+  COLR-embedded `ItemVariationStore` + `DeltaSetIndexMap` under the
+  spec's `varIndexBase` base/sequence rules (0xFFFFFFFF no-data
+  sentinel, clamp-to-last-entry mapping, implicit identity map) when
+  given normalized instance coordinates. `clip_box(gid, coords)`
+  answers the (variable, outward-rounded) `ClipList` box;
+  `validate_color_glyph(gid)` walks the whole DAG with cycle detection
+  and `is_bounded(paint)` applies the spec's boundedness rules
+  (including the per-composite-mode table). Angles come back in
+  degrees with the sweep-gradient ±360° bias already applied.
 
 ## Font variations (`fvar` / `avar`) and region-scalar derivation
 

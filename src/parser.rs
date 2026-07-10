@@ -147,6 +147,13 @@ pub(crate) fn read_i16(bytes: &[u8], off: usize) -> Result<i16, Error> {
     Ok(read_u16(bytes, off)? as i16)
 }
 
+/// Read a 24-bit big-endian unsigned integer (`uint24` / `Offset24`).
+#[inline]
+pub(crate) fn read_u24(bytes: &[u8], off: usize) -> Result<u32, Error> {
+    let s = bytes.get(off..off + 3).ok_or(Error::UnexpectedEof)?;
+    Ok(((s[0] as u32) << 16) | ((s[1] as u32) << 8) | s[2] as u32)
+}
+
 #[inline]
 pub(crate) fn read_u32(bytes: &[u8], off: usize) -> Result<u32, Error> {
     let s = bytes.get(off..off + 4).ok_or(Error::UnexpectedEof)?;
