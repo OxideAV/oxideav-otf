@@ -483,6 +483,33 @@ mod tests {
         assert!((out[1] - 0.65).abs() < 0.01, "{out:?}");
     }
 
+    /// Single-byte mutation + truncation robustness: every mutant
+    /// must either fail to parse or apply without panicking.
+    #[test]
+    fn v2_mutation_robustness() {
+        let mut m = vec![0u8, 0x3F];
+        m.extend_from_slice(&2u16.to_be_bytes());
+        m.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        m.extend_from_slice(&0u32.to_be_bytes());
+        let base = build_v2(Some(&m), &v2_store(&[16384, -8192]));
+        let exercise = |bytes: &[u8]| {
+            if let Ok(a) = AvarTable::parse(bytes) {
+                let _ = a.apply(&[1.0, -0.5]);
+                let _ = a.apply(&[]);
+            }
+        };
+        for i in 0..base.len() {
+            for v in [0x00u8, 0xFF, base[i].wrapping_add(1)] {
+                let mut mutant = base.clone();
+                mutant[i] = v;
+                exercise(&mutant);
+            }
+        }
+        for len in 0..base.len() {
+            exercise(&base[..len]);
+        }
+    }
+
     #[test]
     fn v2_without_store_is_v1_behavior() {
         let b = build_v2(None, &[]);

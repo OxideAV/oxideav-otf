@@ -659,11 +659,10 @@ fn v1_all_static_paint_formats() {
 
 // ---- version 1: variations -------------------------------------------------
 
-/// One variable table exercising PaintVarSolid, a VarColorLine,
+/// Build the variable test table: PaintVarSolid, a VarColorLine,
 /// PaintVarTranslate, a VarAffine2x3, and a format-2 clip box, driven
 /// by a single-axis IVS.
-#[test]
-fn v1_variable_paints() {
+fn variable_table() -> Vec<u8> {
     let mut t = ColrV1::new();
 
     // Delta rows (int16, region (0,1,1) — scaled by the coordinate):
@@ -753,7 +752,12 @@ fn v1_variable_paints() {
         t.clip_list = c;
     }
 
-    let bytes = t.build();
+    t.build()
+}
+
+#[test]
+fn v1_variable_paints() {
+    let bytes = variable_table();
     let colr = ColrTable::parse(&bytes).unwrap();
     assert!(colr.var_index_map().is_some());
     assert!(colr.item_variation_store().is_some());
@@ -1009,6 +1013,47 @@ fn layer_slice_out_of_range_is_error() {
         colr.validate_color_glyph(1),
         Err(Error::BadStructure(_))
     ));
+}
+
+/// Exhaustive single-byte mutation + truncation robustness: every
+/// mutant must either fail to parse or survive full-surface queries
+/// (paint decoding at two instances, graph validation, boundedness,
+/// clip-box lookup) with `Result` errors only — never a panic, hang,
+/// or runaway allocation.
+#[test]
+fn mutation_robustness() {
+    let base = variable_table();
+
+    let exercise = |bytes: &[u8]| {
+        let Ok(colr) = ColrTable::parse(bytes) else {
+            return;
+        };
+        let roots: Vec<_> = colr.base_glyph_paints().collect();
+        for &(gid, root) in &roots {
+            let _ = colr.paint(root, None);
+            let _ = colr.paint(root, Some(&[1.0]));
+            let _ = colr.validate_color_glyph(gid);
+            let _ = colr.is_bounded(root);
+            let _ = colr.clip_box(gid, Some(&[0.5]));
+        }
+        for gid in [0u16, 7, 8, 0xFFFF] {
+            let _ = colr.v0_layers(gid);
+            let _ = colr.clip_box(gid, None);
+        }
+    };
+
+    // Single-byte mutations: three interesting values per position.
+    for i in 0..base.len() {
+        for v in [0x00u8, 0xFF, base[i].wrapping_add(1)] {
+            let mut m = base.clone();
+            m[i] = v;
+            exercise(&m);
+        }
+    }
+    // Every truncation length.
+    for len in 0..base.len() {
+        exercise(&base[..len]);
+    }
 }
 
 #[test]
