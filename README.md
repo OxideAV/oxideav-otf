@@ -555,6 +555,15 @@ views over:
   resolved with their 1-based index), each with its friendly name and
   a one-line function summary. `feature_tag([u8; 4])` /
   `is_registered_feature_tag` / `registered_feature_tags()`.
+- **UAX #24 Script / Script_Extensions** (`unicode_script`) — the
+  script-itemization machinery: parsers for the `Scripts.txt` and
+  `ScriptExtensions.txt` UCD data-file formats (with the spec
+  defaults — Unknown, and `{ Script(cp) }` respectively), UAX #44
+  loose property-value matching, scx-set well-formedness validation
+  (every Table 8 ill-formed case), the combining-sequence
+  first-non-Inherited/Common resolution strategy, and the scx
+  run-continuation compatibility test. The per-code-point UCD data
+  files are caller-supplied (they change with every Unicode release).
 - **CFF2** (variable-font CFF, OpenType 1.9.1) — header, Top DICT,
   Global Subr / CharString / Font DICT INDEXes, the per-FontDICT
   PrivateDICT (default `vsindex` + LocalSubrINDEX), the FontDICTSelect

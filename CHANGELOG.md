@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and one-line function summaries. `feature_tag`,
   `is_registered_feature_tag`, and the `registered_feature_tags()`
   enumeration (ranges expanded in their alphabetical registry slots).
+- **UAX #24 Script / Script_Extensions**: new `unicode_script`
+  module — `Scripts.txt` / `ScriptExtensions.txt` UCD data-file
+  parsers with the spec defaults (Unknown / `{ Script(cp) }`),
+  UAX #44 §5.9 loose property-value matching, scx-set
+  well-formedness validation covering every UAX #24 Table 8
+  ill-formed case, the §5.2 combining-sequence script resolution,
+  and the §5.3 scx run-continuation compatibility test (implicit
+  values act as wildcards).
 - **avar version 2**: the `axisIndexMap` + `varStore` cross-axis
   delta mechanism. `AvarTable::apply` now runs the full three-stage
   normalization — default normalization input, v1 segment maps, then

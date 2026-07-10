@@ -37,6 +37,7 @@ pub mod outline;
 pub mod parser;
 pub mod shape;
 pub mod tables;
+pub mod unicode_script;
 
 pub use cff::{PrivateHints, RegistryOrdering, TopMetadata};
 pub use cff2::{
