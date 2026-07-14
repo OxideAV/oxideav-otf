@@ -67,8 +67,9 @@ pub use crate::tables::base::{
 };
 pub use crate::tables::cmap_uvs::{CmapUvs, UvsMapping};
 pub use crate::tables::colr::{
-    Affine2x3, BaseGlyphRecord, ClipBox, ColorLine, ColorStop, ColrTable as ColrView,
-    CompositeMode, Extend, LayerRecord, Paint, PaintRef, COLR_FOREGROUND_PALETTE_INDEX,
+    resolve_paint_color, Affine2x3, BaseGlyphRecord, ClipBox, ColorLine, ColorStop,
+    ColrTable as ColrView, CompositeMode, Extend, LayerRecord, Paint, PaintRef, ResolvedColor,
+    COLR_FOREGROUND_PALETTE_INDEX,
 };
 pub use crate::tables::context::{
     ChainedSequenceContext, ChainedSequenceRule, SequenceContext, SequenceLookupRecord,
@@ -885,6 +886,28 @@ impl<'a> Font<'a> {
     pub fn palette_entry_label(&self, entry_index: u16) -> Option<&str> {
         let name_id = self.cpal.as_ref()?.palette_entry_label(entry_index)?;
         self.name.find(name_id)
+    }
+
+    /// The version-0 `COLR` color glyph of `glyph_id` resolved to
+    /// concrete colors: the bottom-up layer run as
+    /// `(layer glyph ID, fill color)` pairs, with each layer's `CPAL`
+    /// palette index resolved against palette number `palette` (0 =
+    /// default) and the 0xFFFF sentinel resolved to `foreground`.
+    /// `None` when the font lacks either table, the glyph has no
+    /// version-0 color glyph, or a layer references an out-of-range
+    /// palette entry.
+    pub fn v0_layer_colors(
+        &self,
+        glyph_id: u16,
+        palette: u16,
+        foreground: ColorRecord,
+    ) -> Option<Vec<(u16, ResolvedColor)>> {
+        let colr = self.colr.as_ref()?;
+        let cpal = self.cpal.as_ref()?;
+        colr.v0_layers(glyph_id)?
+            .iter()
+            .map(|l| Some((l.glyph_id, l.resolve(cpal, palette, foreground)?)))
+            .collect()
     }
 
     /// Number of variation axes (`fvar.axisCount`); `0` for a

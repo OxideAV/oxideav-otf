@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `Font::palette_label` / `Font::palette_entry_label` resolve
   the labels through the `name` table (IDs 23/24 pair with the
   light/dark palette types).
+- **COLR → CPAL color resolution**: the paint graph's palette indices
+  now resolve to concrete render-ready colors. `resolve_paint_color`
+  maps a `(paletteIndex, alpha)` pair to a `ResolvedColor` (sRGB
+  channels + effective alpha = paint alpha × CPAL alpha / 255) with
+  the 0xFFFF index resolved to a caller-supplied application
+  foreground color; `LayerRecord::resolve`, `ColorStop::resolve`, and
+  `ColorLine::resolve` cover the version-0 layers and gradient color
+  lines, and `Font::v0_layer_colors` answers a version-0 color glyph
+  as `(layer glyph, color)` pairs in bottom-up z-order. Out-of-range
+  palette entries (malformed color glyphs) surface as `None`.
 - **COLR color table (versions 0 and 1)**: new `tables::colr` module
   and `Font::colr()`. Version 0 layered color glyphs
   (`v0_layers(gid)`) and the version-1 **paint graph**: all 32 paint

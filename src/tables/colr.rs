@@ -37,6 +37,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::parser::{read_f2dot14, read_fixed, read_i16, read_u16, read_u24, read_u32, read_u8};
+use crate::tables::cpal::{ColorRecord, CpalTable};
 use crate::tables::ivs::{DeltaSetIndexMap, ItemVariationStore};
 use crate::Error;
 
@@ -74,6 +75,83 @@ pub struct LayerRecord {
 /// decode it with [`ColrTable::paint`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PaintRef(u32);
+
+/// A concrete, render-ready sRGB color: a `CPAL` record's channels
+/// with the `COLR` paint alpha multiplied into the record's own alpha.
+///
+/// Channels are **not** premultiplied by the alpha.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResolvedColor {
+    /// Red channel (sRGB).
+    pub red: u8,
+    /// Green channel (sRGB).
+    pub green: u8,
+    /// Blue channel (sRGB).
+    pub blue: u8,
+    /// Effective alpha in `0.0..=1.0`:
+    /// `paint alpha × (CPAL record alpha / 255)`.
+    pub alpha: f32,
+}
+
+impl ResolvedColor {
+    /// The color as an 8-bit `[r, g, b, a]` quadruple (alpha rounded
+    /// to the nearest of 256 levels).
+    pub fn rgba8(&self) -> [u8; 4] {
+        [
+            self.red,
+            self.green,
+            self.blue,
+            (self.alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
+        ]
+    }
+}
+
+/// Resolve a `COLR` `(paletteIndex, alpha)` pair to a concrete color
+/// against one `CPAL` palette.
+///
+/// `palette_index == 0xFFFF` ([`COLR_FOREGROUND_PALETTE_INDEX`])
+/// selects `foreground` — the application-determined text foreground
+/// color, identical across palettes — instead of a `CPAL` entry.
+/// Otherwise the entry comes from `cpal.color(palette, palette_index)`
+/// and `None` means the index is out of the palette's range (a
+/// malformed color glyph). Per the spec the paint `alpha` (clamped to
+/// `[0, 1]`) is multiplied with the selected record's own alpha
+/// (`record alpha / 255`).
+pub fn resolve_paint_color(
+    cpal: &CpalTable<'_>,
+    palette: u16,
+    palette_index: u16,
+    alpha: f32,
+    foreground: ColorRecord,
+) -> Option<ResolvedColor> {
+    let record = if palette_index == COLR_FOREGROUND_PALETTE_INDEX {
+        foreground
+    } else {
+        cpal.color(palette, palette_index)?
+    };
+    Some(ResolvedColor {
+        red: record.red,
+        green: record.green,
+        blue: record.blue,
+        alpha: (alpha.clamp(0.0, 1.0) * record.alpha_f32()).clamp(0.0, 1.0),
+    })
+}
+
+impl LayerRecord {
+    /// The layer's concrete fill color against one `CPAL` palette. A
+    /// version-0 layer carries no alpha of its own, so the result is
+    /// the record's color (or `foreground` for the 0xFFFF sentinel)
+    /// with the record's own alpha; `None` when `palette_index` is out
+    /// of the palette's range.
+    pub fn resolve(
+        &self,
+        cpal: &CpalTable<'_>,
+        palette: u16,
+        foreground: ColorRecord,
+    ) -> Option<ResolvedColor> {
+        resolve_paint_color(cpal, palette, self.palette_index, 1.0, foreground)
+    }
+}
 
 /// `Extend` — color-line behavior outside the `[0, 1]` stop range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +195,21 @@ pub struct ColorStop {
     pub var_index_base: Option<u32>,
 }
 
+impl ColorStop {
+    /// The stop's concrete color against one `CPAL` palette: the
+    /// record selected by `palette_index` (or `foreground` for the
+    /// 0xFFFF sentinel) with the stop's alpha multiplied in; `None`
+    /// when `palette_index` is out of the palette's range.
+    pub fn resolve(
+        &self,
+        cpal: &CpalTable<'_>,
+        palette: u16,
+        foreground: ColorRecord,
+    ) -> Option<ResolvedColor> {
+        resolve_paint_color(cpal, palette, self.palette_index, self.alpha, foreground)
+    }
+}
+
 /// A color line: an `extend` mode plus its color stops, sorted by
 /// ascending (instance-resolved) `stop_offset` as the spec's rendering
 /// order requires.
@@ -127,6 +220,23 @@ pub struct ColorLine {
     /// Color stops in ascending `stop_offset` order (stable-sorted, so
     /// same-offset stops keep their file order).
     pub stops: Vec<ColorStop>,
+}
+
+impl ColorLine {
+    /// Every stop resolved to `(stop_offset, color)` against one
+    /// `CPAL` palette, in the line's ascending-offset order. `None`
+    /// when any stop's `palette_index` is out of the palette's range.
+    pub fn resolve(
+        &self,
+        cpal: &CpalTable<'_>,
+        palette: u16,
+        foreground: ColorRecord,
+    ) -> Option<Vec<(f32, ResolvedColor)>> {
+        self.stops
+            .iter()
+            .map(|s| Some((s.stop_offset, s.resolve(cpal, palette, foreground)?)))
+            .collect()
+    }
 }
 
 /// A 2×3 affine transformation matrix (`Affine2x3` / `VarAffine2x3`).
