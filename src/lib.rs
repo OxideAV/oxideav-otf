@@ -58,8 +58,8 @@ use crate::tables::{
     ebdt::BitmapDataTable, eblc::BitmapLocationTable, ebsc::EbscTable, fvar::FvarTable,
     gdef::GdefTable, gpos::GposTable, gsub::GsubTable, head::HeadTable, hhea::HheaTable,
     hmtx::HmtxTable, kern::KernTable, maxp::MaxpTable, mvar::MvarTable, name::NameTable,
-    os2::Os2Table, sbix::SbixTable, stat::StatTable, vhea::VheaTable, vmtx::VmtxTable,
-    vorg::VorgTable, xvar::MetricsVariations,
+    os2::Os2Table, sbix::SbixTable, stat::StatTable, svg::SvgTable, vhea::VheaTable,
+    vmtx::VmtxTable, vorg::VorgTable, xvar::MetricsVariations,
 };
 
 pub use crate::tables::avar::{AvarTable as AvarView, AxisValueMap, SegmentMap};
@@ -149,6 +149,7 @@ pub use crate::tables::stat::{
     AxisValue, StatAxisRecord, StatTable as StatView, STAT_ELIDABLE_AXIS_VALUE_NAME,
     STAT_OLDER_SIBLING_FONT_ATTRIBUTE,
 };
+pub use crate::tables::svg::{SvgDocument, SvgTable as SvgView};
 pub use crate::tables::vhea::VheaTable as VheaView;
 pub use crate::tables::vmtx::VmtxTable as VmtxView;
 pub use crate::tables::vorg::VorgTable as VorgView;
@@ -385,6 +386,9 @@ pub struct Font<'a> {
     /// `EBSC` — embedded bitmap scaling: strikes defined as scaled
     /// versions of real `EBLC`/`EBDT` strikes. Optional.
     ebsc: Option<EbscTable>,
+    /// `SVG ` — SVG glyph descriptions. Optional; color-variable
+    /// values may come from `CPAL`.
+    svg: Option<SvgTable<'a>>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -580,6 +584,11 @@ impl<'a> Font<'a> {
             Some(slice) => EbscTable::parse(slice).ok(),
             None => None,
         };
+        // `SVG ` — SVG glyph descriptions; optional.
+        let svg = match dir.find(b"SVG ", bytes) {
+            Some(slice) => SvgTable::parse(slice).ok(),
+            None => None,
+        };
 
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
@@ -622,6 +631,7 @@ impl<'a> Font<'a> {
             ebdt,
             cbdt,
             ebsc,
+            svg,
             cff,
         })
     }
@@ -1021,6 +1031,19 @@ impl<'a> Font<'a> {
     /// The `EBSC` embedded-bitmap-scaling view, if present.
     pub fn ebsc(&self) -> Option<&EbscTable> {
         self.ebsc.as_ref()
+    }
+
+    /// The `SVG ` glyph-description view, if present.
+    pub fn svg(&self) -> Option<&SvgTable<'a>> {
+        self.svg.as_ref()
+    }
+
+    /// The SVG document describing `glyph_id`, if the font's `SVG `
+    /// table covers it. The glyph's description is the element with
+    /// id `glyph<ID>` inside [`SvgDocument::data`] (plain-text or
+    /// gzip-encoded UTF-8 SVG — check [`SvgDocument::is_gzip`]).
+    pub fn svg_document(&self, glyph_id: u16) -> Option<SvgDocument<'a>> {
+        self.svg.as_ref()?.document_for_glyph(glyph_id)
     }
 
     /// One glyph's embedded **monochrome / grayscale** bitmap at a

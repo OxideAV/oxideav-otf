@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `Font::palette_label` / `Font::palette_entry_label` resolve
   the labels through the `name` table (IDs 23/24 pair with the
   light/dark palette types).
+- **SVG glyph-description table**: new `tables::svg` module,
+  `Font::svg()`, and `Font::svg_document(gid)`. The SVG Document
+  Index decodes with its §5.5.1 invariants enforced (ascending,
+  non-overlapping glyph ranges; non-zero document offsets/lengths;
+  in-bounds byte ranges); ranges may share one document. Documents
+  surface as raw plain-text or gzip-encoded UTF-8 bytes
+  (`SvgDocument::is_gzip` checks the RFC 1952 magic) with the
+  `glyph<ID>` element-id convention exposed; XML parsing /
+  decompression / rendering stay with higher layers, and CPAL
+  supplies color-variable values per §5.5.2.
 - **EBSC embedded bitmap scaling table**: new `tables::ebsc` module
   and `Font::ebsc()`. `BitmapScale` records define strikes produced
   by scaling a real `EBLC`/`EBDT` strike: target `ppem_x`/`ppem_y`,

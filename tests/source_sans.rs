@@ -1856,6 +1856,8 @@ fn color_and_bitmap_tables_absent_from_source_sans() {
     assert!(f.ebdt().is_none());
     assert!(f.cbdt().is_none());
     assert!(f.ebsc().is_none());
+    assert!(f.svg().is_none());
+    assert!(f.svg_document(1).is_none());
     assert_eq!(f.palette_color(0, 0), None);
     assert_eq!(f.palette_label(0), None);
     assert_eq!(f.palette_entry_label(0), None);
