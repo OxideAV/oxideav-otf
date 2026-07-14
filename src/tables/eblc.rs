@@ -65,9 +65,11 @@ pub struct SbitLineMetrics {
 
 impl SbitLineMetrics {
     /// 10 metric bytes + 2 pad bytes.
-    pub(crate) const LEN: usize = 12;
+    pub const LEN: usize = 12;
 
-    fn parse(data: &[u8], at: usize) -> Result<Self, Error> {
+    /// Read an `SbitLineMetrics` record at byte offset `at` of `data`
+    /// (the two trailing pad bytes are skipped, not validated).
+    pub fn parse(data: &[u8], at: usize) -> Result<Self, Error> {
         Ok(Self {
             ascender: read_u8(data, at)? as i8,
             descender: read_u8(data, at + 1)? as i8,

@@ -15,6 +15,7 @@ pub mod cpal;
 pub mod device;
 pub mod ebdt;
 pub mod eblc;
+pub mod ebsc;
 pub mod fvar;
 pub mod gdef;
 pub mod gpos;

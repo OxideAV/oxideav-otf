@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `Font::palette_label` / `Font::palette_entry_label` resolve
   the labels through the `name` table (IDs 23/24 pair with the
   light/dark palette types).
+- **EBSC embedded bitmap scaling table**: new `tables::ebsc` module
+  and `Font::ebsc()`. `BitmapScale` records define strikes produced
+  by scaling a real `EBLC`/`EBDT` strike: target `ppem_x`/`ppem_y`,
+  the substitute strike's PPEMs (x/y scale independently), and the
+  post-scaling `SbitLineMetrics` pair; `scale_for(ppem_x, ppem_y)`
+  answers exact-size lookups.
 - **EBDT / CBDT bitmap data tables**: new `tables::ebdt` module
   (`BitmapDataTable`, both flavours) decoding every OFF-supported
   glyph image format from a `BitmapLocation`: 1/2 (small metrics +

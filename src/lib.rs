@@ -55,11 +55,11 @@ use crate::cff::Cff;
 use crate::parser::TableDirectory;
 use crate::tables::{
     avar::AvarTable, base::BaseTable, cmap::CmapTable, colr::ColrTable, cpal::CpalTable,
-    ebdt::BitmapDataTable, eblc::BitmapLocationTable, fvar::FvarTable, gdef::GdefTable,
-    gpos::GposTable, gsub::GsubTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable,
-    kern::KernTable, maxp::MaxpTable, mvar::MvarTable, name::NameTable, os2::Os2Table,
-    sbix::SbixTable, stat::StatTable, vhea::VheaTable, vmtx::VmtxTable, vorg::VorgTable,
-    xvar::MetricsVariations,
+    ebdt::BitmapDataTable, eblc::BitmapLocationTable, ebsc::EbscTable, fvar::FvarTable,
+    gdef::GdefTable, gpos::GposTable, gsub::GsubTable, head::HeadTable, hhea::HheaTable,
+    hmtx::HmtxTable, kern::KernTable, maxp::MaxpTable, mvar::MvarTable, name::NameTable,
+    os2::Os2Table, sbix::SbixTable, stat::StatTable, vhea::VheaTable, vmtx::VmtxTable,
+    vorg::VorgTable, xvar::MetricsVariations,
 };
 
 pub use crate::tables::avar::{AvarTable as AvarView, AxisValueMap, SegmentMap};
@@ -90,6 +90,7 @@ pub use crate::tables::eblc::{
     SbitLineMetrics, SmallGlyphMetrics, BITMAP_FLAG_HORIZONTAL_METRICS,
     BITMAP_FLAG_VERTICAL_METRICS,
 };
+pub use crate::tables::ebsc::{BitmapScale, EbscTable as EbscView};
 pub use crate::tables::fvar::{
     FvarTable as FvarView, NamedInstance, VariationAxis, FVAR_AXIS_HIDDEN,
 };
@@ -381,6 +382,9 @@ pub struct Font<'a> {
     /// `CBDT` — color bitmap glyph data. Optional; paired with
     /// `CBLC`.
     cbdt: Option<BitmapDataTable<'a>>,
+    /// `EBSC` — embedded bitmap scaling: strikes defined as scaled
+    /// versions of real `EBLC`/`EBDT` strikes. Optional.
+    ebsc: Option<EbscTable>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -571,6 +575,11 @@ impl<'a> Font<'a> {
             Some(slice) => BitmapDataTable::parse(slice).ok(),
             None => None,
         };
+        // `EBSC` — scaled-strike definitions; optional.
+        let ebsc = match dir.find(b"EBSC", bytes) {
+            Some(slice) => EbscTable::parse(slice).ok(),
+            None => None,
+        };
 
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
@@ -612,6 +621,7 @@ impl<'a> Font<'a> {
             cblc,
             ebdt,
             cbdt,
+            ebsc,
             cff,
         })
     }
@@ -1006,6 +1016,11 @@ impl<'a> Font<'a> {
     /// The `CBDT` color-bitmap-data view, if present.
     pub fn cbdt(&self) -> Option<&BitmapDataTable<'a>> {
         self.cbdt.as_ref()
+    }
+
+    /// The `EBSC` embedded-bitmap-scaling view, if present.
+    pub fn ebsc(&self) -> Option<&EbscTable> {
+        self.ebsc.as_ref()
     }
 
     /// One glyph's embedded **monochrome / grayscale** bitmap at a
