@@ -12,9 +12,11 @@ TrueType outlines (quadratic Beziers); OTF handles CFF outlines
 
 The crate parses an sfnt/OTF container into a `Font` and exposes
 metadata, glyph metrics, glyph outlines (CFF Type 2 → cubic Beziers),
-typed views over the OpenType Layout tables, and a **text-shaping
+typed views over the OpenType Layout tables, a **text-shaping
 pipeline** (`Font::shape`) that runs GSUB substitution and GPOS
-positioning end to end. Highlights:
+positioning end to end, and the full **color-font / embedded-bitmap
+surface** (`COLR`+`CPAL` with concrete-RGBA resolution, `sbix`,
+`EBLC`/`EBDT`/`EBSC`, `CBLC`/`CBDT`, `SVG `). Highlights:
 
 - sfnt + table directory walker (recognises `OTTO`, `0x00010000`, `true`).
 - CFF (Adobe TN5176, version 1):
@@ -598,6 +600,62 @@ views over:
   (including the per-composite-mode table). Angles come back in
   degrees with the sweep-gradient ±360° bias already applied.
 
+## Color fonts and embedded bitmaps
+
+The complete OFF color-font + embedded-bitmap surface
+(ISO/IEC 14496-22:2019 §5.5, §5.6, §5.7.11–12 + Amd.1:2020):
+
+- **`CPAL`** (versions 0 and 1) — `Font::cpal()`. Palettes resolve
+  `(paletteIndex, entryIndex)` to sRGB `ColorRecord`s (BGRA on disk,
+  not premultiplied) through the shared color-records array with
+  overlapping/shared runs; parse-time validation enforces the
+  at-least-one-palette/entry rule and
+  `numColorRecords >= max(colorRecordIndices) + numPaletteEntries`.
+  Version 1 adds the Palette Type Array (light-/dark-background
+  usability flags), Palette Label Array, and Palette Entry Label
+  Array (0xFFFF no-label sentinel). `Font::palette_color` answers
+  concrete colors; `Font::palette_label` /
+  `Font::palette_entry_label` resolve labels through `name`.
+- **COLR → CPAL resolution** — `resolve_paint_color` maps a paint's
+  `(paletteIndex, alpha)` to a `ResolvedColor` (effective alpha =
+  paint alpha × CPAL alpha / 255; 0xFFFF = caller-supplied
+  application foreground). `LayerRecord::resolve`,
+  `ColorStop::resolve`, `ColorLine::resolve`, and
+  `Font::v0_layer_colors` cover v0 layers and gradient color lines,
+  so COLR rendering yields concrete RGBA.
+- **`sbix`** — `Font::sbix()` / `Font::sbix_glyph(gid, ppem)`.
+  PPEM/PPI strikes with per-glyph PNG / JPEG / TIFF graphics
+  (origin offsets + typed `graphicType`), `'dupe'` redirects
+  followed with cycle protection, and closest-larger strike
+  selection. Validated black-box against Apple Color Emoji
+  (9 strikes, 31k PNG graphics, all magic-verified).
+- **`EBLC` / `CBLC`** — `Font::eblc()` / `Font::cblc()` (one module,
+  both flavours; CBLC adds bitDepth-32 color strikes). `BitmapSize`
+  strikes with `SbitLineMetrics`, and all **five** IndexSubTable
+  formats decode to a `BitmapLocation` (image format + absolute
+  `EBDT`/`CBDT` byte range + shared `BigGlyphMetrics` where the
+  index stores them).
+- **`EBDT` / `CBDT`** — `Font::ebdt()` / `Font::cbdt()`; image
+  formats 1/2/5/6/7 (small/big/index metrics, byte-/bit-aligned),
+  8/9 composites (`EbdtComponent`), 17/18/19 PNG; formats 3
+  (obsolete) and 4 (no OFF-defined structure) are refused.
+  `unpack_pixels` expands 1/2/4/8-bit packed data (MSB-first,
+  byte-aligned row padding) and `unpack_bgra32` the premultiplied
+  BGRA32 layout. End-to-end: `Font::embedded_bitmap(gid, ppem)` /
+  `Font::color_bitmap(gid, ppem)` (best strike → locate → decode);
+  validated black-box against real bitmap fonts (Courier New,
+  PT Sans — every located glyph decodes and pixel-unpacks).
+- **`EBSC`** — `Font::ebsc()`; `BitmapScale` records defining
+  strikes as scaled versions of real strikes (independent x/y
+  scaling, post-scaling line metrics), `scale_for(ppemX, ppemY)`.
+- **`SVG `** — `Font::svg()` / `Font::svg_document(gid)`. The SVG
+  Document Index with its ordering/non-overlap/non-zero invariants
+  enforced; ranges may share a document; documents surface as raw
+  plain-text or gzip-encoded UTF-8 bytes (`is_gzip` checks the
+  Amd.1-mandated `1F 8B 08` prefix) with the `glyph<ID>` element-id
+  and `--color<num>` CPAL-variable conventions exposed. XML /
+  decompression / rasterization stay with higher layers.
+
 ## Font variations (`fvar` / `avar`) and region-scalar derivation
 
 The crate now decodes the variable-font axis-definition tables and ties
@@ -667,6 +725,10 @@ outline directly from **user-scale axis coordinates** (e.g. `wght = 700`):
   `Device` corrections are not applied during shaping (design-unit
   output; `VariationIndex` deltas *are* applied).
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
+- Decoding the embedded image payloads: `sbix` / `CBDT` PNG, JPEG,
+  and TIFF bytes and `SVG ` documents (including their gzip
+  decompression and XML parsing / rasterization) are surfaced raw —
+  image codecs and SVG rendering belong to their own crates.
 - The AGL Specification §6 component-name decomposition algorithm
   (`f_f_i` → `ffi`, `uniXXXX` → `U+XXXX`, etc.) — the static AGL 2.0
   table ships, but the §6 algorithm is not implemented (the spec
