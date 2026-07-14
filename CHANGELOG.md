@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- **CPAL palette table (versions 0 and 1)**: new `tables::cpal`
+  module and `Font::cpal()`. Palettes resolve
+  `(paletteIndex, entryIndex)` to sRGB `ColorRecord`s (BGRA on disk,
+  not premultiplied) through the shared color-records array with
+  overlapping/shared palette runs per §5.7.12; parse-time validation
+  enforces the at-least-one-palette/entry rule and
+  `numColorRecords >= max(colorRecordIndices) + numPaletteEntries`.
+  Version 1 surfaces the Palette Type Array
+  (`usable_with_light_background` / `usable_with_dark_background`),
+  Palette Label Array, and Palette Entry Label Array (0xFFFF
+  no-label sentinel). `Font::palette_color` answers concrete colors
+  and `Font::palette_label` / `Font::palette_entry_label` resolve
+  the labels through the `name` table (IDs 23/24 pair with the
+  light/dark palette types).
 - **COLR color table (versions 0 and 1)**: new `tables::colr` module
   and `Font::colr()`. Version 0 layered color glyphs
   (`v0_layers(gid)`) and the version-1 **paint graph**: all 32 paint

@@ -54,11 +54,11 @@ pub use shape::{FeatureSetting, ShapeOptions, ShapedGlyph};
 use crate::cff::Cff;
 use crate::parser::TableDirectory;
 use crate::tables::{
-    avar::AvarTable, base::BaseTable, cmap::CmapTable, colr::ColrTable, fvar::FvarTable,
-    gdef::GdefTable, gpos::GposTable, gsub::GsubTable, head::HeadTable, hhea::HheaTable,
-    hmtx::HmtxTable, kern::KernTable, maxp::MaxpTable, mvar::MvarTable, name::NameTable,
-    os2::Os2Table, stat::StatTable, vhea::VheaTable, vmtx::VmtxTable, vorg::VorgTable,
-    xvar::MetricsVariations,
+    avar::AvarTable, base::BaseTable, cmap::CmapTable, colr::ColrTable, cpal::CpalTable,
+    fvar::FvarTable, gdef::GdefTable, gpos::GposTable, gsub::GsubTable, head::HeadTable,
+    hhea::HheaTable, hmtx::HmtxTable, kern::KernTable, maxp::MaxpTable, mvar::MvarTable,
+    name::NameTable, os2::Os2Table, stat::StatTable, vhea::VheaTable, vmtx::VmtxTable,
+    vorg::VorgTable, xvar::MetricsVariations,
 };
 
 pub use crate::tables::avar::{AvarTable as AvarView, AxisValueMap, SegmentMap};
@@ -73,6 +73,10 @@ pub use crate::tables::colr::{
 pub use crate::tables::context::{
     ChainedSequenceContext, ChainedSequenceRule, SequenceContext, SequenceLookupRecord,
     SequenceRule,
+};
+pub use crate::tables::cpal::{
+    ColorRecord, CpalTable as CpalView, PaletteType, CPAL_USABLE_WITH_DARK_BACKGROUND,
+    CPAL_USABLE_WITH_LIGHT_BACKGROUND,
 };
 pub use crate::tables::device::{DeviceOrVariationIndex, DeviceTable, VariationIndexTable};
 pub use crate::tables::fvar::{
@@ -343,6 +347,10 @@ pub struct Font<'a> {
     /// and/or the version-1 paint-graph color glyphs (with their
     /// embedded variation data).
     colr: Option<ColrTable<'a>>,
+    /// `CPAL` — palette table. Required alongside `COLR` (it carries
+    /// the colors the paint graph's palette indices select); optional
+    /// alongside `SVG `.
+    cpal: Option<CpalTable<'a>>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -501,6 +509,13 @@ impl<'a> Font<'a> {
             Some(slice) => ColrTable::parse(slice).ok(),
             None => None,
         };
+        // `CPAL` is required alongside `COLR` and optional alongside
+        // `SVG `; same tolerance policy (a malformed palette table
+        // degrades color-glyph rendering, not the whole font).
+        let cpal = match dir.find(b"CPAL", bytes) {
+            Some(slice) => CpalTable::parse(slice).ok(),
+            None => None,
+        };
 
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
@@ -536,6 +551,7 @@ impl<'a> Font<'a> {
             base,
             vorg,
             colr,
+            cpal,
             cff,
         })
     }
@@ -838,6 +854,37 @@ impl<'a> Font<'a> {
     /// [`tables::colr::ColrTable::paint`].
     pub fn colr(&self) -> Option<&ColrTable<'a>> {
         self.colr.as_ref()
+    }
+
+    /// The `CPAL` palette-table view, if present.
+    pub fn cpal(&self) -> Option<&CpalTable<'a>> {
+        self.cpal.as_ref()
+    }
+
+    /// The sRGB color record for `(palette_index, entry_index)` from
+    /// the `CPAL` table, or `None` when the font has no `CPAL` table
+    /// or either index is out of range. Palette 0 is the default
+    /// palette. Note that the `COLR` foreground sentinel entry index
+    /// (0xFFFF) intentionally resolves to `None` here — substitute the
+    /// application-determined text foreground color instead.
+    pub fn palette_color(&self, palette_index: u16, entry_index: u16) -> Option<ColorRecord> {
+        self.cpal.as_ref()?.color(palette_index, entry_index)
+    }
+
+    /// The user-interface label for a palette, resolved through the
+    /// `name` table from the `CPAL` version-1 Palette Label Array.
+    /// `None` when there is no label or no matching `name` record.
+    pub fn palette_label(&self, palette_index: u16) -> Option<&str> {
+        let name_id = self.cpal.as_ref()?.palette_label(palette_index)?;
+        self.name.find(name_id)
+    }
+
+    /// The user-interface label for a palette **entry** (shared by all
+    /// palettes; e.g. "Outline", "Fill"), resolved through the `name`
+    /// table from the `CPAL` version-1 Palette Entry Label Array.
+    pub fn palette_entry_label(&self, entry_index: u16) -> Option<&str> {
+        let name_id = self.cpal.as_ref()?.palette_entry_label(entry_index)?;
+        self.name.find(name_id)
     }
 
     /// Number of variation axes (`fvar.axisCount`); `0` for a
