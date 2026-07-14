@@ -10,18 +10,24 @@
 //! one document; within a document, the glyph description for glyph
 //! N is the element with id `glyph<N>` (non-zero-padded decimal).
 //!
-//! Documents are UTF-8, either plain text or gzip-encoded (RFC 1952;
-//! `svgDocLength` counts the **encoded** bytes) —
+//! Documents are UTF-8, either plain text or gzip-encoded (RFC 1952
+//! with the deflate method, so the encoded document starts
+//! `1F 8B 08`; `svgDocLength` counts the **encoded** bytes) —
 //! [`SvgDocument::is_gzip`] answers which. This crate surfaces the
 //! raw document bytes; XML parsing / decompression / rendering belong
 //! to higher layers.
 //!
-//! Color handling (§5.5.2): documents may use color variables
-//! `--color<i>` bound from a `CPAL` palette (entry `i` of the
-//! selected palette, `i < numPaletteEntries`); the text foreground
-//! color is expressed through the `context-fill` /
-//! `context-fill-opacity` attributes. The default (first) palette's
-//! colors must equal the documents' default variable values.
+//! Color handling (Amd.1 §5.5.3 "Color and color palettes"):
+//! documents reference `CPAL` palette entries as CSS custom
+//! properties through the `var()` function — the host defines
+//! exactly `numPaletteEntries` properties named `--color<num>`
+//! ([`SvgDocument::color_variable_name`]), normally valued from the
+//! default (first) palette, with a CPAL entry's alpha (converted to
+//! `[0, 1]`) multiplied into the element's corresponding
+//! `*-opacity` property. The text foreground color is the
+//! `currentColor` keyword's initial value, set by the host; the
+//! older `context-fill` / `context-*` properties are deprecated by
+//! Amd.1.
 
 use crate::parser::{read_u16, read_u32};
 use crate::Error;
@@ -38,10 +44,13 @@ pub struct SvgDocument<'a> {
 }
 
 impl SvgDocument<'_> {
-    /// Whether the document is gzip-encoded (RFC 1952 magic
-    /// `1F 8B`). Plain-text documents return `false`.
+    /// Whether the document is gzip-encoded. Per Amd.1 §5.5.2 the
+    /// deflate compression method must be used within the gzip
+    /// wrapper, so the first three bytes of an encoded document are
+    /// required to be `1F 8B 08`. Plain-text documents return
+    /// `false`.
     pub fn is_gzip(&self) -> bool {
-        self.data.starts_with(&[0x1F, 0x8B])
+        self.data.starts_with(&[0x1F, 0x8B, 0x08])
     }
 
     /// The element id that carries `glyph_id`'s description inside
@@ -49,6 +58,15 @@ impl SvgDocument<'_> {
     /// decimal number.
     pub fn glyph_element_id(glyph_id: u16) -> String {
         format!("glyph{glyph_id}")
+    }
+
+    /// The CSS custom-property name the host binds `CPAL` palette
+    /// entry `entry_index` to for this font's SVG documents:
+    /// `--color<num>` with a non-zero-padded decimal number
+    /// (Amd.1 §5.5.3). Valid entry indices are
+    /// `0..CPAL.numPaletteEntries`.
+    pub fn color_variable_name(entry_index: u16) -> String {
+        format!("--color{entry_index}")
     }
 }
 

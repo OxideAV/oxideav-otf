@@ -44,8 +44,9 @@ fn svg_table(entries: &[(u16, u16, usize)], docs: &[&[u8]]) -> Vec<u8> {
 }
 
 const PLAIN: &[u8] = b"<svg><g id=\"glyph95\"/><g id=\"glyph96\"/></svg>";
-// RFC 1952 gzip magic + arbitrary tail (not a real deflate stream;
-// the table layer only carries the bytes).
+// RFC 1952 gzip magic + the mandatory deflate CM byte (0x08 per
+// Amd.1 SVG "Document encoding and format") + arbitrary tail (not a
+// real deflate stream; the table layer only carries the bytes).
 const GZ: &[u8] = &[0x1F, 0x8B, 0x08, 0x00, 0xAA, 0xBB];
 
 #[test]
@@ -84,6 +85,20 @@ fn index_lookup_and_shared_documents() {
     // Element id convention: non-zero-padded decimal.
     assert_eq!(SvgDocument::glyph_element_id(96), "glyph96");
     assert_eq!(SvgDocument::glyph_element_id(7), "glyph7");
+
+    // CPAL color-variable custom-property names (Amd.1 §5.5.3).
+    assert_eq!(SvgDocument::color_variable_name(0), "--color0");
+    assert_eq!(SvgDocument::color_variable_name(12), "--color12");
+}
+
+#[test]
+fn gzip_detection_requires_the_deflate_method_byte() {
+    // 1F 8B with a non-deflate CM byte is not a valid Amd.1-encoded
+    // document; is_gzip must not claim it.
+    let bogus: &[u8] = &[0x1F, 0x8B, 0x07, 0x00];
+    let bytes = svg_table(&[(1, 1, 0)], &[bogus]);
+    let t = SvgTable::parse(&bytes).unwrap();
+    assert!(!t.document_for_glyph(1).unwrap().is_gzip());
 }
 
 #[test]

@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `Font::palette_label` / `Font::palette_entry_label` resolve
   the labels through the `name` table (IDs 23/24 pair with the
   light/dark palette types).
+- **SVG table Amd.1:2020 alignment**: gzip detection requires the
+  mandatory deflate method byte (`1F 8B 08`), and
+  `SvgDocument::color_variable_name` exposes the `--color<num>`
+  CSS custom-property convention that binds `CPAL` palette entries
+  inside SVG documents (the deprecated `context-*` mechanism is
+  documented as replaced by `currentColor`).
 - **SVG glyph-description table**: new `tables::svg` module,
   `Font::svg()`, and `Font::svg_document(gid)`. The SVG Document
   Index decodes with its §5.5.1 invariants enforced (ascending,
