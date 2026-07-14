@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `Font::palette_label` / `Font::palette_entry_label` resolve
   the labels through the `name` table (IDs 23/24 pair with the
   light/dark palette types).
+- **Color/bitmap-table robustness sweep**: exhaustive single-byte
+  mutation + truncation tests over `CPAL`, `sbix`, `EBLC`/`EBDT`
+  (both directions of the pair), `EBSC`, `SVG `, and the
+  COLR × CPAL resolution path — every mutant either fails to parse
+  or survives full-surface queries with `Result`/`Option` outcomes
+  only (no panics, hangs, or runaway allocation).
 - **SVG table Amd.1:2020 alignment**: gzip detection requires the
   mandatory deflate method byte (`1F 8B 08`), and
   `SvgDocument::color_variable_name` exposes the `--color<num>`
