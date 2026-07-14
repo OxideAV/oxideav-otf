@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `Font::palette_label` / `Font::palette_entry_label` resolve
   the labels through the `name` table (IDs 23/24 pair with the
   light/dark palette types).
+- **EBDT / CBDT bitmap data tables**: new `tables::ebdt` module
+  (`BitmapDataTable`, both flavours) decoding every OFF-supported
+  glyph image format from a `BitmapLocation`: 1/2 (small metrics +
+  byte-/bit-aligned data), 5 (bit-aligned data only, metrics in the
+  location table), 6/7 (big metrics), 8/9 (composite `EbdtComponent`
+  lists), and the `CBDT` PNG formats 17/18/19 (`dataLen`-prefixed
+  raw payload); obsolete format 3 and the OFF-undefined compressed
+  format 4 are refused. `unpack_pixels` expands the packed 1/2/4/8
+  bit-depth layouts (MSB-first, per-row byte padding for the
+  byte-aligned formats) to one value per pixel and `unpack_bgra32`
+  handles the bitDepth-32 premultiplied sRGB BGRA color layout.
+  `Font::ebdt()` / `Font::cbdt()` plus the end-to-end
+  `Font::embedded_bitmap(gid, ppem)` / `Font::color_bitmap(gid,
+  ppem)` (best strike → locate → decode).
 - **EBLC / CBLC bitmap location tables**: new `tables::eblc` module
   (`BitmapLocationTable` decodes both flavours — `EBLC` major
   version 2 and the structurally identical `CBLC` major version 3

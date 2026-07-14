@@ -55,10 +55,11 @@ use crate::cff::Cff;
 use crate::parser::TableDirectory;
 use crate::tables::{
     avar::AvarTable, base::BaseTable, cmap::CmapTable, colr::ColrTable, cpal::CpalTable,
-    eblc::BitmapLocationTable, fvar::FvarTable, gdef::GdefTable, gpos::GposTable, gsub::GsubTable,
-    head::HeadTable, hhea::HheaTable, hmtx::HmtxTable, kern::KernTable, maxp::MaxpTable,
-    mvar::MvarTable, name::NameTable, os2::Os2Table, sbix::SbixTable, stat::StatTable,
-    vhea::VheaTable, vmtx::VmtxTable, vorg::VorgTable, xvar::MetricsVariations,
+    ebdt::BitmapDataTable, eblc::BitmapLocationTable, fvar::FvarTable, gdef::GdefTable,
+    gpos::GposTable, gsub::GsubTable, head::HeadTable, hhea::HheaTable, hmtx::HmtxTable,
+    kern::KernTable, maxp::MaxpTable, mvar::MvarTable, name::NameTable, os2::Os2Table,
+    sbix::SbixTable, stat::StatTable, vhea::VheaTable, vmtx::VmtxTable, vorg::VorgTable,
+    xvar::MetricsVariations,
 };
 
 pub use crate::tables::avar::{AvarTable as AvarView, AxisValueMap, SegmentMap};
@@ -80,6 +81,10 @@ pub use crate::tables::cpal::{
     CPAL_USABLE_WITH_LIGHT_BACKGROUND,
 };
 pub use crate::tables::device::{DeviceOrVariationIndex, DeviceTable, VariationIndexTable};
+pub use crate::tables::ebdt::{
+    unpack_bgra32, unpack_pixels, BitmapContent, BitmapDataTable as BitmapDataView, EbdtComponent,
+    GlyphBitmapData, GlyphMetrics,
+};
 pub use crate::tables::eblc::{
     BigGlyphMetrics, BitmapLocation, BitmapLocationTable as BitmapLocationView, BitmapSize,
     SbitLineMetrics, SmallGlyphMetrics, BITMAP_FLAG_HORIZONTAL_METRICS,
@@ -370,6 +375,12 @@ pub struct Font<'a> {
     /// `CBLC` — color bitmap locators. Optional; paired with `CBDT`.
     /// Same structure as `EBLC` (major version 3).
     cblc: Option<BitmapLocationTable<'a>>,
+    /// `EBDT` — embedded bitmap glyph data. Optional; paired with
+    /// `EBLC`.
+    ebdt: Option<BitmapDataTable<'a>>,
+    /// `CBDT` — color bitmap glyph data. Optional; paired with
+    /// `CBLC`.
+    cbdt: Option<BitmapDataTable<'a>>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -551,6 +562,15 @@ impl<'a> Font<'a> {
             Some(slice) => BitmapLocationTable::parse(slice).ok(),
             None => None,
         };
+        // `EBDT` / `CBDT` — the bitmap data the locators point into.
+        let ebdt = match dir.find(b"EBDT", bytes) {
+            Some(slice) => BitmapDataTable::parse(slice).ok(),
+            None => None,
+        };
+        let cbdt = match dir.find(b"CBDT", bytes) {
+            Some(slice) => BitmapDataTable::parse(slice).ok(),
+            None => None,
+        };
 
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
@@ -590,6 +610,8 @@ impl<'a> Font<'a> {
             sbix,
             eblc,
             cblc,
+            ebdt,
+            cbdt,
             cff,
         })
     }
@@ -974,6 +996,59 @@ impl<'a> Font<'a> {
     /// The `CBLC` color-bitmap-locator view, if present.
     pub fn cblc(&self) -> Option<&BitmapLocationTable<'a>> {
         self.cblc.as_ref()
+    }
+
+    /// The `EBDT` embedded-bitmap-data view, if present.
+    pub fn ebdt(&self) -> Option<&BitmapDataTable<'a>> {
+        self.ebdt.as_ref()
+    }
+
+    /// The `CBDT` color-bitmap-data view, if present.
+    pub fn cbdt(&self) -> Option<&BitmapDataTable<'a>> {
+        self.cbdt.as_ref()
+    }
+
+    /// One glyph's embedded **monochrome / grayscale** bitmap at a
+    /// requested PPEM: picks the best `EBLC` strike, locates the
+    /// glyph, and decodes the `EBDT` entry. Returns the strike's
+    /// `BitmapSize` (for `bit_depth` and line metrics), the
+    /// `BitmapLocation` (for index-table metrics), and the decoded
+    /// data. `None` when either table is absent or the glyph has no
+    /// bitmap in the chosen strike; `Some(Err)` when the tables are
+    /// malformed.
+    pub fn embedded_bitmap(
+        &self,
+        glyph_id: u16,
+        ppem: u8,
+    ) -> Option<Result<(BitmapSize, BitmapLocation, GlyphBitmapData<'a>), Error>> {
+        Self::lookup_bitmap(self.eblc.as_ref()?, self.ebdt.as_ref()?, glyph_id, ppem)
+    }
+
+    /// One glyph's embedded **color** bitmap at a requested PPEM —
+    /// the `CBLC` + `CBDT` counterpart of
+    /// [`Font::embedded_bitmap`].
+    pub fn color_bitmap(
+        &self,
+        glyph_id: u16,
+        ppem: u8,
+    ) -> Option<Result<(BitmapSize, BitmapLocation, GlyphBitmapData<'a>), Error>> {
+        Self::lookup_bitmap(self.cblc.as_ref()?, self.cbdt.as_ref()?, glyph_id, ppem)
+    }
+
+    fn lookup_bitmap(
+        loc_table: &BitmapLocationTable<'a>,
+        data_table: &BitmapDataTable<'a>,
+        glyph_id: u16,
+        ppem: u8,
+    ) -> Option<Result<(BitmapSize, BitmapLocation, GlyphBitmapData<'a>), Error>> {
+        let size_index = loc_table.best_size(ppem)?;
+        let size = loc_table.sizes()[size_index];
+        let loc = match loc_table.locate(size_index, glyph_id) {
+            Ok(Some(loc)) => loc,
+            Ok(None) => return None,
+            Err(e) => return Some(Err(e)),
+        };
+        Some(data_table.glyph_data(&loc).map(|d| (size, loc, d)))
     }
 
     /// Number of variation axes (`fvar.axisCount`); `0` for a

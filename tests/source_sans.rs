@@ -1842,3 +1842,30 @@ fn layout_table_version_accessors() {
     assert_eq!(f.gsub_version(), Some((1, 0)));
     assert_eq!(f.gpos_version(), Some((1, 0)));
 }
+
+#[test]
+fn color_and_bitmap_tables_absent_from_source_sans() {
+    // Source Sans 3 is a monochrome outline font: every color /
+    // embedded-bitmap surface must answer "absent", not error.
+    let f = Font::from_bytes(FIXTURE).unwrap();
+    assert!(f.colr().is_none());
+    assert!(f.cpal().is_none());
+    assert!(f.sbix().is_none());
+    assert!(f.eblc().is_none());
+    assert!(f.cblc().is_none());
+    assert!(f.ebdt().is_none());
+    assert!(f.cbdt().is_none());
+    assert_eq!(f.palette_color(0, 0), None);
+    assert_eq!(f.palette_label(0), None);
+    assert_eq!(f.palette_entry_label(0), None);
+    let fg = oxideav_otf::ColorRecord {
+        red: 0,
+        green: 0,
+        blue: 0,
+        alpha: 255,
+    };
+    assert!(f.v0_layer_colors(1, 0, fg).is_none());
+    assert!(f.sbix_glyph(1, 16).is_none());
+    assert!(f.embedded_bitmap(1, 16).is_none());
+    assert!(f.color_bitmap(1, 16).is_none());
+}
