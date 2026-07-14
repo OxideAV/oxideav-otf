@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `Font::palette_label` / `Font::palette_entry_label` resolve
   the labels through the `name` table (IDs 23/24 pair with the
   light/dark palette types).
+- **EBLC / CBLC bitmap location tables**: new `tables::eblc` module
+  (`BitmapLocationTable` decodes both flavours — `EBLC` major
+  version 2 and the structurally identical `CBLC` major version 3
+  with its `bitDepth` 32 color strikes) and `Font::eblc()` /
+  `Font::cblc()`. Strikes surface the full `BitmapSize` record
+  (`SbitLineMetrics` pairs, glyph range, ppem, bit depth, metrics
+  direction flags); `locate(size, gid)` walks the
+  `IndexSubTableArray` and decodes all five IndexSubTable formats
+  (1/3 variable-metrics offset arrays with zero-length gaps, 2/5
+  constant-metrics with the shared `BigGlyphMetrics`, 4 sparse
+  glyph-ID pairs) into a `BitmapLocation` — the `EBDT`/`CBDT` image
+  format plus the absolute byte range. `best_size(ppem)` picks a
+  strike (exact / closest-larger / largest).
 - **sbix standard bitmap graphics table**: new `tables::sbix` module
   and `Font::sbix()`. Strikes (PPEM + PPI targeted) expose per-glyph
   graphics through the `glyphDataOffsets[numGlyphs + 1]` array

@@ -13,6 +13,7 @@ pub mod colr;
 pub mod context;
 pub mod cpal;
 pub mod device;
+pub mod eblc;
 pub mod fvar;
 pub mod gdef;
 pub mod gpos;

@@ -55,10 +55,10 @@ use crate::cff::Cff;
 use crate::parser::TableDirectory;
 use crate::tables::{
     avar::AvarTable, base::BaseTable, cmap::CmapTable, colr::ColrTable, cpal::CpalTable,
-    fvar::FvarTable, gdef::GdefTable, gpos::GposTable, gsub::GsubTable, head::HeadTable,
-    hhea::HheaTable, hmtx::HmtxTable, kern::KernTable, maxp::MaxpTable, mvar::MvarTable,
-    name::NameTable, os2::Os2Table, sbix::SbixTable, stat::StatTable, vhea::VheaTable,
-    vmtx::VmtxTable, vorg::VorgTable, xvar::MetricsVariations,
+    eblc::BitmapLocationTable, fvar::FvarTable, gdef::GdefTable, gpos::GposTable, gsub::GsubTable,
+    head::HeadTable, hhea::HheaTable, hmtx::HmtxTable, kern::KernTable, maxp::MaxpTable,
+    mvar::MvarTable, name::NameTable, os2::Os2Table, sbix::SbixTable, stat::StatTable,
+    vhea::VheaTable, vmtx::VmtxTable, vorg::VorgTable, xvar::MetricsVariations,
 };
 
 pub use crate::tables::avar::{AvarTable as AvarView, AxisValueMap, SegmentMap};
@@ -80,6 +80,11 @@ pub use crate::tables::cpal::{
     CPAL_USABLE_WITH_LIGHT_BACKGROUND,
 };
 pub use crate::tables::device::{DeviceOrVariationIndex, DeviceTable, VariationIndexTable};
+pub use crate::tables::eblc::{
+    BigGlyphMetrics, BitmapLocation, BitmapLocationTable as BitmapLocationView, BitmapSize,
+    SbitLineMetrics, SmallGlyphMetrics, BITMAP_FLAG_HORIZONTAL_METRICS,
+    BITMAP_FLAG_VERTICAL_METRICS,
+};
 pub use crate::tables::fvar::{
     FvarTable as FvarView, NamedInstance, VariationAxis, FVAR_AXIS_HIDDEN,
 };
@@ -359,6 +364,12 @@ pub struct Font<'a> {
     /// `sbix` — standard bitmap graphics. Optional; per-strike
     /// PNG/JPEG/TIFF glyph bitmaps.
     sbix: Option<SbixTable<'a>>,
+    /// `EBLC` — embedded (monochrome / grayscale) bitmap locators.
+    /// Optional; paired with `EBDT`.
+    eblc: Option<BitmapLocationTable<'a>>,
+    /// `CBLC` — color bitmap locators. Optional; paired with `CBDT`.
+    /// Same structure as `EBLC` (major version 3).
+    cblc: Option<BitmapLocationTable<'a>>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -530,6 +541,16 @@ impl<'a> Font<'a> {
             Some(slice) => SbixTable::parse(slice, maxp.num_glyphs).ok(),
             None => None,
         };
+        // `EBLC` / `CBLC` — embedded-bitmap locators (monochrome /
+        // color); optional, same tolerance policy.
+        let eblc = match dir.find(b"EBLC", bytes) {
+            Some(slice) => BitmapLocationTable::parse(slice).ok(),
+            None => None,
+        };
+        let cblc = match dir.find(b"CBLC", bytes) {
+            Some(slice) => BitmapLocationTable::parse(slice).ok(),
+            None => None,
+        };
 
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
@@ -567,6 +588,8 @@ impl<'a> Font<'a> {
             colr,
             cpal,
             sbix,
+            eblc,
+            cblc,
             cff,
         })
     }
@@ -941,6 +964,16 @@ impl<'a> Font<'a> {
             .best_strike(ppem)?
             .glyph_graphic_resolved(glyph_id)
             .ok()?
+    }
+
+    /// The `EBLC` embedded-bitmap-locator view, if present.
+    pub fn eblc(&self) -> Option<&BitmapLocationTable<'a>> {
+        self.eblc.as_ref()
+    }
+
+    /// The `CBLC` color-bitmap-locator view, if present.
+    pub fn cblc(&self) -> Option<&BitmapLocationTable<'a>> {
+        self.cblc.as_ref()
     }
 
     /// Number of variation axes (`fvar.axisCount`); `0` for a
