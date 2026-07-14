@@ -57,8 +57,8 @@ use crate::tables::{
     avar::AvarTable, base::BaseTable, cmap::CmapTable, colr::ColrTable, cpal::CpalTable,
     fvar::FvarTable, gdef::GdefTable, gpos::GposTable, gsub::GsubTable, head::HeadTable,
     hhea::HheaTable, hmtx::HmtxTable, kern::KernTable, maxp::MaxpTable, mvar::MvarTable,
-    name::NameTable, os2::Os2Table, stat::StatTable, vhea::VheaTable, vmtx::VmtxTable,
-    vorg::VorgTable, xvar::MetricsVariations,
+    name::NameTable, os2::Os2Table, sbix::SbixTable, stat::StatTable, vhea::VheaTable,
+    vmtx::VmtxTable, vorg::VorgTable, xvar::MetricsVariations,
 };
 
 pub use crate::tables::avar::{AvarTable as AvarView, AxisValueMap, SegmentMap};
@@ -129,6 +129,10 @@ pub use crate::tables::os2::{
 };
 pub use crate::tables::post::{
     standard_mac_glyph_name, PostFormat, PostGlyphName, PostTable, STANDARD_MAC_GLYPH_NAMES,
+};
+pub use crate::tables::sbix::{
+    GlyphGraphic, GraphicType, SbixStrike, SbixTable as SbixView, SBIX_FLAG_ALWAYS_SET,
+    SBIX_FLAG_DRAW_OUTLINES,
 };
 pub use crate::tables::stat::{
     AxisValue, StatAxisRecord, StatTable as StatView, STAT_ELIDABLE_AXIS_VALUE_NAME,
@@ -352,6 +356,9 @@ pub struct Font<'a> {
     /// the colors the paint graph's palette indices select); optional
     /// alongside `SVG `.
     cpal: Option<CpalTable<'a>>,
+    /// `sbix` — standard bitmap graphics. Optional; per-strike
+    /// PNG/JPEG/TIFF glyph bitmaps.
+    sbix: Option<SbixTable<'a>>,
     /// The font's CFF outline data, either CFF1 (Adobe TN5176) or CFF2
     /// (OpenType 1.9.1). CFF1 carries full charstring decoding +
     /// metadata; CFF2 carries structural metadata (header + Top DICT +
@@ -517,6 +524,12 @@ impl<'a> Font<'a> {
             Some(slice) => CpalTable::parse(slice).ok(),
             None => None,
         };
+        // `sbix` is optional; its per-strike offset arrays are sized
+        // by `maxp.numGlyphs` (§5.6.7.4). Same tolerance policy.
+        let sbix = match dir.find(b"sbix", bytes) {
+            Some(slice) => SbixTable::parse(slice, maxp.num_glyphs).ok(),
+            None => None,
+        };
 
         let cff = if cff_tag == *b"CFF2" {
             let cff2_bytes = dir.required(b"CFF2", bytes)?;
@@ -553,6 +566,7 @@ impl<'a> Font<'a> {
             vorg,
             colr,
             cpal,
+            sbix,
             cff,
         })
     }
@@ -908,6 +922,25 @@ impl<'a> Font<'a> {
             .iter()
             .map(|l| Some((l.glyph_id, l.resolve(cpal, palette, foreground)?)))
             .collect()
+    }
+
+    /// The `sbix` standard-bitmap-graphics view, if present.
+    pub fn sbix(&self) -> Option<&SbixTable<'a>> {
+        self.sbix.as_ref()
+    }
+
+    /// The `sbix` bitmap graphic for a glyph at a requested PPEM size:
+    /// picks the best strike ([`tables::sbix::SbixTable::best_strike`]
+    /// — exact match, else closest larger, else largest) and follows
+    /// `'dupe'` redirects. `None` when the font has no `sbix` table,
+    /// the strike has no data for the glyph, or the entry is
+    /// malformed.
+    pub fn sbix_glyph(&self, glyph_id: u16, ppem: u16) -> Option<GlyphGraphic<'a>> {
+        self.sbix
+            .as_ref()?
+            .best_strike(ppem)?
+            .glyph_graphic_resolved(glyph_id)
+            .ok()?
     }
 
     /// Number of variation axes (`fvar.axisCount`); `0` for a

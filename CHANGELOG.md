@@ -23,6 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `Font::palette_label` / `Font::palette_entry_label` resolve
   the labels through the `name` table (IDs 23/24 pair with the
   light/dark palette types).
+- **sbix standard bitmap graphics table**: new `tables::sbix` module
+  and `Font::sbix()`. Strikes (PPEM + PPI targeted) expose per-glyph
+  graphics through the `glyphDataOffsets[numGlyphs + 1]` array
+  (zero-length = no bitmap), with origin offsets, typed
+  `graphicType` (`'png '` / `'jpg '` / `'tiff'`, the `'dupe'`
+  glyph-ID redirect — followed with cycle protection by
+  `glyph_graphic_resolved` — and unknown tags surfaced as-is), and
+  the draw-outlines flag. `SbixTable::best_strike` implements the
+  §5.6.7.2 closest-available-larger-size recommendation and
+  `Font::sbix_glyph(gid, ppem)` chains selection + dupe resolution.
+  Raw PNG/JPEG/TIFF payload bytes are surfaced; image decoding stays
+  with the image codec crates.
 - **COLR → CPAL color resolution**: the paint graph's palette indices
   now resolve to concrete render-ready colors. `resolve_paint_color`
   maps a `(paletteIndex, alpha)` pair to a `ResolvedColor` (sRGB
