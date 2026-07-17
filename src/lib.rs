@@ -30,11 +30,25 @@
 #![warn(rust_2018_idioms)]
 
 pub mod agl;
+// internal — exposed for tests/fuzz; not part of the stable API
+// (the stable CFF surface — `PrivateHints`, `RegistryOrdering`,
+// `TopMetadata` — is re-exported at the crate root below).
+#[doc(hidden)]
 pub mod cff;
+// internal — exposed for tests/fuzz; not part of the stable API
+// (the stable CFF2 surface — `Cff2`, `ItemVariationStore`,
+// `VariationRegion`, … — is re-exported at the crate root below).
+#[doc(hidden)]
 pub mod cff2;
 pub mod feature_tags;
 pub mod outline;
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub mod parser;
+// internal — exposed for tests/fuzz; not part of the stable API
+// (the stable shaping surface — `FeatureSetting`, `ShapeOptions`,
+// `ShapedGlyph` — is re-exported at the crate root below).
+#[doc(hidden)]
 pub mod shape;
 pub mod tables;
 pub mod unicode_script;
@@ -1288,6 +1302,8 @@ impl<'a> Font<'a> {
     /// Borrow the CFF1 table view, or `None` for CFF2 fonts. Mostly for
     /// tests and advanced callers; the higher-level accessors on
     /// `Font` route through this internally.
+    // internal — exposed for tests/fuzz; not part of the stable API
+    #[doc(hidden)]
     pub fn cff(&self) -> Option<&Cff<'a>> {
         self.cff1()
     }

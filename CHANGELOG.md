@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- Internal public surface is now `#[doc(hidden)]` (the `cff` / `cff2` / `parser` / `shape` modules and most `tables::*` submodules); the stable API is `Font`, `Error`, the crate-root re-exports, and the `agl` / `feature_tags` / `outline` / `unicode_script` / `tables::{gdef,name,os2}` modules — attributes only, no semantic or signature changes.
 - **CPAL palette table (versions 0 and 1)**: new `tables::cpal`
   module and `Font::cpal()`. Palettes resolve
   `(paletteIndex, entryIndex)` to sRGB `ColorRecord`s (BGRA on disk,
