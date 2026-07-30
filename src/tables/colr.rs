@@ -237,6 +237,145 @@ impl ColorLine {
             .map(|s| Some((s.stop_offset, s.resolve(cpal, palette, foreground)?)))
             .collect()
     }
+
+    /// The interpolated color at `position` on the color line, per the
+    /// `CPAL` chapter's "Interpolation of colors" rules (see
+    /// [`PremultipliedLinearColor`]): every stop is resolved against
+    /// the palette, linearized with `linearize`, premultiplied, and
+    /// the two stops bracketing `position` are linearly interpolated
+    /// by `(position - first) / (second - first)`.
+    ///
+    /// A position at or before the first stop yields the first stop's
+    /// color; at or past the last stop, the last stop's (the
+    /// nearest-stop behavior of [`Extend::Pad`]; `Repeat` / `Reflect`
+    /// positions outside `[0, 1]` must be remapped into the stop range
+    /// by the renderer before calling). Same-offset adjacent stops
+    /// produce a hard transition: the later stop wins from its offset
+    /// on. `None` when the line has no stops or a stop's
+    /// `palette_index` is out of the palette's range.
+    pub fn interpolate_at(
+        &self,
+        position: f32,
+        cpal: &CpalTable<'_>,
+        palette: u16,
+        foreground: ColorRecord,
+        linearize: impl Fn(f32) -> f32,
+    ) -> Option<PremultipliedLinearColor> {
+        let last = self.stops.last()?;
+        // Stops are kept ascending by offset; find the bracketing pair.
+        let mut prev = self.stops.first()?;
+        if position <= prev.stop_offset {
+            return Some(
+                prev.resolve(cpal, palette, foreground)?
+                    .premultiply_linear(&linearize),
+            );
+        }
+        for stop in &self.stops[1..] {
+            if position < stop.stop_offset {
+                let a = prev
+                    .resolve(cpal, palette, foreground)?
+                    .premultiply_linear(&linearize);
+                let b = stop
+                    .resolve(cpal, palette, foreground)?
+                    .premultiply_linear(&linearize);
+                // Chapter example: between stops at 0.5 and 0.9, the
+                // interpolation weight at 0.8 is (0.8-0.5)/(0.9-0.5) =
+                // 0.75. The chapter's prose attributes that 75% to the
+                // *first* stop, but linear interpolation must be
+                // continuous at the stops themselves (at position 0.9
+                // the color is the second stop's, weight 1), so the
+                // formula's weight belongs to the second stop — the
+                // prose labels are read as transposed.
+                let t = (position - prev.stop_offset) / (stop.stop_offset - prev.stop_offset);
+                return Some(a.lerp(&b, t));
+            }
+            prev = stop;
+        }
+        Some(
+            last.resolve(cpal, palette, foreground)?
+                .premultiply_linear(&linearize),
+        )
+    }
+}
+
+/// A color in the working representation the `CPAL` chapter's
+/// "Interpolation of colors" section prescribes for `COLR` (and SVG)
+/// gradient color lines: each sRGB channel is converted to a `[0, 1]`
+/// fraction, **linearized** (the inverse sRGB transfer function
+/// applied, yielding linear-light values), and **premultiplied** by
+/// the color's effective alpha. Alpha itself is linear and carried
+/// unmultiplied.
+///
+/// Per the chapter, `COLR` gradient interpolation *must* be computed
+/// on these premultiplied linear-light values (for SVG documents the
+/// `color-interpolation` property selects the scale, defaulting to
+/// non-linear sRGB). The sRGB transfer function itself is defined in
+/// IEC 61966-2-1 / CSS Color Module Level 4 §10.2 — the chapter
+/// references it without restating it — so linearization is supplied
+/// by the caller (`linearize` takes and returns a `[0, 1]` channel
+/// fraction; pass the identity to interpolate on the non-linear
+/// scale).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PremultipliedLinearColor {
+    /// Linear-light red, premultiplied by `alpha`.
+    pub red: f32,
+    /// Linear-light green, premultiplied by `alpha`.
+    pub green: f32,
+    /// Linear-light blue, premultiplied by `alpha`.
+    pub blue: f32,
+    /// Alpha in `[0, 1]` (linear scale, not premultiplied).
+    pub alpha: f32,
+}
+
+impl PremultipliedLinearColor {
+    /// Linear interpolation toward `other`: `self` at `t = 0`, `other`
+    /// at `t = 1`. All four components interpolate directly — the
+    /// chapter notes alpha "can be directly interpolated apart from
+    /// the R, G and B components without any linearization step".
+    pub fn lerp(&self, other: &Self, t: f32) -> Self {
+        let l = |a: f32, b: f32| a + (b - a) * t;
+        PremultipliedLinearColor {
+            red: l(self.red, other.red),
+            green: l(self.green, other.green),
+            blue: l(self.blue, other.blue),
+            alpha: l(self.alpha, other.alpha),
+        }
+    }
+
+    /// Un-premultiply: the linear-light `[r, g, b]` channels divided
+    /// by the alpha (the chapter's post-interpolation step). All-zero
+    /// when `alpha == 0` (fully transparent — the premultiplied
+    /// channels are zero too). Whether the non-linear sRGB transfer
+    /// function is then re-applied "is determined by the requirements
+    /// of the implementation context".
+    pub fn unpremultiplied_linear(&self) -> [f32; 3] {
+        if self.alpha == 0.0 {
+            [0.0, 0.0, 0.0]
+        } else {
+            [
+                self.red / self.alpha,
+                self.green / self.alpha,
+                self.blue / self.alpha,
+            ]
+        }
+    }
+}
+
+impl ResolvedColor {
+    /// Convert to the premultiplied linear-light working form:
+    /// channels to `[0, 1]` fractions, `linearize` applied to each,
+    /// then multiplied by the effective alpha (the chapter's
+    /// linearize-then-premultiply order).
+    pub fn premultiply_linear(&self, linearize: impl Fn(f32) -> f32) -> PremultipliedLinearColor {
+        let a = self.alpha.clamp(0.0, 1.0);
+        let ch = |v: u8| linearize(v as f32 / 255.0) * a;
+        PremultipliedLinearColor {
+            red: ch(self.red),
+            green: ch(self.green),
+            blue: ch(self.blue),
+            alpha: a,
+        }
+    }
 }
 
 /// A 2×3 affine transformation matrix (`Affine2x3` / `VarAffine2x3`).

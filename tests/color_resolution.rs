@@ -4,7 +4,7 @@
 //! foreground sentinel (§5.7.11 "Relationship to COLR and SVG Tables"
 //! + the COLR paint-graph alpha rule).
 
-use oxideav_otf::tables::colr::ColrTable;
+use oxideav_otf::tables::colr::{ColrTable, PremultipliedLinearColor, ResolvedColor};
 use oxideav_otf::tables::cpal::{ColorRecord, CpalTable};
 use oxideav_otf::{resolve_paint_color, Paint, COLR_FOREGROUND_PALETTE_INDEX};
 
@@ -226,6 +226,145 @@ fn out_of_range_palette_entry_is_a_malformed_color_glyph() {
         resolve_paint_color(&cpal, 0, palette_index, alpha, FG),
         None
     );
+}
+
+/// A stand-in invertible transfer function for testing the
+/// linearize/premultiply pipeline (the real sRGB transfer function is
+/// defined in IEC 61966-2-1 / CSS Color 4 §10.2, outside the staged
+/// chapter): linear = v².
+fn square(v: f32) -> f32 {
+    v * v
+}
+
+#[test]
+fn interpolation_weights_follow_the_chapter_example() {
+    // Chapter worked example: adjacent stops at 0.5 and 0.9, query at
+    // 0.8 — the interpolation weight is (0.8-0.5)/(0.9-0.5) = 0.75
+    // toward the second stop (linear interpolation is continuous at
+    // the stops). Identity transfer, both stops opaque, so channels
+    // interpolate directly.
+    let a = ResolvedColor {
+        red: 200,
+        green: 0,
+        blue: 100,
+        alpha: 1.0,
+    };
+    let b = ResolvedColor {
+        red: 40,
+        green: 255,
+        blue: 100,
+        alpha: 1.0,
+    };
+    let pa = a.premultiply_linear(|v| v);
+    let pb = b.premultiply_linear(|v| v);
+    let mid = pa.lerp(&pb, 0.75);
+    let want = |x: u8, y: u8| (x as f32 / 255.0) * 0.25 + (y as f32 / 255.0) * 0.75;
+    assert!((mid.red - want(200, 40)).abs() < 1e-6);
+    assert!((mid.green - want(0, 255)).abs() < 1e-6);
+    assert!((mid.blue - want(100, 100)).abs() < 1e-6);
+    assert!((mid.alpha - 1.0).abs() < 1e-6);
+    // Endpoint continuity: t = 0 is the first stop, t = 1 the second.
+    assert_eq!(pa.lerp(&pb, 0.0), pa);
+    let end = pa.lerp(&pb, 1.0);
+    for (got, want) in [
+        (end.red, pb.red),
+        (end.green, pb.green),
+        (end.blue, pb.blue),
+        (end.alpha, pb.alpha),
+    ] {
+        assert!((got - want).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn premultiplied_interpolation_weights_channels_by_alpha() {
+    // Fully transparent red toward opaque blue at t = 0.5: alpha
+    // premultiplication zeroes the transparent stop's channels, so the
+    // midpoint is pure blue at half strength; un-premultiplying by the
+    // interpolated alpha (0.5) recovers full blue.
+    let a = ResolvedColor {
+        red: 255,
+        green: 0,
+        blue: 0,
+        alpha: 0.0,
+    };
+    let b = ResolvedColor {
+        red: 0,
+        green: 0,
+        blue: 255,
+        alpha: 1.0,
+    };
+    let mid = a
+        .premultiply_linear(|v| v)
+        .lerp(&b.premultiply_linear(|v| v), 0.5);
+    assert!((mid.alpha - 0.5).abs() < 1e-6);
+    assert!((mid.red - 0.0).abs() < 1e-6);
+    assert!((mid.blue - 0.5).abs() < 1e-6);
+    let un = mid.unpremultiplied_linear();
+    assert!((un[2] - 1.0).abs() < 1e-6);
+    assert!((un[0] - 0.0).abs() < 1e-6);
+    // alpha == 0 un-premultiplies to all-zero, not NaN.
+    let zero = a.premultiply_linear(|v| v);
+    assert_eq!(zero.unpremultiplied_linear(), [0.0, 0.0, 0.0]);
+}
+
+#[test]
+fn linearization_applies_before_premultiplication() {
+    let c = ResolvedColor {
+        red: 128,
+        green: 0,
+        blue: 255,
+        alpha: 0.5,
+    };
+    let p = c.premultiply_linear(square);
+    let frac = 128.0 / 255.0;
+    assert!((p.red - square(frac) * 0.5).abs() < 1e-6);
+    assert!((p.blue - 1.0 * 0.5).abs() < 1e-6);
+    // Alpha is carried on a linear scale, untouched by the transfer
+    // function.
+    assert!((p.alpha - 0.5).abs() < 1e-6);
+}
+
+#[test]
+fn color_line_interpolate_at_walks_the_stops() {
+    let cpal_b = cpal_bytes();
+    let cpal = CpalTable::parse(&cpal_b).unwrap();
+    let colr_b = colr_v1_bytes(0, 1.0);
+    let colr = ColrTable::parse(&colr_b).unwrap();
+    let root = colr.base_glyph_paint(6).unwrap();
+    let Paint::LinearGradient { color_line, .. } = colr.paint(root, None).unwrap() else {
+        panic!("expected PaintLinearGradient");
+    };
+    // Stops: 0.0 = entry 1 (green, CPAL alpha 0x80), 1.0 = foreground
+    // (0x11 0x22 0x33) x paint alpha 0.5.
+    let at = |pos: f32| -> PremultipliedLinearColor {
+        color_line.interpolate_at(pos, &cpal, 0, FG, |v| v).unwrap()
+    };
+    let a0 = 0x80 as f32 / 255.0;
+    // At (and before) the first stop: the first stop's premultiplied
+    // color.
+    for pos in [-0.5, 0.0] {
+        let c = at(pos);
+        assert!((c.green - a0).abs() < 1e-4);
+        assert!((c.alpha - a0).abs() < 1e-4);
+        assert!((c.red - 0.0).abs() < 1e-6);
+    }
+    // At (and past) the last stop: the foreground stop at alpha 0.5.
+    for pos in [1.0, 2.0] {
+        let c = at(pos);
+        assert!((c.alpha - 0.5).abs() < 1e-4);
+        assert!((c.red - (0x11 as f32 / 255.0) * 0.5).abs() < 1e-4);
+    }
+    // Halfway: each component the mean of the premultiplied endpoints.
+    let mid = at(0.5);
+    let g0 = a0; // green channel of stop 0, premultiplied (255/255 * a0)
+    let g1 = (0x22 as f32 / 255.0) * 0.5;
+    assert!((mid.green - (g0 + g1) / 2.0).abs() < 1e-4);
+    assert!((mid.alpha - (a0 + 0.5) / 2.0).abs() < 1e-4);
+    // Out-of-range palette: None.
+    assert!(color_line
+        .interpolate_at(0.5, &cpal, 9, FG, |v| v)
+        .is_none());
 }
 
 #[test]

@@ -1,5 +1,5 @@
-//! `CPAL` — Palette Table (ISO/IEC 14496-22:2019 §5.7.12), versions 0
-//! and 1.
+//! `CPAL` — Palette Table (ISO/IEC 14496-22:2019 §5.7.12; the staged
+//! chapter `docs/text/opentype/otspec-cpal.html`), versions 0 and 1.
 //!
 //! The palette table is a set of one or more palettes, each containing
 //! the same number (`numPaletteEntries`) of color records with BGRA
@@ -34,6 +34,10 @@ pub const CPAL_USABLE_WITH_LIGHT_BACKGROUND: u32 = 0x0001;
 /// dark background such as black. Not mutually exclusive with the
 /// light-background flag.
 pub const CPAL_USABLE_WITH_DARK_BACKGROUND: u32 = 0x0002;
+/// `paletteTypes` bits 2..: reserved for future use — set to 0 per the
+/// `CPAL` chapter.
+pub const CPAL_PALETTE_TYPE_RESERVED: u32 =
+    !(CPAL_USABLE_WITH_LIGHT_BACKGROUND | CPAL_USABLE_WITH_DARK_BACKGROUND);
 
 /// `paletteLabels` / `paletteEntryLabels` sentinel: no `name`-table ID
 /// is provided for this palette / entry.
@@ -81,6 +85,14 @@ impl PaletteType {
     /// Bit 1 — palette is appropriate on a dark background.
     pub fn usable_with_dark_background(self) -> bool {
         self.0 & CPAL_USABLE_WITH_DARK_BACKGROUND != 0
+    }
+
+    /// The reserved flag bits (everything above bit 1), which the spec
+    /// requires to be 0. Non-zero values come from a future spec
+    /// revision (or a malformed font) and are surfaced rather than
+    /// rejected.
+    pub fn reserved_bits(self) -> u32 {
+        self.0 & CPAL_PALETTE_TYPE_RESERVED
     }
 }
 

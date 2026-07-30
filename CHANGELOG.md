@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- **Gradient color interpolation per the staged `CPAL` chapter**
+  (`docs/text/opentype/otspec-cpal.html`, "Interpolation of colors"):
+  new `PremultipliedLinearColor` working form —
+  `ResolvedColor::premultiply_linear` linearizes each sRGB channel
+  fraction (the inverse-transfer function is caller-supplied: the sRGB
+  transfer function itself is defined in IEC 61966-2-1 / CSS Color 4
+  §10.2, which the chapter references without restating) and
+  premultiplies by the effective alpha; `lerp` interpolates all four
+  components (alpha directly, per the chapter note);
+  `unpremultiplied_linear` divides the channels back out (all-zero at
+  alpha 0). `ColorLine::interpolate_at` walks the sorted stops and
+  applies the chapter's bracketing-stop weight
+  `(position − first) / (second − first)` with nearest-stop behavior
+  outside the range (the chapter's prose attributes the example's 75%
+  weight to the first stop; continuity at the stops requires it on the
+  second, so the labels are read as transposed). `CPAL` additions:
+  `PaletteType::reserved_bits` / `CPAL_PALETTE_TYPE_RESERVED` surface
+  the must-be-zero reserved flag bits.
 - **ItemVariationStore aligned with the now-staged variations
   common-formats chapter**
   (`docs/text/opentype/otspec-otvarcommonformats.html`): the
