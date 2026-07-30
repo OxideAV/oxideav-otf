@@ -206,6 +206,212 @@ impl BaseTable {
     }
 }
 
+// ---- baseline-tag registry + ideographic em-box / ICF ----------------------
+
+/// The registered baseline tags (staged registry
+/// `docs/text/opentype/registries/baseline-tags.html`):
+/// `(tag, HorizAxis meaning, VertAxis meaning)`. A tag means one
+/// thing per layout direction — e.g. `ideo` is the ideographic
+/// em-box **bottom** edge in `HorizAxis` and its **left** edge in
+/// `VertAxis`.
+pub const REGISTERED_BASELINE_TAGS: &[([u8; 4], &str, &str)] = &[
+    (
+        *b"hang",
+        "hanging baseline (syllables hang from it in Tibetan and similar scripts)",
+        "hanging baseline for characters rotated 90 degrees clockwise",
+    ),
+    (
+        *b"icfb",
+        "ideographic character face bottom edge",
+        "ideographic character face left edge",
+    ),
+    (
+        *b"icft",
+        "ideographic character face top edge",
+        "ideographic character face right edge",
+    ),
+    (
+        *b"ideo",
+        "ideographic em-box bottom edge",
+        "ideographic em-box left edge (must be 0 when present)",
+    ),
+    (
+        *b"idtp",
+        "ideographic em-box top edge",
+        "ideographic em-box right edge (recommended: head.unitsPerEm)",
+    ),
+    (
+        *b"math",
+        "baseline about which mathematical characters are centered",
+        "the same, for formulas rotated 90 degrees clockwise",
+    ),
+    (
+        *b"romn",
+        "baseline of alphabetic scripts (Latin, Cyrillic, Greek)",
+        "alphabetic baseline for characters rotated 90 degrees clockwise",
+    ),
+];
+
+/// Whether `tag` is a registered baseline tag.
+pub fn is_registered_baseline_tag(tag: [u8; 4]) -> bool {
+    REGISTERED_BASELINE_TAGS.iter().any(|(t, _, _)| *t == tag)
+}
+
+/// A font's **ideographic em-box** for one script: the rectangle
+/// defining the standard escapement around full-width ideographic
+/// glyphs, in design units (baseline-tags registry, "Ideographic
+/// em-box"). Usually a square, but may be vertically condensed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdeoEmBox {
+    /// Left edge — always 0 by definition.
+    pub left: i32,
+    /// Bottom edge (`HorizAxis.ideo`, or `OS/2.sTypoDescender` for a
+    /// CJK font without one).
+    pub bottom: i32,
+    /// Right edge (`VertAxis.idtp`, defaulting to `head.unitsPerEm`).
+    pub right: i32,
+    /// Top edge (`HorizAxis.idtp`, defaulting to
+    /// `HorizAxis.ideo + head.unitsPerEm`, or `OS/2.sTypoAscender`
+    /// for the CJK fallback).
+    pub top: i32,
+}
+
+impl IdeoEmBox {
+    /// The horizontal-axis center baseline: halfway between top and
+    /// bottom, rounded to the design unit nearest 0 (the registry's
+    /// division rule).
+    pub fn horizontal_center(&self) -> i32 {
+        (self.top + self.bottom) / 2
+    }
+
+    /// The vertical-axis center baseline: halfway between left and
+    /// right, rounded to the design unit nearest 0.
+    pub fn vertical_center(&self) -> i32 {
+        (self.left + self.right) / 2
+    }
+}
+
+/// A font's **ideographic character face** (ICF) box for one script:
+/// the average/approximate bounding box of its ideographic glyphs,
+/// in design units (baseline-tags registry, "Ideographic character
+/// face"). The margin left over inside the ideographic em-box is the
+/// font's default escapement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IcfBox {
+    /// Left edge (`VertAxis.icfb`, defaulting to the bottom margin).
+    pub left: i32,
+    /// Bottom edge (`HorizAxis.icfb` — the minimum required datum).
+    pub bottom: i32,
+    /// Right edge (`VertAxis.icft`, defaulting to
+    /// `ideoEmboxRight - icfLeft`).
+    pub right: i32,
+    /// Top edge (`HorizAxis.icft`, defaulting to
+    /// `ideoEmboxTop - margin`).
+    pub top: i32,
+}
+
+impl IcfBox {
+    /// The horizontal-axis ICF center: halfway between top and
+    /// bottom, rounded toward 0.
+    pub fn horizontal_center(&self) -> i32 {
+        (self.top + self.bottom) / 2
+    }
+
+    /// The vertical-axis ICF center: halfway between left and right,
+    /// rounded toward 0.
+    pub fn vertical_center(&self) -> i32 {
+        (self.left + self.right) / 2
+    }
+}
+
+impl BaseTable {
+    /// Derive the ideographic em-box for `script_tag` per the
+    /// baseline-tags registry algorithm.
+    ///
+    /// `cjk_fallback` carries `(OS/2.sTypoDescender,
+    /// OS/2.sTypoAscender)` **when the font is CJK** (the registry
+    /// suggests deciding via the `meta` table's `dlng` entry, the
+    /// CJK `OS/2.ulUnicodeRange` bits, or `OS/2.ulCodePageRange`) —
+    /// it is used only when `HorizAxis.ideo` is absent; pass `None`
+    /// for a non-CJK font. Returns `None` when the em-box cannot be
+    /// determined.
+    ///
+    /// A non-zero `VertAxis.ideo` is a bad value per the registry
+    /// ("must be set to 0"); the left edge is 0 regardless.
+    pub fn ideographic_em_box(
+        &self,
+        script_tag: &[u8; 4],
+        units_per_em: u16,
+        cjk_fallback: Option<(i16, i16)>,
+    ) -> Option<IdeoEmBox> {
+        let upem = units_per_em as i32;
+        let horiz = |tag: &[u8; 4]| self.baseline_coord(BaseAxis::Horizontal, script_tag, tag);
+        let vert = |tag: &[u8; 4]| self.baseline_coord(BaseAxis::Vertical, script_tag, tag);
+        if let Some(ideo) = horiz(b"ideo") {
+            let bottom = ideo as i32;
+            let top = match horiz(b"idtp") {
+                Some(idtp) => idtp as i32,
+                None => bottom + upem,
+            };
+            let right = match vert(b"idtp") {
+                Some(idtp) => idtp as i32,
+                None => upem,
+            };
+            Some(IdeoEmBox {
+                left: 0,
+                bottom,
+                right,
+                top,
+            })
+        } else if let Some((descender, ascender)) = cjk_fallback {
+            Some(IdeoEmBox {
+                left: 0,
+                bottom: descender as i32,
+                right: upem,
+                top: ascender as i32,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Derive the ideographic character face box for `script_tag`
+    /// per the baseline-tags registry algorithm, given the already-
+    /// derived ideographic em-box. `HorizAxis.icfb` is the minimum
+    /// required datum; the other three edges default from the em-box
+    /// and the bottom margin. Returns `None` when the font records
+    /// no ICF information.
+    pub fn ideographic_character_face(
+        &self,
+        script_tag: &[u8; 4],
+        em_box: &IdeoEmBox,
+    ) -> Option<IcfBox> {
+        let horiz = |tag: &[u8; 4]| self.baseline_coord(BaseAxis::Horizontal, script_tag, tag);
+        let vert = |tag: &[u8; 4]| self.baseline_coord(BaseAxis::Vertical, script_tag, tag);
+        let icfb = horiz(b"icfb")?;
+        let bottom = icfb as i32;
+        let margin = bottom - em_box.bottom;
+        let top = match horiz(b"icft") {
+            Some(icft) => icft as i32,
+            None => em_box.top - margin,
+        };
+        let left = match vert(b"icfb") {
+            Some(icfb) => icfb as i32,
+            None => margin,
+        };
+        let right = match vert(b"icft") {
+            Some(icft) => icft as i32,
+            None => em_box.right - left,
+        };
+        Some(IcfBox {
+            left,
+            bottom,
+            right,
+            top,
+        })
+    }
+}
+
 fn parse_axis(bytes: &[u8], off: usize) -> Result<AxisTable, Error> {
     if off + 4 > bytes.len() {
         return Err(Error::UnexpectedEof);
@@ -384,5 +590,191 @@ mod tests {
         let mut b = vec![0u8; 8];
         b[0..2].copy_from_slice(&2u16.to_be_bytes());
         assert!(matches!(BaseTable::parse(&b), Err(Error::BadStructure(_))));
+    }
+
+    /// Generic builder: one script ('hani') per axis with the given
+    /// `(baseline tag, coord)` lists; either axis may be empty
+    /// (NULL offset).
+    fn build_axes(horiz: &[([u8; 4], i16)], vert: &[([u8; 4], i16)]) -> Vec<u8> {
+        fn axis_blob(entries: &[([u8; 4], i16)]) -> Vec<u8> {
+            let n = entries.len();
+            let tag_list_off = 4usize;
+            let tag_list_len = 2 + 4 * n;
+            let script_list_off = tag_list_off + tag_list_len;
+            let script_list_len = 2 + 6;
+            let base_script_off = script_list_off + script_list_len;
+            let base_script_len = 6;
+            let base_values_off = base_script_off + base_script_len;
+            let base_values_len = 4 + 2 * n;
+            let coords_off = base_values_off + base_values_len;
+            let mut a = vec![0u8; coords_off + 4 * n];
+            a[0..2].copy_from_slice(&(tag_list_off as u16).to_be_bytes());
+            a[2..4].copy_from_slice(&(script_list_off as u16).to_be_bytes());
+            a[tag_list_off..tag_list_off + 2].copy_from_slice(&(n as u16).to_be_bytes());
+            for (i, (tag, _)) in entries.iter().enumerate() {
+                let at = tag_list_off + 2 + i * 4;
+                a[at..at + 4].copy_from_slice(tag);
+            }
+            a[script_list_off..script_list_off + 2].copy_from_slice(&1u16.to_be_bytes());
+            a[script_list_off + 2..script_list_off + 6].copy_from_slice(b"hani");
+            let rec = (base_script_off - script_list_off) as u16;
+            a[script_list_off + 6..script_list_off + 8].copy_from_slice(&rec.to_be_bytes());
+            let bv = (base_values_off - base_script_off) as u16;
+            a[base_script_off..base_script_off + 2].copy_from_slice(&bv.to_be_bytes());
+            a[base_values_off..base_values_off + 2].copy_from_slice(&0u16.to_be_bytes());
+            a[base_values_off + 2..base_values_off + 4].copy_from_slice(&(n as u16).to_be_bytes());
+            for (i, (_, coord)) in entries.iter().enumerate() {
+                let off_at = base_values_off + 4 + i * 2;
+                let c_off = (coords_off + i * 4 - base_values_off) as u16;
+                a[off_at..off_at + 2].copy_from_slice(&c_off.to_be_bytes());
+                let c_at = coords_off + i * 4;
+                a[c_at..c_at + 2].copy_from_slice(&1u16.to_be_bytes());
+                a[c_at + 2..c_at + 4].copy_from_slice(&coord.to_be_bytes());
+            }
+            a
+        }
+        let mut b = vec![0u8; 8];
+        b[0..2].copy_from_slice(&1u16.to_be_bytes());
+        let mut at = 8usize;
+        if !horiz.is_empty() {
+            b[4..6].copy_from_slice(&(at as u16).to_be_bytes());
+            let blob = axis_blob(horiz);
+            at += blob.len();
+            b.extend_from_slice(&blob);
+        }
+        if !vert.is_empty() {
+            b[6..8].copy_from_slice(&(at as u16).to_be_bytes());
+            b.extend_from_slice(&axis_blob(vert));
+        }
+        b
+    }
+
+    #[test]
+    fn baseline_tag_registry() {
+        assert_eq!(REGISTERED_BASELINE_TAGS.len(), 7);
+        for tag in [
+            b"hang", b"icfb", b"icft", b"ideo", b"idtp", b"math", b"romn",
+        ] {
+            assert!(is_registered_baseline_tag(*tag));
+        }
+        assert!(!is_registered_baseline_tag(*b"latn"));
+    }
+
+    /// The registry's Kozuka Mincho example: 1000-unit em,
+    /// HorizAxis.ideo = -120 recorded alone describes the square
+    /// em-box (0, -120)..(1000, 880); adding HorizAxis.idtp = 880 is
+    /// equivalent.
+    #[test]
+    fn ideo_em_box_registry_example() {
+        for entries in [
+            &[(*b"ideo", -120i16)][..],
+            &[(*b"ideo", -120), (*b"idtp", 880)][..],
+        ] {
+            let bytes = build_axes(entries, &[]);
+            let base = BaseTable::parse(&bytes).unwrap();
+            let em = base.ideographic_em_box(b"hani", 1000, None).unwrap();
+            assert_eq!(
+                em,
+                IdeoEmBox {
+                    left: 0,
+                    bottom: -120,
+                    right: 1000,
+                    top: 880
+                }
+            );
+            assert_eq!(em.horizontal_center(), 380);
+            assert_eq!(em.vertical_center(), 500);
+        }
+        // VertAxis.idtp overrides the right edge.
+        let bytes = build_axes(&[(*b"ideo", -120)], &[(*b"idtp", 950)]);
+        let base = BaseTable::parse(&bytes).unwrap();
+        let em = base.ideographic_em_box(b"hani", 1000, None).unwrap();
+        assert_eq!(em.right, 950);
+        // Center division rounds toward 0 (registry rule): top 881,
+        // bottom -120 -> 761 / 2 = 380 (not 380.5 rounded up).
+        let bytes = build_axes(&[(*b"ideo", -120), (*b"idtp", 881)], &[]);
+        let base = BaseTable::parse(&bytes).unwrap();
+        assert_eq!(
+            base.ideographic_em_box(b"hani", 1000, None)
+                .unwrap()
+                .horizontal_center(),
+            380
+        );
+    }
+
+    #[test]
+    fn ideo_em_box_cjk_fallback() {
+        // No HorizAxis.ideo: a CJK font falls back to the OS/2 typo
+        // metrics (the registry example's -120 / 880 pair).
+        let bytes = build_axes(&[(*b"romn", 0)], &[]);
+        let base = BaseTable::parse(&bytes).unwrap();
+        let em = base
+            .ideographic_em_box(b"hani", 1000, Some((-120, 880)))
+            .unwrap();
+        assert_eq!(
+            em,
+            IdeoEmBox {
+                left: 0,
+                bottom: -120,
+                right: 1000,
+                top: 880
+            }
+        );
+        // Non-CJK without HorizAxis.ideo: undeterminable.
+        assert!(base.ideographic_em_box(b"hani", 1000, None).is_none());
+        // Unknown script: HorizAxis.ideo lookup fails; fallback still
+        // applies for a CJK font.
+        assert!(base
+            .ideographic_em_box(b"grek", 1000, Some((-120, 880)))
+            .is_some());
+    }
+
+    /// The registry's Kozuka Mincho Extra Light ICF example: with the
+    /// em-box (0, -120)..(1000, 880), recording only
+    /// HorizAxis.icfb = -79 derives margin 41 and the full box
+    /// VertAxis.icfb = 41, HorizAxis.icft = 839, VertAxis.icft = 959.
+    #[test]
+    fn icf_registry_example() {
+        let em = IdeoEmBox {
+            left: 0,
+            bottom: -120,
+            right: 1000,
+            top: 880,
+        };
+        // Minimal recording.
+        let bytes = build_axes(&[(*b"ideo", -120), (*b"icfb", -79)], &[]);
+        let base = BaseTable::parse(&bytes).unwrap();
+        let icf = base.ideographic_character_face(b"hani", &em).unwrap();
+        assert_eq!(
+            icf,
+            IcfBox {
+                left: 41,
+                bottom: -79,
+                right: 959,
+                top: 839
+            }
+        );
+        // Full recording (the Heavy example): identical derivation.
+        let bytes = build_axes(
+            &[(*b"ideo", -120), (*b"icfb", -94), (*b"icft", 854)],
+            &[(*b"icfb", 26), (*b"icft", 974)],
+        );
+        let base = BaseTable::parse(&bytes).unwrap();
+        let icf = base.ideographic_character_face(b"hani", &em).unwrap();
+        assert_eq!(
+            icf,
+            IcfBox {
+                left: 26,
+                bottom: -94,
+                right: 974,
+                top: 854
+            }
+        );
+        assert_eq!(icf.horizontal_center(), 380);
+        assert_eq!(icf.vertical_center(), 500);
+        // No HorizAxis.icfb: no ICF information.
+        let bytes = build_axes(&[(*b"ideo", -120)], &[]);
+        let base = BaseTable::parse(&bytes).unwrap();
+        assert!(base.ideographic_character_face(b"hani", &em).is_none());
     }
 }

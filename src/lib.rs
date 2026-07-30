@@ -1272,6 +1272,64 @@ impl<'a> Font<'a> {
             .baseline_coord(axis, script_tag, baseline_tag)
     }
 
+    /// Heuristic CJK-font test per the baseline-tags registry's
+    /// guidance ("checking … the CJK-related bits of the
+    /// OS/2.ulUnicodeRange fields"): whether any of the CJK
+    /// `ulUnicodeRange` bits is set — 48 CJK Symbols And Punctuation,
+    /// 49 Hiragana, 50 Katakana, 51 Bopomofo, 52 Hangul Compatibility
+    /// Jamo, 54 Enclosed CJK Letters And Months, 55 CJK Compatibility,
+    /// 56 Hangul Syllables, 59 CJK Unified Ideographs, 61 CJK Strokes.
+    /// `false` without an `OS/2` table.
+    pub fn is_cjk_font(&self) -> bool {
+        let Some(os2) = self.os2.as_ref() else {
+            return false;
+        };
+        [48u8, 49, 50, 51, 52, 54, 55, 56, 59, 61]
+            .iter()
+            .any(|&bit| os2.has_unicode_range_bit(bit))
+    }
+
+    /// The ideographic em-box for a script, derived per the
+    /// baseline-tags registry algorithm: `HorizAxis.ideo` /
+    /// `HorizAxis.idtp` / `VertAxis.idtp` with `head.unitsPerEm`
+    /// defaults, falling back to `OS/2.sTypoDescender` /
+    /// `sTypoAscender` when the font [`is_cjk_font`](Self::is_cjk_font)
+    /// but records no `HorizAxis.ideo`. `None` when it cannot be
+    /// determined.
+    pub fn ideographic_em_box(&self, script_tag: &[u8; 4]) -> Option<tables::base::IdeoEmBox> {
+        let upem = self.units_per_em();
+        let cjk_fallback = if self.is_cjk_font() {
+            Some((self.typo_descender()?, self.typo_ascender()?))
+        } else {
+            None
+        };
+        match self.base.as_ref() {
+            Some(base) => base.ideographic_em_box(script_tag, upem, cjk_fallback),
+            // No BASE table at all: the CJK OS/2 fallback still
+            // applies (the registry's "Else If this is a CJK font"
+            // arm does not require BASE data).
+            None => cjk_fallback.map(|(descender, ascender)| tables::base::IdeoEmBox {
+                left: 0,
+                bottom: descender as i32,
+                right: upem as i32,
+                top: ascender as i32,
+            }),
+        }
+    }
+
+    /// The ideographic character face (ICF) box for a script, derived
+    /// per the baseline-tags registry algorithm from `HorizAxis.icfb`
+    /// (the minimum required datum) with the other edges defaulting
+    /// from the ideographic em-box and the bottom margin. `None` when
+    /// the font records no ICF information (or no em-box can be
+    /// determined).
+    pub fn ideographic_character_face(&self, script_tag: &[u8; 4]) -> Option<tables::base::IcfBox> {
+        let em = self.ideographic_em_box(script_tag)?;
+        self.base
+            .as_ref()?
+            .ideographic_character_face(script_tag, &em)
+    }
+
     // ---- vertical origin (VORG) -------------------------------------------
 
     /// The `VORG` table view, if present.

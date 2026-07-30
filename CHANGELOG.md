@@ -57,6 +57,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   text order with whole-text character-index clusters. Latin/Greek/
   Cyrillic detection is validated end-to-end over the Source Sans 3
   fixture against explicit-tag shaping.
+- **Baseline-tag registry + ideographic em-box / ICF derivation**
+  (staged `registries/baseline-tags.html`): the seven registered
+  baseline tags with their per-axis meanings
+  (`tables::base::REGISTERED_BASELINE_TAGS` /
+  `is_registered_baseline_tag`), and the registry's derivation
+  algorithms — `BaseTable::ideographic_em_box` (`HorizAxis.ideo` /
+  `idtp` / `VertAxis.idtp` with `unitsPerEm` defaults, OS/2
+  typo-metric fallback for CJK fonts) and
+  `ideographic_character_face` (`HorizAxis.icfb` minimum datum,
+  margin-based edge defaults), both with round-toward-zero center
+  baselines. `Font::is_cjk_font` (the registry's CJK
+  `ulUnicodeRange`-bits guidance), `Font::ideographic_em_box`, and
+  `Font::ideographic_character_face` glue it end to end; the
+  registry's Kozuka Mincho em-box and Extra-Light/Heavy ICF examples
+  are the test vectors.
 - **Gradient color interpolation per the staged `CPAL` chapter**
   (`docs/text/opentype/otspec-cpal.html`, "Interpolation of colors"):
   new `PremultipliedLinearColor` working form —
