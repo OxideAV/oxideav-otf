@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- **ItemVariationStore aligned with the now-staged variations
+  common-formats chapter**
+  (`docs/text/opentype/otspec-otvarcommonformats.html`): the
+  `wordDeltaCount` field is decoded as the packed
+  `LONG_WORDS`/`WORD_DELTA_COUNT_MASK` form — with `LONG_WORDS` set, a
+  DeltaSet row is int32 "word" deltas followed by int16 short deltas
+  (row length doubled), the representation 32-bit `Fixed` deltas in
+  `COLR` require; the word count is validated against
+  `regionIndexCount`. NULL `itemVariationDataOffsets` entries now mean
+  "no variation for this outer index" (delta 0) instead of a parse
+  error. The provisional `Fixed`-delta scaling in `COLR` (integer
+  delta in 1/65536 units added to the raw 16.16 representation, and
+  F2DOT14 in 1/16384 units with context-range clamping) is confirmed
+  verbatim by the chapter's DeltaSet note and now cites it; an
+  end-to-end test drives a `PaintVarTransform` `Fixed` component with
+  a +131072 (= +2.0) LONG_WORDS delta that no int16 delta could carry.
+
 - Internal public surface is now `#[doc(hidden)]` (the `cff` / `cff2` / `parser` / `shape` modules and most `tables::*` submodules); the stable API is `Font`, `Error`, the crate-root re-exports, and the `agl` / `feature_tags` / `outline` / `unicode_script` / `tables::{gdef,name,os2}` modules — attributes only, no semantic or signature changes.
 - **CPAL palette table (versions 0 and 1)**: new `tables::cpal`
   module and `Font::cpal()`. Palettes resolve

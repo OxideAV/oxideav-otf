@@ -883,14 +883,21 @@ impl<'a> ColrTable<'a> {
         raw + self.var_delta(vib, seq, coords)
     }
 
-    /// Delta-adjusted `F2DOT14` value (integer deltas are in 1/16384
-    /// units).
+    /// Delta-adjusted `F2DOT14` value. Per the variations
+    /// common-formats chapter (DeltaSet record note), "the F2DOT14
+    /// value is treated like a 16-bit integer" — delta and value are
+    /// integers in 1/16384 units — and where a context constrains the
+    /// value's range (e.g. alpha in `[0, 1]`), the post-delta value is
+    /// clamped to that range (clamping is applied at each use site).
     fn var_f2dot14(&self, raw: f32, vib: Option<u32>, seq: u32, coords: Option<&[f32]>) -> f32 {
         raw + self.var_delta(vib, seq, coords) / 16384.0
     }
 
-    /// Delta-adjusted `Fixed` value (integer deltas are in 1/65536
-    /// units).
+    /// Delta-adjusted `Fixed` value. Per the variations common-formats
+    /// chapter (DeltaSet record note), "the Fixed value is treated
+    /// like a 32-bit integer" — delta and value are integers in
+    /// 1/65536 units; 32-bit deltas come from the `LONG_WORDS` form of
+    /// `ItemVariationData`, which [`crate::tables::ivs`] decodes.
     fn var_fixed(&self, raw: f32, vib: Option<u32>, seq: u32, coords: Option<&[f32]>) -> f32 {
         raw + self.var_delta(vib, seq, coords) / 65536.0
     }

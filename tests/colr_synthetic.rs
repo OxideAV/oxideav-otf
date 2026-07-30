@@ -869,6 +869,81 @@ fn v1_implicit_identity_mapping() {
     }
 }
 
+/// Single-axis IVS whose one subtable uses the LONG_WORDS delta form:
+/// one int32 ("word") delta per row against region (0, 1, 1). The
+/// wordDeltaCount field is `0x8000 | 1`.
+fn ivs_rows_long(rows: &[i32]) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.extend_from_slice(&u16b(1)); // format
+    v.extend_from_slice(&u32b(12)); // regionListOffset
+    v.extend_from_slice(&u16b(1)); // ivdCount
+    v.extend_from_slice(&u32b(22)); // ivd[0]
+    assert_eq!(v.len(), 12);
+    v.extend_from_slice(&u16b(1)); // axisCount
+    v.extend_from_slice(&u16b(1)); // regionCount
+    v.extend_from_slice(&f2(0.0));
+    v.extend_from_slice(&f2(1.0));
+    v.extend_from_slice(&f2(1.0));
+    assert_eq!(v.len(), 22);
+    v.extend_from_slice(&u16b(rows.len() as u16)); // itemCount
+    v.extend_from_slice(&u16b(0x8000 | 1)); // LONG_WORDS | wordDeltaCount 1
+    v.extend_from_slice(&u16b(1)); // regionIndexCount
+    v.extend_from_slice(&u16b(0)); // regionIndex 0
+    for &d in rows {
+        v.extend_from_slice(&d.to_be_bytes());
+    }
+    v
+}
+
+/// A 32-bit LONG_WORDS delta beyond int16 range applied to a `Fixed`
+/// item: per the variations common-formats chapter, the Fixed value is
+/// treated like a 32-bit integer (delta in 1/65536 units), and Fixed
+/// deltas in general need the LONG_WORDS ItemVariationData form.
+#[test]
+fn v1_long_words_fixed_delta() {
+    let mut t = ColrV1::new();
+    // Row 0: +131072 = exactly +2.0 on a Fixed (16.16) value — far
+    // outside what an int16 delta could carry.
+    t.ivs = ivs_rows_long(&[131_072]);
+    // PaintVarTransform, identity affine, vib 0 → sequence index 0
+    // targets xx; the remaining sequence indices (1..=5) have no rows
+    // and resolve to zero adjustment.
+    {
+        let mut p = vec![13u8];
+        p.extend_from_slice(&u24b(35));
+        p.extend_from_slice(&u24b(7));
+        for v in [1.0f32, 0.0, 0.0, 1.0, 0.0, 0.0] {
+            p.extend_from_slice(&fixed(v));
+        }
+        p.extend_from_slice(&u32b(0));
+        p.extend_from_slice(&paint_solid(1, 1.0));
+        t.paints.push(p);
+    }
+    t.base_glyphs = vec![(3, 0)];
+    let bytes = t.build();
+    let colr = ColrTable::parse(&bytes).unwrap();
+    let root = colr.base_glyph_paint(3).unwrap();
+    // Default instance: untouched.
+    match colr.paint(root, None).unwrap() {
+        Paint::Transform { transform, .. } => assert!((transform.xx - 1.0).abs() < 1e-6),
+        p => panic!("{p:?}"),
+    }
+    // Full instance: xx = 1.0 + 131072/65536 = 3.0 exactly.
+    match colr.paint(root, Some(&[1.0])).unwrap() {
+        Paint::Transform { transform, .. } => {
+            assert!((transform.xx - 3.0).abs() < 1e-5);
+            assert!((transform.yy - 1.0).abs() < 1e-6);
+            assert!((transform.dx - 0.0).abs() < 1e-6);
+        }
+        p => panic!("{p:?}"),
+    }
+    // Half instance: xx = 2.0.
+    match colr.paint(root, Some(&[0.5])).unwrap() {
+        Paint::Transform { transform, .. } => assert!((transform.xx - 2.0).abs() < 1e-5),
+        p => panic!("{p:?}"),
+    }
+}
+
 // ---- graph analysis --------------------------------------------------------
 
 #[test]
