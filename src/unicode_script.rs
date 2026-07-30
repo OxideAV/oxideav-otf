@@ -327,6 +327,107 @@ pub fn scx_compatible(a: &[&str], b: &[&str]) -> bool {
     a.iter().any(|x| b.iter().any(|y| loose_match(x, y)))
 }
 
+/// Parsed script-property rows of `PropertyValueAliases.txt` (UAX #44
+/// §5.8.2): the `sc ; <short> ; <long> [; <other aliases>]` lines
+/// that map every Script value between its short form (the ISO 15924
+/// four-letter code, e.g. `Latn`) and its long form (`Latin`), plus
+/// any retired aliases (e.g. `Qaai` for `Inherited`).
+#[derive(Debug, Clone)]
+pub struct ScriptAliases {
+    /// `(short, long, extra-aliases)` per script, in file order.
+    rows: Vec<AliasRow>,
+}
+
+/// One `sc` alias row: `(short, long, extra aliases)`.
+type AliasRow = (Box<str>, Box<str>, Vec<Box<str>>);
+
+impl ScriptAliases {
+    /// Parse `PropertyValueAliases.txt`-format text, keeping the `sc`
+    /// (Script) property rows. Lines are `;`-separated fields with
+    /// surrounding whitespace trimmed and `#` comments stripped; a
+    /// row needs at least the property alias, the short name, and the
+    /// long name.
+    pub fn parse(text: &str) -> Result<Self, Error> {
+        let mut rows = Vec::new();
+        for line in text.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            let mut fields = line.split(';').map(str::trim);
+            if fields.next() != Some("sc") {
+                continue;
+            }
+            let (Some(short), Some(long)) = (fields.next(), fields.next()) else {
+                return Err(Error::BadStructure(
+                    "PropertyValueAliases: sc row needs short and long names",
+                ));
+            };
+            if short.is_empty() || long.is_empty() {
+                return Err(Error::BadStructure(
+                    "PropertyValueAliases: empty script alias",
+                ));
+            }
+            rows.push((
+                short.into(),
+                long.into(),
+                fields
+                    .filter(|f| !f.is_empty())
+                    .map(Into::into)
+                    .collect::<Vec<Box<str>>>(),
+            ));
+        }
+        Ok(Self { rows })
+    }
+
+    /// Find the row matching `name` against any of its aliases
+    /// (short, long, or extra), using UAX #44 loose matching.
+    fn find(&self, name: &str) -> Option<&AliasRow> {
+        self.rows.iter().find(|(short, long, extra)| {
+            loose_match(name, short)
+                || loose_match(name, long)
+                || extra.iter().any(|a| loose_match(name, a))
+        })
+    }
+
+    /// The short (ISO 15924) form for a script named by any alias:
+    /// `"Latin"` → `"Latn"`, `"Qaai"` → `"Zinh"`. Loose-matched.
+    pub fn short_name(&self, name: &str) -> Option<&str> {
+        self.find(name).map(|(short, _, _)| short.as_ref())
+    }
+
+    /// The long form for a script named by any alias: `"latn"` →
+    /// `"Latin"`, `"Qaai"` → `"Inherited"`. Loose-matched.
+    pub fn long_name(&self, name: &str) -> Option<&str> {
+        self.find(name).map(|(_, long, _)| long.as_ref())
+    }
+
+    /// Whether two script names denote the same script under this
+    /// alias table (loose-matched over all aliases); falls back to a
+    /// direct loose comparison when either name is unlisted.
+    pub fn same_script(&self, a: &str, b: &str) -> bool {
+        match (self.find(a), self.find(b)) {
+            (Some(ra), Some(rb)) => std::ptr::eq(ra, rb),
+            _ => loose_match(a, b),
+        }
+    }
+
+    /// Iterate `(short, long)` pairs in file order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.rows.iter().map(|(s, l, _)| (s.as_ref(), l.as_ref()))
+    }
+
+    /// Number of `sc` rows parsed.
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether no `sc` rows were parsed.
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
 // ---- vendored UCD data -----------------------------------------------------
 
 /// The Unicode version of the UCD data files vendored under
@@ -338,6 +439,8 @@ pub const VENDORED_UCD_VERSION: &str = "17.0.0";
 const SCRIPTS_TXT: &str = include_str!("../data/ucd/Scripts.txt");
 /// Vendored `ScriptExtensions.txt` (Unicode 17.0.0), verbatim.
 const SCRIPT_EXTENSIONS_TXT: &str = include_str!("../data/ucd/ScriptExtensions.txt");
+/// Vendored `PropertyValueAliases.txt` (Unicode 17.0.0), verbatim.
+const PROPERTY_VALUE_ALIASES_TXT: &str = include_str!("../data/ucd/PropertyValueAliases.txt");
 
 /// The vendored `Scripts.txt` data, parsed on first use.
 pub fn vendored_scripts() -> &'static ScriptData {
@@ -353,6 +456,16 @@ pub fn vendored_script_extensions() -> &'static ScriptExtensions {
     DATA.get_or_init(|| {
         ScriptExtensions::parse(SCRIPT_EXTENSIONS_TXT)
             .expect("vendored ScriptExtensions.txt is well-formed")
+    })
+}
+
+/// The vendored `PropertyValueAliases.txt` script rows, parsed on
+/// first use.
+pub fn vendored_script_aliases() -> &'static ScriptAliases {
+    static DATA: OnceLock<ScriptAliases> = OnceLock::new();
+    DATA.get_or_init(|| {
+        ScriptAliases::parse(PROPERTY_VALUE_ALIASES_TXT)
+            .expect("vendored PropertyValueAliases.txt is well-formed")
     })
 }
 
@@ -537,6 +650,70 @@ mod tests {
         // Unlisted code point: Unknown.
         assert_eq!(script_of('\u{E000}'), UNKNOWN); // private use
         assert_eq!(scx_of('\u{E000}'), vec![UNKNOWN]);
+    }
+
+    #[test]
+    fn script_aliases_resolve_both_directions() {
+        // The §5.8.2-format example rows, verbatim style.
+        let a = ScriptAliases::parse(
+            "\
+# PropertyValueAliases.txt excerpt
+gc ; L         ; Letter  # not a script row
+sc ; Latn      ; Latin
+sc ; Zinh      ; Inherited ; Qaai
+sc ; Zyyy      ; Common
+",
+        )
+        .unwrap();
+        assert_eq!(a.len(), 3);
+        assert_eq!(a.short_name("Latin"), Some("Latn"));
+        assert_eq!(a.long_name("latn"), Some("Latin"));
+        // Retired alias resolves through the extra-alias column.
+        assert_eq!(a.short_name("Qaai"), Some("Zinh"));
+        assert_eq!(a.long_name("Qaai"), Some("Inherited"));
+        // Loose matching per UAX #44 §5.9.
+        assert_eq!(a.long_name("ZINH"), Some("Inherited"));
+        assert_eq!(a.short_name("in_herited"), Some("Zinh"));
+        // same_script across alias forms; unlisted falls back to
+        // loose comparison.
+        assert!(a.same_script("Qaai", "Inherited"));
+        assert!(a.same_script("Latn", "latin"));
+        assert!(!a.same_script("Latn", "Common"));
+        // Unlisted names ("Grek" is not in this excerpt) fall back to
+        // direct loose comparison.
+        assert!(!a.same_script("Grek", "greek"));
+        assert!(a.same_script("Grek", "GREK"));
+        // Unknown name.
+        assert_eq!(a.short_name("NoSuchScript"), None);
+    }
+
+    #[test]
+    fn vendored_aliases_cover_the_script_repertoire() {
+        let a = vendored_script_aliases();
+        // Unicode 17.0.0 defines 170+ script values.
+        assert!(a.len() > 160, "{}", a.len());
+        // Rows verified against the staged file.
+        assert_eq!(a.short_name("Latin"), Some("Latn"));
+        assert_eq!(a.short_name("Hiragana"), Some("Hira"));
+        assert_eq!(a.long_name("Aghb"), Some("Caucasian_Albanian"));
+        assert_eq!(a.long_name("Qaai"), Some("Inherited"));
+        // Every long name resolved by the vendored Scripts.txt data
+        // must have an alias row, and round-trip through its short
+        // form (spot-check the values used elsewhere in this module).
+        for name in [
+            "Latin",
+            "Greek",
+            "Hiragana",
+            "Common",
+            "Inherited",
+            "Unknown",
+        ] {
+            let short = a.short_name(name).expect(name);
+            assert_eq!(a.long_name(short), Some(name));
+        }
+        // scx short codes resolve to Scripts.txt long values.
+        assert_eq!(a.long_name("Hira"), Some("Hiragana"));
+        assert_eq!(a.long_name("Kana"), Some("Katakana"));
     }
 
     #[test]

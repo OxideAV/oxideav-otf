@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`VENDORED_UCD_VERSION = "17.0.0"`), so UAX #24 script
   classification works out of the box; callers can still supply newer
   UCD text to the parsers.
+- **`PropertyValueAliases.txt` script-alias table**: new
+  `unicode_script::ScriptAliases` parser for the UAX #44 §5.8.2
+  `sc ; <short> ; <long> [; <retired aliases>]` rows, with
+  loose-matched `short_name` / `long_name` resolution in both
+  directions (including retired aliases such as `Qaai` → `Inherited`)
+  and a `same_script` equivalence test; `vendored_script_aliases()`
+  serves the vendored 17.0.0 table (170+ scripts).
 - **Gradient color interpolation per the staged `CPAL` chapter**
   (`docs/text/opentype/otspec-cpal.html`, "Interpolation of colors"):
   new `PremultipliedLinearColor` working form —
