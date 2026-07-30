@@ -76,6 +76,29 @@ pub struct ShapedGlyph {
     pub y_offset: i32,
 }
 
+/// One script-itemized, shaped run: the output of
+/// [`Font::shape_runs`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShapedRun {
+    /// Byte offset of the run's first character in the input text.
+    pub start: usize,
+    /// Byte offset one past the run's last character.
+    pub end: usize,
+    /// The run's resolved Unicode Script value (long form, e.g.
+    /// `"Latin"`; `"Common"` for script-neutral runs) per UAX #24
+    /// itemization.
+    pub script: &'static str,
+    /// The OpenType script tag the run was shaped with: the first
+    /// [`crate::script_tags::ot_script_tags`] candidate the font's
+    /// GSUB or GPOS script list provides (or the caller's
+    /// [`ShapeOptions::script`] override). `None` means the
+    /// `DFLT`-then-`latn` default resolution was used.
+    pub script_tag: Option<[u8; 4]>,
+    /// The run's shaped glyphs. Cluster values index characters of
+    /// the **whole** input text, not the run.
+    pub glyphs: Vec<ShapedGlyph>,
+}
+
 /// A `(feature tag, value)` request.
 ///
 /// * `value == 0` disables the feature (removes it from the default
@@ -379,5 +402,75 @@ impl<'a> Font<'a> {
                 y_offset: p.y_offset,
             })
             .collect())
+    }
+
+    /// Whether either OpenType Layout table (GSUB, then GPOS) defines
+    /// script `tag` in its ScriptList.
+    fn layout_has_script(&self, tag: [u8; 4]) -> bool {
+        if let Some(g) = self.gsub() {
+            if let Ok(scripts) = g.script_list() {
+                if scripts.find(&tag).is_some() {
+                    return true;
+                }
+            }
+        }
+        if let Some(g) = self.gpos() {
+            if let Ok(scripts) = g.script_list() {
+                if scripts.find(&tag).is_some() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Itemize `text` into script runs (UAX #24 over the vendored UCD
+    /// data — [`crate::unicode_script::itemize`]) and shape each run
+    /// with a per-run OpenType script tag.
+    ///
+    /// For each run, the candidate tags from
+    /// [`crate::script_tags::ot_script_tags`] are tried in preference
+    /// order and the first one present in the font's GSUB or GPOS
+    /// ScriptList is used; when none matches (or the run is
+    /// script-neutral), the ordinary `DFLT` → `latn` default
+    /// resolution applies. [`ShapeOptions::script`] overrides the
+    /// detection for **every** run (the runs still split, so cluster
+    /// bookkeeping is identical either way). Cluster values are
+    /// whole-text character indices, so concatenating the runs'
+    /// glyphs yields a consistent buffer.
+    ///
+    /// Shaping stays horizontal LTR (see the module docs); runs are
+    /// returned in text order.
+    pub fn shape_runs(&self, text: &str, options: &ShapeOptions) -> Result<Vec<ShapedRun>, Error> {
+        let mut out = Vec::new();
+        let mut char_offset = 0u32;
+        for run in crate::unicode_script::itemize(text) {
+            let slice = &text[run.start..run.end];
+            let script_tag = match options.script {
+                Some(tag) => Some(tag),
+                None => crate::script_tags::ot_script_tags(run.script)
+                    .into_iter()
+                    .find(|&tag| tag != crate::script_tags::DFLT && self.layout_has_script(tag)),
+            };
+            let run_options = ShapeOptions {
+                script: script_tag,
+                language: options.language,
+                features: options.features.clone(),
+                coords: options.coords.clone(),
+            };
+            let mut glyphs = self.shape(slice, &run_options)?;
+            for g in &mut glyphs {
+                g.cluster += char_offset;
+            }
+            char_offset += slice.chars().count() as u32;
+            out.push(ShapedRun {
+                start: run.start,
+                end: run.end,
+                script: run.script,
+                script_tag,
+                glyphs,
+            });
+        }
+        Ok(out)
     }
 }

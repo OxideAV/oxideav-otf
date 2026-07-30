@@ -418,3 +418,106 @@ fn paragraph_matches_reference_shaper() {
         );
     }
 }
+
+// ---- script-itemized shaping (Font::shape_runs) ----------------------------
+
+#[test]
+fn shape_runs_single_latin_run_matches_shape() {
+    let bytes = fixture();
+    let font = Font::from_bytes(&bytes).unwrap();
+    let opts = ShapeOptions::default();
+    let runs = font.shape_runs("office", &opts).unwrap();
+    assert_eq!(runs.len(), 1);
+    let run = &runs[0];
+    assert_eq!((run.start, run.end), (0, 6));
+    assert_eq!(run.script, "Latin");
+    // Source Sans 3 provides latn in both layout tables.
+    assert_eq!(run.script_tag, Some(*b"latn"));
+    // Identical output to shaping the whole text with the detected
+    // tag explicitly.
+    let direct = font
+        .shape(
+            "office",
+            &ShapeOptions {
+                script: Some(*b"latn"),
+                ..ShapeOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(run.glyphs, direct);
+}
+
+#[test]
+fn shape_runs_splits_scripts_and_offsets_clusters() {
+    let bytes = fixture();
+    let font = Font::from_bytes(&bytes).unwrap();
+    let text = "abcΑΒΓ"; // Latin then Greek
+    let runs = font.shape_runs(text, &ShapeOptions::default()).unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].script, "Latin");
+    assert_eq!(runs[0].script_tag, Some(*b"latn"));
+    assert_eq!(runs[1].script, "Greek");
+    assert_eq!(runs[1].script_tag, Some(*b"grek"));
+    // Byte bounds tile the text ("abc" = 3 bytes, Greek letters 2
+    // bytes each).
+    assert_eq!((runs[0].start, runs[0].end), (0, 3));
+    assert_eq!((runs[1].start, runs[1].end), (3, 9));
+    // Clusters are whole-text character indices.
+    assert_eq!(clusters(&runs[0].glyphs), vec![0, 1, 2]);
+    assert_eq!(clusters(&runs[1].glyphs), vec![3, 4, 5]);
+    // Each run shapes exactly like its slice with the tag explicit.
+    for (run, tag) in [(&runs[0], *b"latn"), (&runs[1], *b"grek")] {
+        let direct = font
+            .shape(
+                &text[run.start..run.end],
+                &ShapeOptions {
+                    script: Some(tag),
+                    ..ShapeOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(run.glyphs.len(), direct.len());
+        for (a, b) in run.glyphs.iter().zip(&direct) {
+            assert_eq!((a.glyph, a.x_advance), (b.glyph, b.x_advance));
+        }
+    }
+    // Cyrillic detection too.
+    let runs = font.shape_runs("аб", &ShapeOptions::default()).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].script, "Cyrillic");
+    assert_eq!(runs[0].script_tag, Some(*b"cyrl"));
+}
+
+#[test]
+fn shape_runs_common_and_override_behavior() {
+    let bytes = fixture();
+    let font = Font::from_bytes(&bytes).unwrap();
+    // Digits + punctuation only: one Common run, DFLT default
+    // resolution (tag None).
+    let runs = font.shape_runs("123!", &ShapeOptions::default()).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].script, "Common");
+    assert_eq!(runs[0].script_tag, None);
+    assert_eq!(clusters(&runs[0].glyphs), vec![0, 1, 2, 3]);
+    // Unsupported script (Hiragana is not in Source Sans 3): no tag,
+    // default resolution; glyphs map to .notdef but the run exists.
+    let runs = font.shape_runs("かな", &ShapeOptions::default()).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].script, "Hiragana");
+    assert_eq!(runs[0].script_tag, None);
+    assert_eq!(runs[0].glyphs.iter().filter(|g| g.glyph == 0).count(), 2);
+    // A caller-set script overrides detection in every run.
+    let opts = ShapeOptions {
+        script: Some(*b"grek"),
+        ..ShapeOptions::default()
+    };
+    let runs = font.shape_runs("abcΑΒΓ", &opts).unwrap();
+    assert_eq!(runs.len(), 2);
+    assert!(runs.iter().all(|r| r.script_tag == Some(*b"grek")));
+    // Ligature formation still happens inside a run under runs
+    // shaping (liga default on): "ff" forms the f_f ligature,
+    // cluster 0.
+    let runs = font.shape_runs("ff", &ShapeOptions::default()).unwrap();
+    assert_eq!(runs[0].glyphs.len(), 1);
+    assert_eq!(runs[0].glyphs[0].cluster, 0);
+}

@@ -48,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Hrkt` → `kana`, Hangul → `hang` then the not-recommended `jamo`,
   implicit values → `DFLT`). A test proves every `sc` value of the
   vendored UCD alias table resolves to registered tags.
+- **Script-itemized shaping** (`Font::shape_runs` + `ShapedRun`):
+  itemizes the input per UAX #24, selects each run's OpenType script
+  tag as the first `ot_script_tags` candidate present in the font's
+  GSUB/GPOS ScriptLists (caller `ShapeOptions::script` overrides;
+  no match → the existing `DFLT` → `latn` default resolution), shapes
+  every run through the full GSUB/GPOS pipeline, and returns runs in
+  text order with whole-text character-index clusters. Latin/Greek/
+  Cyrillic detection is validated end-to-end over the Source Sans 3
+  fixture against explicit-tag shaping.
 - **Gradient color interpolation per the staged `CPAL` chapter**
   (`docs/text/opentype/otspec-cpal.html`, "Interpolation of colors"):
   new `PremultipliedLinearColor` working form —

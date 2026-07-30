@@ -64,7 +64,7 @@ pub use feature_tags::{
     FEATURE_TAG_REGISTRY, REGISTERED_FEATURE_TAG_COUNT,
 };
 pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
-pub use shape::{FeatureSetting, ShapeOptions, ShapedGlyph};
+pub use shape::{FeatureSetting, ShapeOptions, ShapedGlyph, ShapedRun};
 
 use crate::cff::Cff;
 use crate::parser::TableDirectory;
