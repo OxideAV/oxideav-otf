@@ -128,6 +128,11 @@ fn v1_full_surface() {
     assert_eq!(t.palette_entry_label(0), Some(257));
     assert_eq!(t.palette_entry_label(1), None);
     assert_eq!(t.palette_entry_label(2), None);
+
+    // Background selection: palette 1 carries both flags, so it
+    // appears in both answers.
+    assert_eq!(t.palettes_for_background(true), vec![0, 1]);
+    assert_eq!(t.palettes_for_background(false), vec![1]);
 }
 
 #[test]

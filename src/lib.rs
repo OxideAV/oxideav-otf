@@ -983,6 +983,18 @@ impl<'a> Font<'a> {
         self.name.find(name_id)
     }
 
+    /// Palette indices flagged as appropriate for a light (`true`) or
+    /// dark (`false`) background in the `CPAL` version-1 Palette Types
+    /// Array (the two flags are not mutually exclusive, so a palette
+    /// can appear in both answers). Empty when the font has no `CPAL`
+    /// table or the table records no palette types.
+    pub fn palettes_for_background(&self, light: bool) -> Vec<u16> {
+        self.cpal
+            .as_ref()
+            .map(|cpal| cpal.palettes_for_background(light))
+            .unwrap_or_default()
+    }
+
     /// The version-0 `COLR` color glyph of `glyph_id` resolved to
     /// concrete colors: the bottom-up layer run as
     /// `(layer glyph ID, fill color)` pairs, with each layer's `CPAL`

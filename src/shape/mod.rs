@@ -29,12 +29,13 @@
 //!   the spec itself places such processing outside OpenType Layout
 //!   ("Details on such script-specific processing is outside the
 //!   scope of this specification").
-//! * The staged copy of the feature-tags registry is a stub, so the
-//!   *default-enabled* feature sets below are a crate policy (the
-//!   spec: "a client chooses the features to be applied"): GSUB
-//!   defaults `ccmp`, `locl`, `liga`, `clig`, `calt`, `rlig`; GPOS
-//!   defaults `kern`, `mark`, `mkmk`, `curs`, `dist`. Callers can
-//!   enable/disable any feature via [`ShapeOptions::features`].
+//! * The *default-enabled* feature sets below are a crate policy —
+//!   the spec leaves the choice to the client ("a client chooses the
+//!   features to be applied"): GSUB defaults `ccmp`, `locl`, `liga`,
+//!   `clig`, `calt`, `rlig`; GPOS defaults `kern`, `mark`, `mkmk`,
+//!   `curs`, `dist`. Callers can enable/disable any feature via
+//!   [`ShapeOptions::features`]; the full registered-feature
+//!   vocabulary is in [`crate::feature_tags`].
 
 pub(crate) mod buffer;
 pub(crate) mod gpos;

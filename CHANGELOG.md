@@ -79,6 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `language_tags_for_iso639` reverse lookup over the registry's
   ISO 639 ID lists; the `dflt`/`DFLT` permanent reservation is
   documented (they are never valid LangSysRecord tags).
+- **Background-aware palette selection**:
+  `CpalTable::palettes_for_background(light)` /
+  `Font::palettes_for_background` filter palettes by the version-1
+  light-/dark-background usability flags (not mutually exclusive, so
+  a palette can serve both).
 - **Gradient color interpolation per the staged `CPAL` chapter**
   (`docs/text/opentype/otspec-cpal.html`, "Interpolation of colors"):
   new `PremultipliedLinearColor` working form —

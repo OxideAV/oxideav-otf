@@ -330,6 +330,22 @@ impl<'a> CpalTable<'a> {
         let id = read_u16(self.data, base + entry_index as usize * 2).ok()?;
         (id != NO_NAME_ID).then_some(id)
     }
+
+    /// Palette indices whose version-1 `paletteTypes` flags mark them
+    /// appropriate for a light (`true`) or dark (`false`) background.
+    /// The two flags are not mutually exclusive, so a palette can
+    /// appear in both answers; empty when the table has no Palette
+    /// Types Array.
+    pub fn palettes_for_background(&self, light: bool) -> Vec<u16> {
+        let wanted = if light {
+            CPAL_USABLE_WITH_LIGHT_BACKGROUND
+        } else {
+            CPAL_USABLE_WITH_DARK_BACKGROUND
+        };
+        (0..self.num_palettes)
+            .filter(|&p| self.palette_type(p).is_some_and(|t| t.0 & wanted != 0))
+            .collect()
+    }
 }
 
 #[cfg(test)]
