@@ -483,6 +483,117 @@ pub fn scx_of(c: char) -> Vec<&'static str> {
     vendored_script_extensions().scx_or_default(c as u32, vendored_scripts())
 }
 
+// ---- script itemization ----------------------------------------------------
+
+/// One maximal same-script run of a text, produced by [`itemize`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptRun {
+    /// Byte offset of the run's first character.
+    pub start: usize,
+    /// Byte offset one past the run's last character.
+    pub end: usize,
+    /// The run's resolved Script value in long form (`"Latin"`,
+    /// `"Katakana"`, …): per the §5.2 strategy, the Script property of
+    /// the run's first non-Inherited, non-Common character, or
+    /// [`COMMON`] when the run has none.
+    pub script: &'static str,
+}
+
+/// Split `text` into maximal script runs using the vendored UCD data
+/// and the UAX #24 mechanisms this module implements:
+///
+/// - each character contributes its Script_Extensions set (§4.2
+///   default `{ Script(cp) }`), normalized to short codes through the
+///   vendored alias table;
+/// - a character joins the current run when its set is
+///   [`scx_compatible`] with the run's set (§5.3: implicit values act
+///   as wildcards, explicit sets must intersect), and the run's set
+///   narrows to the intersection while it stays explicit — so U+30FC
+///   continues a Hiragana or Katakana run but breaks a Latin one, and
+///   a Hira+Kana pair stays one run;
+/// - each run's Script value is then resolved per the §5.2
+///   combining-sequence strategy (first non-Inherited, non-Common
+///   character; Common otherwise), reported in long form.
+///
+/// Leading Common/Inherited characters attach to the run that follows
+/// them only via the wildcard rule (a run break still separates them
+/// when the preceding explicit run is incompatible) — the paired-
+/// bracket refinement of §5.1 (note) needs `BidiBrackets.txt` data and
+/// is not applied.
+pub fn itemize(text: &str) -> Vec<ScriptRun> {
+    let aliases = vendored_script_aliases();
+    // A character's scx set, normalized to short codes.
+    let short_set = |c: char| -> Vec<&'static str> {
+        scx_of(c)
+            .into_iter()
+            .map(|s| aliases.short_name(s).unwrap_or(s))
+            .collect()
+    };
+
+    let mut runs: Vec<ScriptRun> = Vec::new();
+    let mut run_start = 0usize;
+    let mut run_set: Vec<&'static str> = Vec::new();
+    let mut run_script: Option<&'static str> = None;
+
+    let close = |runs: &mut Vec<ScriptRun>, start: usize, end: usize, script| {
+        runs.push(ScriptRun { start, end, script });
+    };
+
+    for (at, c) in text.char_indices() {
+        let set = short_set(c);
+        if at == 0 || scx_compatible(&run_set, &set) {
+            // Continue (or start) the run; narrow the explicit set.
+            merge_sets(&mut run_set, &set);
+        } else {
+            close(&mut runs, run_start, at, run_script.unwrap_or(COMMON));
+            run_start = at;
+            run_set = set;
+            run_script = None;
+        }
+        // §5.2: the first non-Inherited, non-Common character fixes
+        // the run's Script value.
+        if run_script.is_none() {
+            let sc = script_of(c);
+            let implicit = [COMMON, "Zyyy", INHERITED, "Zinh", "Qaai"]
+                .iter()
+                .any(|v| loose_match(sc, v));
+            if !implicit {
+                run_script = Some(sc);
+            }
+        }
+    }
+    if !text.is_empty() {
+        close(
+            &mut runs,
+            run_start,
+            text.len(),
+            run_script.unwrap_or(COMMON),
+        );
+    }
+    runs
+}
+
+/// Narrow a run's working scx set with a newly joined character's set
+/// (both already short-code-normalized and known compatible): a set
+/// containing an implicit value is a wildcard and yields to the other
+/// set; two explicit sets intersect.
+fn merge_sets(run: &mut Vec<&'static str>, next: &[&'static str]) {
+    if run.is_empty() {
+        // A fresh run adopts the first character's set.
+        *run = next.to_vec();
+        return;
+    }
+    let run_implicit = run.iter().any(|v| is_implicit_script(v));
+    let next_implicit = next.iter().any(|v| is_implicit_script(v));
+    match (run_implicit, next_implicit) {
+        (true, _) => *run = next.to_vec(),
+        (false, true) => {}
+        (false, false) => {
+            run.retain(|r| next.iter().any(|n| loose_match(r, n)));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,6 +825,83 @@ sc ; Zyyy      ; Common
         // scx short codes resolve to Scripts.txt long values.
         assert_eq!(a.long_name("Hira"), Some("Hiragana"));
         assert_eq!(a.long_name("Kana"), Some("Katakana"));
+    }
+
+    #[test]
+    fn itemize_single_and_mixed_scripts() {
+        assert!(itemize("").is_empty());
+        // One Latin run: letters, spaces, and punctuation (Common)
+        // share the run, and the run resolves to the first real
+        // script.
+        let runs = itemize("Hello, world!");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            runs[0],
+            ScriptRun {
+                start: 0,
+                end: 13,
+                script: "Latin"
+            }
+        );
+        // Latin then Greek: two runs, split at the script change.
+        let text = "abcΑΒΓ";
+        let runs = itemize(text);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(
+            (runs[0].start, runs[0].end, runs[0].script),
+            (0, 3, "Latin")
+        );
+        assert_eq!(runs[1].script, "Greek");
+        assert_eq!(&text[runs[1].start..runs[1].end], "ΑΒΓ");
+        // Runs tile the text.
+        assert_eq!(runs[0].end, runs[1].start);
+        assert_eq!(runs.last().unwrap().end, text.len());
+    }
+
+    #[test]
+    fn itemize_scx_run_continuation() {
+        // U+30FC (sc Common, scx {Hira Kana}) continues a Katakana
+        // run — the §5.3 example.
+        let runs = itemize("ノート");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].script, "Katakana");
+        // …and a Hiragana run.
+        let runs = itemize("あー");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].script, "Hiragana");
+        // …but breaks a Latin run.
+        let text = "abー";
+        let runs = itemize(text);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].script, "Latin");
+        // The trailing run has no non-Common character: Common.
+        assert_eq!(runs[1].script, COMMON);
+        // Mixed Hiragana + Katakana stay one run only until the
+        // explicit sets diverge: both are explicit single-script sets
+        // ({Hira} vs {Kana}), so they split.
+        let runs = itemize("あア");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].script, "Hiragana");
+        assert_eq!(runs[1].script, "Katakana");
+        // With the prolonged sound mark between them, the mark joins
+        // the Hiragana run (set narrows to {Hira}) and the Katakana
+        // letter still starts a new run.
+        let runs = itemize("あーア");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].script, "Hiragana");
+        assert_eq!(runs[1].script, "Katakana");
+    }
+
+    #[test]
+    fn itemize_combining_marks_inherit() {
+        // A combining acute (Inherited) attaches to its Latin base.
+        let runs = itemize("e\u{0301}f");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].script, "Latin");
+        // All-Common/Inherited text resolves to Common.
+        let runs = itemize(" \u{0301} ");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].script, COMMON);
     }
 
     #[test]

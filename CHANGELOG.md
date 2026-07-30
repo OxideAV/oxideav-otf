@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directions (including retired aliases such as `Qaai` → `Inherited`)
   and a `same_script` equivalence test; `vendored_script_aliases()`
   serves the vendored 17.0.0 table (170+ scripts).
+- **Script itemization** (`unicode_script::itemize`): splits text
+  into maximal same-script `ScriptRun`s over the vendored UCD data —
+  per-character Script_Extensions sets (short-code-normalized through
+  the alias table), §5.3 run continuation (implicit values as
+  wildcards, explicit sets narrowed to their intersection, so U+30FC
+  continues a Hiragana/Katakana run but breaks a Latin one), and §5.2
+  run-script resolution (first non-Inherited, non-Common character,
+  else Common), reported in long form with byte-offset run bounds.
+  The §5.1 paired-bracket refinement is documented out of scope
+  (needs `BidiBrackets.txt`).
 - **Gradient color interpolation per the staged `CPAL` chapter**
   (`docs/text/opentype/otspec-cpal.html`, "Interpolation of colors"):
   new `PremultipliedLinearColor` working form —
