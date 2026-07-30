@@ -13,10 +13,12 @@ TrueType outlines (quadratic Beziers); OTF handles CFF outlines
 The crate parses an sfnt/OTF container into a `Font` and exposes
 metadata, glyph metrics, glyph outlines (CFF Type 2 → cubic Beziers),
 typed views over the OpenType Layout tables, a **text-shaping
-pipeline** (`Font::shape`) that runs GSUB substitution and GPOS
+pipeline** (`Font::shape`, plus script-itemized `Font::shape_runs`
+over vendored UAX #24 data) that runs GSUB substitution and GPOS
 positioning end to end, and the full **color-font / embedded-bitmap
-surface** (`COLR`+`CPAL` with concrete-RGBA resolution, `sbix`,
-`EBLC`/`EBDT`/`EBSC`, `CBLC`/`CBDT`, `SVG `). Highlights:
+surface** (`COLR`+`CPAL` with concrete-RGBA resolution and
+linear-light gradient interpolation, `sbix`, `EBLC`/`EBDT`/`EBSC`,
+`CBLC`/`CBDT`, `SVG `). Highlights:
 
 - sfnt + table directory walker (recognises `OTTO`, `0x00010000`, `true`).
 - CFF (Adobe TN5176, version 1):
@@ -454,6 +456,13 @@ What the engine implements:
   instance.
 - **Legacy `kern` fallback** — applied only when the font offers no
   GPOS `kern` feature for the resolved script.
+- **Script-itemized shaping** — `Font::shape_runs(text, &opts)`
+  itemizes the text per UAX #24 (vendored UCD data), selects each
+  run's OpenType script tag as the first `ot_script_tags` candidate
+  present in the font's GSUB/GPOS ScriptLists (caller override via
+  `ShapeOptions::script`; `DFLT` → `latn` fallback otherwise), and
+  shapes every run through the full pipeline, returning `ShapedRun`s
+  in text order with whole-text character-index clusters.
 
 Scope: horizontal left-to-right layout. Script-specific preprocessing
 (bidi reordering, Arabic joining, Indic reordering, Unicode
@@ -558,14 +567,32 @@ views over:
   a one-line function summary. `feature_tag([u8; 4])` /
   `is_registered_feature_tag` / `registered_feature_tags()`.
 - **UAX #24 Script / Script_Extensions** (`unicode_script`) — the
-  script-itemization machinery: parsers for the `Scripts.txt` and
-  `ScriptExtensions.txt` UCD data-file formats (with the spec
-  defaults — Unknown, and `{ Script(cp) }` respectively), UAX #44
-  loose property-value matching, scx-set well-formedness validation
+  script-itemization machinery: parsers for the `Scripts.txt`,
+  `ScriptExtensions.txt`, and `PropertyValueAliases.txt` UCD
+  data-file formats (with the spec defaults — Unknown, and
+  `{ Script(cp) }` respectively), UAX #44 loose property-value
+  matching with short↔long alias resolution (`ScriptAliases`,
+  retired aliases included), scx-set well-formedness validation
   (every Table 8 ill-formed case), the combining-sequence
   first-non-Inherited/Common resolution strategy, and the scx
-  run-continuation compatibility test. The per-code-point UCD data
-  files are caller-supplied (they change with every Unicode release).
+  run-continuation compatibility test. The Unicode 17.0.0 data files
+  are **vendored** (`data/ucd/`, UNICODE LICENSE V3) and exposed as
+  lazily-parsed statics — `script_of(char)` / `scx_of(char)` /
+  `vendored_script_aliases()` work out of the box; newer UCD text can
+  still be fed to the parsers. `itemize(text)` splits text into
+  maximal same-script runs (implicit values as wildcards, explicit
+  scx sets narrowed by intersection, §5.2 run-script resolution), so
+  U+30FC continues a kana run but breaks a Latin one.
+- **Tag registries** — complete transcriptions of the staged
+  OpenType Layout registries: `script_tags` (all 187 script tags,
+  `ot_script_tags` mapping any Unicode Script alias to candidate
+  tags in preference order — v.2 tags first, both kana scripts →
+  `kana`, space-padded `lao `/`nko `/`vai `/`yi  `, implicit →
+  `DFLT`); `language_tags` (all 661 language-system tags with the
+  registry's ISO 639 annotations and `language_tags_for_iso639`
+  reverse lookup; `dflt`/`DFLT` reservation documented); and the
+  seven baseline tags with per-axis meanings in `tables::base`
+  (see below).
 - **CFF2** (variable-font CFF, OpenType 1.9.1) — header, Top DICT,
   Global Subr / CharString / Font DICT INDEXes, the per-FontDICT
   PrivateDICT (default `vsindex` + LocalSubrINDEX), the FontDICTSelect
@@ -623,6 +650,14 @@ The complete OFF color-font + embedded-bitmap surface
   `ColorStop::resolve`, `ColorLine::resolve`, and
   `Font::v0_layer_colors` cover v0 layers and gradient color lines,
   so COLR rendering yields concrete RGBA.
+- **Gradient color interpolation** — the CPAL chapter's
+  "Interpolation of colors" rules: `PremultipliedLinearColor`
+  (channels linearized then premultiplied by effective alpha; alpha
+  interpolates directly) with `lerp` / `unpremultiplied_linear`, and
+  `ColorLine::interpolate_at` applying the bracketing-stop weight
+  with nearest-stop clamping. The sRGB transfer function itself is
+  defined in IEC 61966-2-1 / CSS Color 4 §10.2 (referenced, not
+  restated, by the spec), so linearization is caller-supplied.
 - **`sbix`** — `Font::sbix()` / `Font::sbix_glyph(gid, ppem)`.
   PPEM/PPI strikes with per-glyph PNG / JPEG / TIFF graphics
   (origin offsets + typed `graphicType`), `'dupe'` redirects
@@ -689,11 +724,19 @@ outline directly from **user-scale axis coordinates** (e.g. `wght = 700`):
   produces the per-region scalar vector for an `ItemVariationData`
   subtable. Validated against the §7.1.8 Skia two-axis example
   (instance `(0.2, 0.7)` → R1 `0.2`, R2 `0.7`, R3 `0.14`).
-- **Delta-set `ItemVariationStore`** (§7.2.3) — the variation-data
-  structure carrying the `itemCount × regionIndexCount` delta matrix
-  (the metrics/positioning IVS, distinct from the CFF2 delta-free one);
+- **Delta-set `ItemVariationStore`** (§7.2.3 + the variations
+  common-formats chapter) — the variation-data structure carrying the
+  `itemCount × regionIndexCount` delta matrix (the
+  metrics/positioning IVS, distinct from the CFF2 delta-free one);
   `delta(outer, inner, &normalized)` resolves a delta-set to a
-  per-instance adjustment (`tables::ivs`).
+  per-instance adjustment (`tables::ivs`). Both DeltaSet forms
+  decode: the default int16/int8 rows and the `LONG_WORDS`
+  int32/int16 rows that 32-bit `Fixed` deltas in `COLR` require
+  (`wordDeltaCount` packed-flag validation included), and NULL
+  `itemVariationDataOffsets` entries resolve to "no variation" per
+  the chapter. `Fixed`/F2DOT14 deltas apply on the raw integer
+  representation (1/65536 and 1/16384 units — the chapter's DeltaSet
+  note, previously provisional, now cited).
 - **`MVAR`** (§7.3.6) — metrics variations: value-tag → delta-set
   records + the IVS, resolving font-wide metric adjustments.
   `Font::metric_variation(tag, &user_coords)` (e.g. `b"hasc"` →
@@ -711,6 +754,17 @@ outline directly from **user-scale axis coordinates** (e.g. `wght = 700`):
 - **`BASE`** (§6.3) — the baseline table: per-axis baseline tag lists +
   per-script `BaseValues` resolving BaseCoord (formats 1/2/3) values.
   `Font::base` / `Font::baseline_coord(axis, script_tag, baseline_tag)`.
+  The baseline-tag registry's seven tags ship with their per-axis
+  meanings (`REGISTERED_BASELINE_TAGS`), and the registry's CJK
+  metrics algorithms are implemented end to end:
+  `Font::ideographic_em_box` (`HorizAxis.ideo`/`idtp` +
+  `VertAxis.idtp` with `unitsPerEm` defaults; OS/2 typo-metric
+  fallback for CJK fonts, detected per the registry's
+  `ulUnicodeRange`-bits guidance via `Font::is_cjk_font`) and
+  `Font::ideographic_character_face` (ICF box from the minimal
+  `HorizAxis.icfb` datum with margin-derived edges), both with the
+  round-toward-zero center baselines — validated against the
+  registry's own Kozuka Mincho examples.
 - **End-to-end glue** — `Font::normalize_coords(&user_coords)` runs the
   full `fvar` → `avar` pipeline, and `Font::glyph_outline_for_axes(gid,
   &user_coords)` chains normalization → region scalars → the CFF2
@@ -724,6 +778,15 @@ outline directly from **user-scale axis coordinates** (e.g. `wght = 700`):
   belongs to a higher layer, per the spec's own scoping. Per-ppem
   `Device` corrections are not applied during shaping (design-unit
   output; `VariationIndex` deltas *are* applied).
+- Script itemization applies the UAX #24 scx run-continuation and
+  resolution strategies but not the §5.1 paired-bracket refinement
+  (which needs `BidiBrackets.txt`, not staged) — a close bracket
+  after a script change stays with the run that contains it.
+- Gradient color interpolation exposes the premultiplied
+  linear-light pipeline with a caller-supplied transfer function;
+  the sRGB transfer-function formula itself (IEC 61966-2-1 /
+  CSS Color 4 §10.2) is referenced but not restated by the staged
+  chapter, so no built-in sRGB linearizer ships.
 - Hint enforcement (we anti-alias at >= 16 px, so hints are noise).
 - Decoding the embedded image payloads: `sbix` / `CBDT` PNG, JPEG,
   and TIFF bytes and `SVG ` documents (including their gzip
