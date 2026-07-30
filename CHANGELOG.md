@@ -37,6 +37,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   else Common), reported in long form with byte-offset run bounds.
   The §5.1 paired-bracket refinement is documented out of scope
   (needs `BidiBrackets.txt`).
+- **Script-tag registry** (`script_tags`): the complete OpenType
+  Layout script-tag vocabulary (187 rows transcribed from the staged
+  registry, including the space-padded `lao `/`nko `/`vai `/`yi  `
+  tags and `DFLT`), with `is_registered_script_tag` /
+  `script_tag_names` / `registered` table access, and
+  `ot_script_tags(script)` mapping any Unicode Script alias form to
+  its registered candidate tags in preference order (v.2 tags first
+  for the ten paired Indic/Myanmar scripts, both kana scripts +
+  `Hrkt` → `kana`, Hangul → `hang` then the not-recommended `jamo`,
+  implicit values → `DFLT`). A test proves every `sc` value of the
+  vendored UCD alias table resolves to registered tags.
 - **Gradient color interpolation per the staged `CPAL` chapter**
   (`docs/text/opentype/otspec-cpal.html`, "Interpolation of colors"):
   new `PremultipliedLinearColor` working form —

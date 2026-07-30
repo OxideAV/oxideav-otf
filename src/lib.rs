@@ -48,6 +48,7 @@ pub mod parser;
 // internal — exposed for tests/fuzz; not part of the stable API
 // (the stable shaping surface — `FeatureSetting`, `ShapeOptions`,
 // `ShapedGlyph` — is re-exported at the crate root below).
+pub mod script_tags;
 #[doc(hidden)]
 pub mod shape;
 pub mod tables;
