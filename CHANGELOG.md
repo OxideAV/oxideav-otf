@@ -72,6 +72,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Font::ideographic_character_face` glue it end to end; the
   registry's Kozuka Mincho em-box and Extra-Light/Heavy ICF examples
   are the test vectors.
+- **Language-system tag registry** (`language_tags`, staged
+  `registries/language-tags.html`): all 661 registered language
+  system tags transcribed — `(name, tag, ISO 639 annotation)` —
+  with `is_registered_language_tag` / `language_tag_name` /
+  `language_tags_for_iso639` reverse lookup over the registry's
+  ISO 639 ID lists; the `dflt`/`DFLT` permanent reservation is
+  documented (they are never valid LangSysRecord tags).
 - **Gradient color interpolation per the staged `CPAL` chapter**
   (`docs/text/opentype/otspec-cpal.html`, "Interpolation of colors"):
   new `PremultipliedLinearColor` working form —
