@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- **Vendored UCD script data (Unicode 17.0.0)**: verbatim copies of
+  `Scripts.txt`, `ScriptExtensions.txt`, and
+  `PropertyValueAliases.txt` (staged under `docs/text/opentype/ucd/`,
+  © Unicode, Inc., UNICODE LICENSE V3 with the notice retained in each
+  file's header) now live under `data/ucd/`, following the AGL
+  vendoring convention. `unicode_script` gains lazily-parsed statics
+  — `vendored_scripts` / `vendored_script_extensions` — and the
+  per-character conveniences `script_of(char)` / `scx_of(char)`
+  (`VENDORED_UCD_VERSION = "17.0.0"`), so UAX #24 script
+  classification works out of the box; callers can still supply newer
+  UCD text to the parsers.
 - **Gradient color interpolation per the staged `CPAL` chapter**
   (`docs/text/opentype/otspec-cpal.html`, "Interpolation of colors"):
   new `PremultipliedLinearColor` working form —

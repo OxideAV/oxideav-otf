@@ -25,14 +25,21 @@
 //!   wildcards), the check that keeps U+30FC out of a Latin run but
 //!   inside a Hiragana/Katakana one.
 //!
-//! The per-code-point **data** lives in the UCD files, which the
-//! caller supplies as text (they are versioned artifacts that change
-//! with every Unicode release — §3.2 warns scx values change more
-//! often than most properties). The three special implicit values are
-//! [`COMMON`] (`Zyyy`), [`INHERITED`] (`Zinh`), and [`UNKNOWN`]
-//! (`Zzzz`).
+//! The per-code-point **data** lives in the UCD files. Verbatim
+//! copies of the Unicode 17.0.0 `Scripts.txt` /
+//! `ScriptExtensions.txt` / `PropertyValueAliases.txt` (staged under
+//! `docs/text/opentype/ucd/`, © Unicode, Inc., distributed under the
+//! UNICODE LICENSE V3 with the notice retained in each file's header)
+//! are vendored under `data/ucd/` and exposed as lazily-parsed
+//! statics ([`vendored_scripts`], [`vendored_script_extensions`],
+//! and the [`script_of`] / [`scx_of`] per-character conveniences).
+//! The parsers also accept caller-supplied text for newer UCD
+//! releases (§3.2 warns scx values change more often than most
+//! properties). The three special implicit values are [`COMMON`]
+//! (`Zyyy`), [`INHERITED`] (`Zinh`), and [`UNKNOWN`] (`Zzzz`).
 
 use crate::Error;
+use std::sync::OnceLock;
 
 /// The implicit `Common` Script value (short form `Zyyy`).
 pub const COMMON: &str = "Common";
@@ -320,6 +327,49 @@ pub fn scx_compatible(a: &[&str], b: &[&str]) -> bool {
     a.iter().any(|x| b.iter().any(|y| loose_match(x, y)))
 }
 
+// ---- vendored UCD data -----------------------------------------------------
+
+/// The Unicode version of the UCD data files vendored under
+/// `data/ucd/` (each file's first line self-identifies as its
+/// versioned filename, e.g. `Scripts-17.0.0.txt`).
+pub const VENDORED_UCD_VERSION: &str = "17.0.0";
+
+/// Vendored `Scripts.txt` (Unicode 17.0.0), verbatim.
+const SCRIPTS_TXT: &str = include_str!("../data/ucd/Scripts.txt");
+/// Vendored `ScriptExtensions.txt` (Unicode 17.0.0), verbatim.
+const SCRIPT_EXTENSIONS_TXT: &str = include_str!("../data/ucd/ScriptExtensions.txt");
+
+/// The vendored `Scripts.txt` data, parsed on first use.
+pub fn vendored_scripts() -> &'static ScriptData {
+    static DATA: OnceLock<ScriptData> = OnceLock::new();
+    DATA.get_or_init(|| {
+        ScriptData::parse(SCRIPTS_TXT).expect("vendored Scripts.txt is well-formed")
+    })
+}
+
+/// The vendored `ScriptExtensions.txt` data, parsed on first use.
+pub fn vendored_script_extensions() -> &'static ScriptExtensions {
+    static DATA: OnceLock<ScriptExtensions> = OnceLock::new();
+    DATA.get_or_init(|| {
+        ScriptExtensions::parse(SCRIPT_EXTENSIONS_TXT)
+            .expect("vendored ScriptExtensions.txt is well-formed")
+    })
+}
+
+/// The Script property value of `c` (long form, e.g. `"Latin"`) from
+/// the vendored data; [`UNKNOWN`] for unlisted code points (§4.1).
+pub fn script_of(c: char) -> &'static str {
+    vendored_scripts().script(c as u32)
+}
+
+/// The Script_Extensions set of `c` from the vendored data, with the
+/// §4.2 default applied: the listed set of short script codes (e.g.
+/// `["Hira", "Kana"]`), or the single-value set `{ Script(c) }` (long
+/// form) when the file has no entry for `c`.
+pub fn scx_of(c: char) -> Vec<&'static str> {
+    vendored_script_extensions().scx_or_default(c as u32, vendored_scripts())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,6 +496,47 @@ mod tests {
         assert!(scx_compatible(&["Grek"], &["Zinh"]));
         // Multi-script intersection.
         assert!(scx_compatible(&["Arab", "Syrc"], &["Syrc", "Thaa"]));
+    }
+
+    #[test]
+    fn vendored_data_parses_and_answers_known_values() {
+        // The vendored files self-identify their Unicode version on
+        // line 1.
+        assert!(SCRIPTS_TXT
+            .lines()
+            .next()
+            .unwrap()
+            .contains(&format!("Scripts-{VENDORED_UCD_VERSION}.txt")));
+        assert!(SCRIPT_EXTENSIONS_TXT
+            .lines()
+            .next()
+            .unwrap()
+            .contains(&format!("ScriptExtensions-{VENDORED_UCD_VERSION}.txt")));
+
+        let s = vendored_scripts();
+        // Unicode 17.0.0 Scripts.txt carries thousands of ranges; the
+        // scx file lists ~200 data lines.
+        assert!(s.len() > 2000, "{}", s.len());
+        assert!(vendored_script_extensions().len() > 150);
+
+        // Data rows verified against the staged files.
+        assert_eq!(script_of('A'), "Latin"); // 0041..005A ; Latin
+        assert_eq!(script_of('\u{3041}'), "Hiragana"); // 3041..3096
+        assert_eq!(script_of('\u{0640}'), "Common"); // ARABIC TATWEEL
+        assert_eq!(script_of('\u{30FC}'), "Common"); // PROLONGED SOUND MARK
+        assert_eq!(script_of('\u{0300}'), "Inherited");
+
+        // scx rows: 30FC -> {Hira Kana}; 0640 -> the 9-script set.
+        assert_eq!(scx_of('\u{30FC}'), vec!["Hira", "Kana"]);
+        let tatweel = scx_of('\u{0640}');
+        assert_eq!(tatweel.len(), 9);
+        assert!(tatweel.contains(&"Arab"));
+        assert!(tatweel.contains(&"Syrc"));
+        // Default: { Script(cp) } in long form for unlisted entries.
+        assert_eq!(scx_of('A'), vec!["Latin"]);
+        // Unlisted code point: Unknown.
+        assert_eq!(script_of('\u{E000}'), UNKNOWN); // private use
+        assert_eq!(scx_of('\u{E000}'), vec![UNKNOWN]);
     }
 
     #[test]
