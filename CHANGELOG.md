@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/OxideAV/oxideav-otf/compare/v0.1.3...v0.1.4) - 2026-07-30
+
+### Other
+
+- background-aware palette selection + stale shaping-doc cleanup
+- README - document the r435 surface (UCD vendoring, itemized shaping, registries, CPAL interpolation, IVS LONG_WORDS, em-box/ICF)
+- language-system tag registry (661 tags + ISO 639 reverse lookup)
+- baseline-tag registry + ideographic em-box / ICF derivation
+- script-itemized shaping - Font::shape_runs with per-run tag detection
+- OpenType script-tag registry + Unicode-script -> tag mapping
+- UAX #24 script itemization over the vendored UCD data
+- PropertyValueAliases sc-row parser + vendored script-alias table
+- vendor UCD 17.0.0 script data files; script_of/scx_of conveniences
+- CPAL-chapter gradient color interpolation (premultiplied linear-light)
+- IVS LONG_WORDS delta form + NULL subtable offsets; Fixed-delta scaling confirmed
+- doc(hidden) the internal public surface (fleet semver-noise policy)
+- mutation/truncation robustness sweep for the color/bitmap tables
+- README — document the color-font + embedded-bitmap surface
+- SVG table Amd.1:2020 alignment (gzip method byte, --color<num> vars)
+- SVG glyph-description table
+- EBSC embedded bitmap scaling table
+- EBDT/CBDT bitmap data tables + pixel unpacking
+- EBLC/CBLC embedded-bitmap location tables (all 5 index formats)
+- sbix standard bitmap graphics table
+- COLR paint-graph palette-index -> RGBA resolution via CPAL
+- CPAL palette table (versions 0 and 1)
+- COLR + avar exhaustive mutation/truncation robustness tests
+- UAX #24 Script / Script_Extensions itemization machinery
+- complete OpenType Layout feature-tag registry (243 tags)
+- avar version 2 — cross-axis delta remapping
+- COLR v0 + v1 paint-graph color table
+- DeltaSetIndexMap format-0/1 headers + 32-bit index resolution
+- SkipFilter supersession-rule tests over a synthetic GDEF
+- shape Anchor format-3 VariationIndex deltas — attachment anchors move with the variable instance
+- document the text-shaping pipeline (README + CHANGELOG)
+- shaping coverage — GSUB multiple + reverse-chain substitution and the legacy-kern fallback (synthetic)
+- FeatureVariations — instance-conditional feature-table substitution (chapter 2 §Feature variations)
+- variable-font shaping — HVAR advances + GPOS VariationIndex deltas through Font::shape(coords)
+- allow too_many_arguments on GPOS nested-lookup applier (clippy)
+- shape GPOS cursive, mark-to-ligature, and (chained) contextual positioning (types 3/5/7/8)
+- shape GPOS mark-to-base + mark-to-mark attachment (types 4/6)
+- text-shaping pipeline core — Font::shape with GSUB engine + GPOS kerning (ISO 14496-22 chapter 2 processing model)
+- add CI / crates.io / docs.rs / MIT-license badges
+- VORG vertical origin table (ISO 14496-22 §5.4)
+- BASE baseline table (ISO 14496-22 §6.3)
+- HVAR + VVAR per-glyph metrics variations + DeltaSetIndexMap (ISO 14496-22 §7.3.5, §7.3.8)
+- delta-set ItemVariationStore + MVAR metrics variations (ISO 14496-22 §7.2.3, §7.3.6)
+- STAT style attributes table (ISO 14496-22 §7.3.7)
+- fvar + avar + region-scalar derivation -> axis-driven CFF2 outlines
+- legacy kern table (ISO 14496-22 §5.7.5, OFF version-0)
+- vhea + vmtx vertical metrics tables (ISO 14496-22 §§5.7.9-5.7.10)
+- cmap subtable format 2 (high-byte CJK mapping)
+- cmap format 14 Unicode Variation Sequences (UVS)
+- cmap subtable format 13 (many-to-one range mappings)
+- decode Device and VariationIndex tables (GPOS/GDEF)
+- GSUB Lookup Type 8 reverse chaining single substitution decoder
+- CFF2 variation-aware glyph-outline decoder (blend/vsindex)
+- GSUB Lookup Types 5/6 contextual + chained contextual substitution
+- GPOS Lookup Types 7/8 contextual + chained contextual positioning
+- GPOS Lookup Type 5 mark-to-ligature attachment positioning
+- decode Lookup Type 6 (mark-to-mark attachment positioning)
+- decode GPOS Lookup Type 3 cursive attachment (CursivePosFormat1)
+- ship 258-entry standard-Macintosh glyph-name set + resolve formats 1.0/2.0/2.5
+- decode Lookup Type 4 (mark-to-base attachment positioning)
+- refresh to current status, drop per-round changelog cruft
+
 ### Other
 
 - **Vendored UCD script data (Unicode 17.0.0)**: verbatim copies of
