@@ -274,41 +274,29 @@ impl Os2Table {
         // layout and leave the typo fields zero. v1+ requires the
         // full layout — if a v1+ table is too short, that's a hard
         // BadStructure.
-        let has_typo_metrics;
-        let s_typo_ascender;
-        let s_typo_descender;
-        let s_typo_line_gap;
-        let us_win_ascent;
-        let us_win_descent;
-        if bytes.len() >= 78 {
-            has_typo_metrics = true;
-            s_typo_ascender = read_i16(bytes, 68)?;
-            s_typo_descender = read_i16(bytes, 70)?;
-            s_typo_line_gap = read_i16(bytes, 72)?;
-            us_win_ascent = read_u16(bytes, 74)?;
-            us_win_descent = read_u16(bytes, 76)?;
-        } else if version == 0 {
-            has_typo_metrics = false;
-            s_typo_ascender = 0;
-            s_typo_descender = 0;
-            s_typo_line_gap = 0;
-            us_win_ascent = 0;
-            us_win_descent = 0;
-        } else {
-            return Err(Error::BadStructure(
-                "OS/2 v1+ truncated before typo-metrics tail",
-            ));
-        }
+        let has_typo_metrics = bytes.len() >= 78;
+        let (s_typo_ascender, s_typo_descender, s_typo_line_gap, us_win_ascent, us_win_descent) =
+            if has_typo_metrics {
+                (
+                    read_i16(bytes, 68)?,
+                    read_i16(bytes, 70)?,
+                    read_i16(bytes, 72)?,
+                    read_u16(bytes, 74)?,
+                    read_u16(bytes, 76)?,
+                )
+            } else if version == 0 {
+                (0, 0, 0, 0, 0)
+            } else {
+                return Err(Error::BadStructure(
+                    "OS/2 v1+ truncated before typo-metrics tail",
+                ));
+            };
 
         // v1+ code-page range. Optional only on v0; v1+ tables must
         // carry both fields.
-        let has_code_page_range;
-        let ul_code_page_range1;
-        let ul_code_page_range2;
-        if bytes.len() >= 86 {
-            has_code_page_range = true;
-            ul_code_page_range1 = read_u32(bytes, 78)?;
-            ul_code_page_range2 = read_u32(bytes, 82)?;
+        let has_code_page_range = bytes.len() >= 86;
+        let (ul_code_page_range1, ul_code_page_range2) = if has_code_page_range {
+            (read_u32(bytes, 78)?, read_u32(bytes, 82)?)
         } else if version <= 1 {
             // v1 truncated → malformed; v0 → simply not present.
             if version == 1 {
@@ -316,60 +304,44 @@ impl Os2Table {
                     "OS/2 v1 truncated before ulCodePageRange",
                 ));
             }
-            has_code_page_range = false;
-            ul_code_page_range1 = 0;
-            ul_code_page_range2 = 0;
+            (0, 0)
         } else {
             return Err(Error::BadStructure(
                 "OS/2 v2+ truncated before ulCodePageRange",
             ));
-        }
+        };
 
         // v2+ extension: sxHeight, sCapHeight, usDefaultChar,
         // usBreakChar, usMaxContext.
-        let has_v2_extension;
-        let sx_height;
-        let s_cap_height;
-        let us_default_char;
-        let us_break_char;
-        let us_max_context;
-        if bytes.len() >= 96 {
-            has_v2_extension = true;
-            sx_height = read_i16(bytes, 86)?;
-            s_cap_height = read_i16(bytes, 88)?;
-            us_default_char = read_u16(bytes, 90)?;
-            us_break_char = read_u16(bytes, 92)?;
-            us_max_context = read_u16(bytes, 94)?;
-        } else if version <= 1 {
-            has_v2_extension = false;
-            sx_height = 0;
-            s_cap_height = 0;
-            us_default_char = 0;
-            us_break_char = 0;
-            us_max_context = 0;
-        } else {
-            return Err(Error::BadStructure(
-                "OS/2 v2+ truncated before sxHeight/sCapHeight tail",
-            ));
-        }
+        let has_v2_extension = bytes.len() >= 96;
+        let (sx_height, s_cap_height, us_default_char, us_break_char, us_max_context) =
+            if has_v2_extension {
+                (
+                    read_i16(bytes, 86)?,
+                    read_i16(bytes, 88)?,
+                    read_u16(bytes, 90)?,
+                    read_u16(bytes, 92)?,
+                    read_u16(bytes, 94)?,
+                )
+            } else if version <= 1 {
+                (0, 0, 0, 0, 0)
+            } else {
+                return Err(Error::BadStructure(
+                    "OS/2 v2+ truncated before sxHeight/sCapHeight tail",
+                ));
+            };
 
         // v5: optical-size point-size range, in TWIPs (1/20th point).
-        let has_optical_size;
-        let us_lower_optical_point_size;
-        let us_upper_optical_point_size;
-        if bytes.len() >= 100 {
-            has_optical_size = true;
-            us_lower_optical_point_size = read_u16(bytes, 96)?;
-            us_upper_optical_point_size = read_u16(bytes, 98)?;
+        let has_optical_size = bytes.len() >= 100;
+        let (us_lower_optical_point_size, us_upper_optical_point_size) = if has_optical_size {
+            (read_u16(bytes, 96)?, read_u16(bytes, 98)?)
         } else if version <= 4 {
-            has_optical_size = false;
-            us_lower_optical_point_size = 0;
-            us_upper_optical_point_size = 0;
+            (0, 0)
         } else {
             return Err(Error::BadStructure(
                 "OS/2 v5 truncated before usLowerOpticalPointSize",
             ));
-        }
+        };
 
         Ok(Self {
             version,
