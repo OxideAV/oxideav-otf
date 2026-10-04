@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/OxideAV/oxideav-otf/compare/v0.1.4...v0.1.5) - 2026-10-04
+
+### Other
+
+- initialize the OS/2 optional-tail fields where they are decided
+- README examples use the current registry API
+
 ## [0.1.4](https://github.com/OxideAV/oxideav-otf/compare/v0.1.3...v0.1.4) - 2026-07-30
 
 ### Other
