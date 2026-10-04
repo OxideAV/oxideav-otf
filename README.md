@@ -387,6 +387,7 @@ for contour in &outline.contours {
         let _ = seg;
     }
 }
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ## Text shaping
@@ -423,6 +424,7 @@ let _ = font.shape("Hello", &opts)?;
 // off the fvar→avar-normalized tuple.
 let heavy = ShapeOptions { coords: vec![700.0], ..ShapeOptions::default() };
 let _ = font.shape("Hello", &heavy)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 What the engine implements:
