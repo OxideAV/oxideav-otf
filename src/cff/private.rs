@@ -12,9 +12,9 @@
 //! consult them without re-parsing the DICT. Hinting is still not
 //! *enforced* by the round-1 outline decoder.
 
+use crate::Error;
 use crate::cff::dict::{Dict, Operand, Operator};
 use crate::cff::index::Index;
-use crate::Error;
 
 /// PostScript-style hinting parameters recovered from a CFF Private
 /// DICT, per Adobe TN5176 §15 Table 23. Every field is surfaced even

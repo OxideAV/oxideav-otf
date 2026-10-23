@@ -8,8 +8,8 @@
 //! the second array is at the end of the font and every glyph in it has
 //! the same advance height as the last `vMetrics` entry).
 
-use crate::parser::{read_i16, read_u16};
 use crate::Error;
+use crate::parser::{read_i16, read_u16};
 
 #[derive(Debug, Clone)]
 pub struct VmtxTable<'a> {

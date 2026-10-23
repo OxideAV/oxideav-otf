@@ -26,9 +26,9 @@
 //! summary + "PrivateDICT subroutine operator" +
 //! "PrivateDICT variation operators").
 
+use crate::Error;
 use crate::cff::dict::{Dict, Operand};
 use crate::cff2::index::Cff2Index;
-use crate::Error;
 
 /// `LocalSubrINDEXOffset` PrivateDICT operator (dec 19 / `0x13`).
 const OP_LOCAL_SUBR_INDEX_OFFSET: u16 = 19;

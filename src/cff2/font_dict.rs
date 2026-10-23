@@ -17,8 +17,8 @@
 //! Spec: `docs/text/opentype/otspec-cff2.html` (FontDICTINDEX,
 //! FontDICTSelect and FontDICT).
 
-use crate::cff::dict::{Dict, Operand};
 use crate::Error;
+use crate::cff::dict::{Dict, Operand};
 
 /// FontDICT `Private` operator (dec 18 / `0x12`).
 const OP_PRIVATE: u16 = 18;

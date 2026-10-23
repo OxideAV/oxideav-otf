@@ -22,8 +22,8 @@
 //! it surfaces the raw bytes; image decoding belongs to the image
 //! codec crates.
 
-use crate::parser::{read_i16, read_tag, read_u16, read_u32};
 use crate::Error;
+use crate::parser::{read_i16, read_tag, read_u16, read_u32};
 
 /// `flags` bit 0: historically always set.
 pub const SBIX_FLAG_ALWAYS_SET: u16 = 0x0001;

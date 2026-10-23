@@ -3,8 +3,8 @@
 //! strike records with their SbitLineMetrics, the IndexSubTableArray
 //! range walk, and all five IndexSubTable formats.
 
-use oxideav_otf::tables::eblc::BitmapLocationTable;
 use oxideav_otf::BITMAP_FLAG_HORIZONTAL_METRICS;
+use oxideav_otf::tables::eblc::BitmapLocationTable;
 
 fn u16b(v: u16) -> [u8; 2] {
     v.to_be_bytes()
@@ -55,7 +55,7 @@ fn build_table(major: u16, ranges: &[(u16, u16, Vec<u8>)], ppem: u8, bit_depth: 
     b.extend_from_slice(&u16b(major)); // majorVersion
     b.extend_from_slice(&u16b(0)); // minorVersion
     b.extend_from_slice(&u32b(1)); // numSizes
-                                   // BitmapSize.
+    // BitmapSize.
     b.extend_from_slice(&u32b(ista_at as u32));
     b.extend_from_slice(&u32b(index_tables_size));
     b.extend_from_slice(&u32b(ranges.len() as u32));

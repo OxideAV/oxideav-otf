@@ -52,9 +52,9 @@
 //! scalar for the active instance, and sums `scalar * delta` across the
 //! subtable's regions.
 
-use crate::cff2::varstore::{RegionAxisCoordinates, VariationRegion};
-use crate::parser::{read_f2dot14, read_u16, read_u32, read_u8};
 use crate::Error;
+use crate::cff2::varstore::{RegionAxisCoordinates, VariationRegion};
+use crate::parser::{read_f2dot14, read_u8, read_u16, read_u32};
 
 /// `wordDeltaCount` bit 15: word deltas are `int32` (and short deltas
 /// `int16`) instead of `int16`/`int8`.
@@ -411,7 +411,7 @@ mod tests {
         v.extend_from_slice(&2u16.to_be_bytes());
         v.extend_from_slice(&0u16.to_be_bytes()); // regionIndex 0
         v.extend_from_slice(&1u16.to_be_bytes()); // regionIndex 1
-                                                  // delta-set row: int16 = 100 (region0), int8 = -20 (region1).
+        // delta-set row: int16 = 100 (region0), int8 = -20 (region1).
         v.extend_from_slice(&100i16.to_be_bytes());
         v.push((-20i8) as u8);
         v
@@ -516,7 +516,7 @@ mod tests {
         v.extend_from_slice(&2u16.to_be_bytes());
         v.extend_from_slice(&0u16.to_be_bytes()); // regionIndex 0
         v.extend_from_slice(&1u16.to_be_bytes()); // regionIndex 1
-                                                  // Row 0: int32 = 131072 (2.0 in Fixed 1/65536ths), int16 = -300.
+        // Row 0: int32 = 131072 (2.0 in Fixed 1/65536ths), int16 = -300.
         v.extend_from_slice(&131_072i32.to_be_bytes());
         v.extend_from_slice(&(-300i16).to_be_bytes());
         // Row 1: int32 = -70000 (outside int16 range), int16 = 25.
@@ -583,8 +583,8 @@ mod tests {
         let mut p = Vec::new();
         p.extend_from_slice(&entry_format.to_be_bytes());
         p.extend_from_slice(&3u16.to_be_bytes()); // mapCount
-                                                  // entry = (outer << 4) | inner.
-                                                  // glyph0 -> (1, 2) = 0x12
+        // entry = (outer << 4) | inner.
+        // glyph0 -> (1, 2) = 0x12
         p.extend_from_slice(&0x0012u16.to_be_bytes());
         // glyph1 -> (0, 5) = 0x05
         p.extend_from_slice(&0x0005u16.to_be_bytes());
@@ -608,7 +608,7 @@ mod tests {
         p.push(1u8); // format
         p.push(0x17u8); // entryFormat
         p.extend_from_slice(&2u32.to_be_bytes()); // mapCount
-                                                  // entry = (outer << 8) | inner.
+        // entry = (outer << 8) | inner.
         p.extend_from_slice(&0x0103u16.to_be_bytes()); // idx0 -> (1, 3)
         p.extend_from_slice(&0x0210u16.to_be_bytes()); // idx1 -> (2, 16)
 

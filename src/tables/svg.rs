@@ -29,8 +29,8 @@
 //! older `context-fill` / `context-*` properties are deprecated by
 //! Amd.1.
 
-use crate::parser::{read_u16, read_u32};
 use crate::Error;
+use crate::parser::{read_u16, read_u32};
 
 /// One SVG Document Index entry, resolved to its document bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,12 +122,12 @@ impl<'a> SvgTable<'a> {
             if end_glyph_id < start_glyph_id {
                 return Err(Error::BadStructure("SVG: endGlyphID < startGlyphID"));
             }
-            if let Some(prev) = prev_end {
-                if start_glyph_id <= prev {
-                    return Err(Error::BadStructure(
-                        "SVG: index entries must ascend without overlap",
-                    ));
-                }
+            if let Some(prev) = prev_end
+                && start_glyph_id <= prev
+            {
+                return Err(Error::BadStructure(
+                    "SVG: index entries must ascend without overlap",
+                ));
             }
             prev_end = Some(end_glyph_id);
             if doc_offset == 0 || doc_len == 0 {

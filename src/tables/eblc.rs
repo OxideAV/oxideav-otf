@@ -27,8 +27,8 @@
 //! image format, the absolute byte range within that table, and — for
 //! the constant-metrics formats — the shared [`BigGlyphMetrics`].
 
-use crate::parser::{read_u16, read_u32, read_u8};
 use crate::Error;
+use crate::parser::{read_u8, read_u16, read_u32};
 
 /// `BitmapSize.flags` bit 0: small glyph metrics are for horizontal
 /// layout.

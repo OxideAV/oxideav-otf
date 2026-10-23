@@ -49,9 +49,9 @@
 //! (deltas are stored as true value × 16384), and clamped to `[-1, 1]`.
 //! The resulting coordinates drive all downstream variation data.
 
+use crate::Error;
 use crate::parser::{read_f2dot14, read_u16, read_u32};
 use crate::tables::ivs::{DeltaSetIndexMap, ItemVariationStore};
-use crate::Error;
 
 /// One `(fromCoordinate, toCoordinate)` correspondence in a segment map.
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -42,12 +42,12 @@
 //! width even though it isn't currently surfaced — `Font::glyph_advance`
 //! routes through `hmtx`, which is the spec-preferred path.
 
+use crate::Error;
 use crate::cff::charset::Charset;
 use crate::cff::encoding::STANDARD_ENCODING;
 use crate::cff::index::Index;
 use crate::cff::subrs::bias_for;
 use crate::outline::{CubicContour, CubicOutline, CubicSegment, Point};
-use crate::Error;
 
 /// Maximum subroutine recursion depth (TN5177 §4.5 says "no more
 /// than 10 deep" for type 2; we use 16 to leave headroom for fonts
@@ -347,7 +347,7 @@ impl<'a> Interpreter<'a> {
                 24 /* rcurveline */ => {
                     // {dxa dya dxb dyb dxc dyc}+ dxd dyd
                     let n = self.stack.len();
-                    if n < 8 || (n - 2) % 6 != 0 {
+                    if n < 8 || !(n - 2).is_multiple_of(6) {
                         return Err(Error::CharstringStackUnderflow);
                     }
                     let groups = (n - 2) / 6;
@@ -363,7 +363,7 @@ impl<'a> Interpreter<'a> {
                 25 /* rlinecurve */ => {
                     // {dxa dya}+ dxb dyb dxc dyc dxd dyd
                     let n = self.stack.len();
-                    if n < 8 || (n - 6) % 2 != 0 {
+                    if n < 8 || !(n - 6).is_multiple_of(2) {
                         return Err(Error::CharstringStackUnderflow);
                     }
                     let lines = (n - 6) / 2;
@@ -760,11 +760,11 @@ impl<'a> Interpreter<'a> {
         if s.len() % 4 == 1 {
             dy1 = s.remove(0);
         }
-        if s.len() % 4 != 0 {
+        if !s.len().is_multiple_of(4) {
             return Err(Error::CharstringStackUnderflow);
         }
         let mut first = true;
-        for chunk in s.chunks_exact(4) {
+        for chunk in s.as_chunks::<4>().0 {
             let dxa = chunk[0];
             let (dxb, dyb, dxc) = (chunk[1], chunk[2], chunk[3]);
             let dya = if first { dy1 } else { 0.0 };
@@ -782,11 +782,11 @@ impl<'a> Interpreter<'a> {
         if s.len() % 4 == 1 {
             dx1 = s.remove(0);
         }
-        if s.len() % 4 != 0 {
+        if !s.len().is_multiple_of(4) {
             return Err(Error::CharstringStackUnderflow);
         }
         let mut first = true;
-        for chunk in s.chunks_exact(4) {
+        for chunk in s.as_chunks::<4>().0 {
             let dya = chunk[0];
             let (dxb, dyb, dyc) = (chunk[1], chunk[2], chunk[3]);
             let dxa = if first { dx1 } else { 0.0 };
@@ -823,11 +823,11 @@ impl<'a> Interpreter<'a> {
         } else {
             None
         };
-        if s.len() % 4 != 0 {
+        if !s.len().is_multiple_of(4) {
             return Err(Error::CharstringStackUnderflow);
         }
         let mut horiz = h_first;
-        let mut chunks: Vec<&[f32]> = s.chunks_exact(4).collect();
+        let mut chunks: Vec<&[f32]> = s.as_chunks::<4>().0.iter().map(|c| c.as_slice()).collect();
         let last_idx = chunks.len().saturating_sub(1);
         for (i, chunk) in chunks.iter_mut().enumerate() {
             let (dxa, dya, dxb, dyb, dxc, dyc);
@@ -1137,11 +1137,7 @@ fn parse_int_operand(bytes: &[u8], i: usize, b0: u8) -> Result<(i32, usize), Err
 /// (`1_or_0`): the spec's `and` / `or` / `not` / `eq` push 1 for true
 /// and 0 for false (TN5177 §4.6).
 fn bool01(b: bool) -> f32 {
-    if b {
-        1.0
-    } else {
-        0.0
-    }
+    if b { 1.0 } else { 0.0 }
 }
 
 #[cfg(test)]

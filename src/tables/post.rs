@@ -59,8 +59,8 @@
 //! (`glyphNameIndex >= 258`) are resolved from the string-data tail
 //! exposed by [`PostTable::name_string`].
 
-use crate::parser::{read_i16, read_u16, read_u32};
 use crate::Error;
+use crate::parser::{read_i16, read_u16, read_u32};
 
 /// The 258 standard Macintosh glyph names, in their canonical ordering.
 ///

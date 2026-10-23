@@ -26,8 +26,8 @@ pub mod private;
 pub mod strings;
 pub mod subrs;
 
-use crate::outline::CubicOutline;
 use crate::Error;
+use crate::outline::CubicOutline;
 
 use self::charset::Charset;
 use self::charstring::Interpreter;
@@ -964,7 +964,7 @@ mod tests {
             t.extend_from_slice(&op_int32(392));
             t.push(op_int1(0));
             t.extend_from_slice(&[12, 30]); // ROS
-                                            // CharStrings
+            // CharStrings
             t.extend_from_slice(&op_int32(cs_off));
             t.push(17);
             // charset

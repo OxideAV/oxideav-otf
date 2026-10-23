@@ -6,7 +6,7 @@
 
 use oxideav_otf::tables::colr::{ColrTable, PremultipliedLinearColor, ResolvedColor};
 use oxideav_otf::tables::cpal::{ColorRecord, CpalTable};
-use oxideav_otf::{resolve_paint_color, Paint, COLR_FOREGROUND_PALETTE_INDEX};
+use oxideav_otf::{COLR_FOREGROUND_PALETTE_INDEX, Paint, resolve_paint_color};
 
 fn u16b(v: u16) -> [u8; 2] {
     v.to_be_bytes()
@@ -362,9 +362,11 @@ fn color_line_interpolate_at_walks_the_stops() {
     assert!((mid.green - (g0 + g1) / 2.0).abs() < 1e-4);
     assert!((mid.alpha - (a0 + 0.5) / 2.0).abs() < 1e-4);
     // Out-of-range palette: None.
-    assert!(color_line
-        .interpolate_at(0.5, &cpal, 9, FG, |v| v)
-        .is_none());
+    assert!(
+        color_line
+            .interpolate_at(0.5, &cpal, 9, FG, |v| v)
+            .is_none()
+    );
 }
 
 #[test]

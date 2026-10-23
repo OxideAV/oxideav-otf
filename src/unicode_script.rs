@@ -726,16 +726,20 @@ mod tests {
     fn vendored_data_parses_and_answers_known_values() {
         // The vendored files self-identify their Unicode version on
         // line 1.
-        assert!(SCRIPTS_TXT
-            .lines()
-            .next()
-            .unwrap()
-            .contains(&format!("Scripts-{VENDORED_UCD_VERSION}.txt")));
-        assert!(SCRIPT_EXTENSIONS_TXT
-            .lines()
-            .next()
-            .unwrap()
-            .contains(&format!("ScriptExtensions-{VENDORED_UCD_VERSION}.txt")));
+        assert!(
+            SCRIPTS_TXT
+                .lines()
+                .next()
+                .unwrap()
+                .contains(&format!("Scripts-{VENDORED_UCD_VERSION}.txt"))
+        );
+        assert!(
+            SCRIPT_EXTENSIONS_TXT
+                .lines()
+                .next()
+                .unwrap()
+                .contains(&format!("ScriptExtensions-{VENDORED_UCD_VERSION}.txt"))
+        );
 
         let s = vendored_scripts();
         // Unicode 17.0.0 Scripts.txt carries thousands of ranges; the

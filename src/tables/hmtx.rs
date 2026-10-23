@@ -5,8 +5,8 @@
 //! i16` values. Tail glyphs share the advance of the *last* full
 //! metric pair.
 
-use crate::parser::{read_i16, read_u16};
 use crate::Error;
+use crate::parser::{read_i16, read_u16};
 
 #[derive(Debug, Clone)]
 pub struct HmtxTable<'a> {

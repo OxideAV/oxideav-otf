@@ -26,9 +26,9 @@
 //! byte-aligned formats' per-row padding) or [`unpack_bgra32`] for
 //! the `CBLC` `bitDepth` 32 pre-multiplied sRGB BGRA layout.
 
-use crate::parser::{read_u16, read_u32, read_u8};
-use crate::tables::eblc::{BigGlyphMetrics, BitmapLocation, SmallGlyphMetrics};
 use crate::Error;
+use crate::parser::{read_u8, read_u16, read_u32};
+use crate::tables::eblc::{BigGlyphMetrics, BitmapLocation, SmallGlyphMetrics};
 
 /// An `EbdtComponent` record (image formats 8 / 9): one constituent
 /// glyph of a composite bitmap.
@@ -310,7 +310,9 @@ pub fn unpack_bgra32(image: &[u8], width: usize, height: usize) -> Result<Vec<[u
         return Err(Error::UnexpectedEof);
     }
     Ok(image[..count * 4]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2], c[3]])
         .collect())
 }

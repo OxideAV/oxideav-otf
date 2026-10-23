@@ -41,9 +41,9 @@ pub(crate) mod buffer;
 pub(crate) mod gpos;
 pub(crate) mod gsub;
 
-use crate::tables::layout::{FeatureList, FeatureTableSubstitution, LangSys, Script, ScriptList};
 use crate::Error;
 use crate::Font;
+use crate::tables::layout::{FeatureList, FeatureTableSubstitution, LangSys, Script, ScriptList};
 use buffer::GlyphInfo;
 
 /// Maximum nesting depth for contextual lookups that reference nested
@@ -181,10 +181,10 @@ fn resolve_lang_sys<'a>(
             None => scripts.find(b"latn")?.ok()?,
         },
     };
-    if let Some(lang) = language {
-        if let Some(Ok(ls)) = script_table.find_lang_sys(&lang) {
-            return Some(ls);
-        }
+    if let Some(lang) = language
+        && let Some(Ok(ls)) = script_table.find_lang_sys(&lang)
+    {
+        return Some(ls);
     }
     script_table.default_lang_sys()?.ok()
 }
@@ -220,11 +220,7 @@ pub(crate) fn build_plan(
                 return f.value;
             }
         }
-        if defaults.contains(&tag) {
-            1
-        } else {
-            0
-        }
+        if defaults.contains(&tag) { 1 } else { 0 }
     };
 
     let mut planned: Vec<PlannedLookup> = Vec::new();
@@ -287,10 +283,10 @@ pub(crate) fn stage_has_enabled_feature(
     if value == 0 {
         return false;
     }
-    let found = lang_sys
+
+    lang_sys
         .feature_indices()
-        .any(|fi| features.tag(fi) == Some(tag));
-    found
+        .any(|fi| features.tag(fi) == Some(tag))
 }
 
 impl<'a> Font<'a> {
@@ -408,19 +404,17 @@ impl<'a> Font<'a> {
     /// Whether either OpenType Layout table (GSUB, then GPOS) defines
     /// script `tag` in its ScriptList.
     fn layout_has_script(&self, tag: [u8; 4]) -> bool {
-        if let Some(g) = self.gsub() {
-            if let Ok(scripts) = g.script_list() {
-                if scripts.find(&tag).is_some() {
-                    return true;
-                }
-            }
+        if let Some(g) = self.gsub()
+            && let Ok(scripts) = g.script_list()
+            && scripts.find(&tag).is_some()
+        {
+            return true;
         }
-        if let Some(g) = self.gpos() {
-            if let Ok(scripts) = g.script_list() {
-                if scripts.find(&tag).is_some() {
-                    return true;
-                }
-            }
+        if let Some(g) = self.gpos()
+            && let Ok(scripts) = g.script_list()
+            && scripts.find(&tag).is_some()
+        {
+            return true;
         }
         false
     }

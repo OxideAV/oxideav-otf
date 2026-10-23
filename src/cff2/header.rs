@@ -18,8 +18,8 @@
 //! The sum `headerSize + topDICTSize` is the location within the CFF2
 //! table of the required `GlobalSubrINDEX` subtable (spec §6).
 
-use crate::parser::{read_u16, read_u8};
 use crate::Error;
+use crate::parser::{read_u8, read_u16};
 
 /// Parsed CFF2 table header.
 #[derive(Debug, Clone, Copy)]

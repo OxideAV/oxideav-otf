@@ -33,8 +33,8 @@
 //! single-axis (value, value+range, value+style-link), format 4 is a
 //! multi-axis combination.
 
-use crate::parser::{read_fixed, read_tag, read_u16, read_u32};
 use crate::Error;
+use crate::parser::{read_fixed, read_tag, read_u16, read_u32};
 
 /// `flags` bit 0: this record describes other (older-sibling) family
 /// members, not the containing font.
@@ -329,7 +329,7 @@ mod tests {
         b[12..14].copy_from_slice(&1u16.to_be_bytes()); // axisValueCount
         b[16..20].copy_from_slice(&(av_offsets_off as u32).to_be_bytes());
         b[20..22].copy_from_slice(&2u16.to_be_bytes()); // elidedFallbackNameID
-                                                        // axis record.
+        // axis record.
         b[design_axes_off..design_axes_off + 4].copy_from_slice(b"wght");
         b[design_axes_off + 4..design_axes_off + 6].copy_from_slice(&256u16.to_be_bytes());
         b[design_axes_off + 6..design_axes_off + 8].copy_from_slice(&0u16.to_be_bytes());
@@ -403,12 +403,12 @@ mod tests {
         b[f2_off + 8..f2_off + 12].copy_from_slice(&fixed(11.0)); // nominal
         b[f2_off + 12..f2_off + 16].copy_from_slice(&fixed(9.0)); // min
         b[f2_off + 16..f2_off + 20].copy_from_slice(&fixed(13.0)); // max
-                                                                   // format 3.
+        // format 3.
         b[f3_off..f3_off + 2].copy_from_slice(&3u16.to_be_bytes());
         b[f3_off + 6..f3_off + 8].copy_from_slice(&401u16.to_be_bytes());
         b[f3_off + 8..f3_off + 12].copy_from_slice(&fixed(400.0)); // value
         b[f3_off + 12..f3_off + 16].copy_from_slice(&fixed(700.0)); // linked
-                                                                    // format 4 with 2 axis values + elidable flag.
+        // format 4 with 2 axis values + elidable flag.
         b[f4_off..f4_off + 2].copy_from_slice(&4u16.to_be_bytes());
         b[f4_off + 2..f4_off + 4].copy_from_slice(&2u16.to_be_bytes()); // axisCount
         b[f4_off + 4..f4_off + 6].copy_from_slice(&STAT_ELIDABLE_AXIS_VALUE_NAME.to_be_bytes());

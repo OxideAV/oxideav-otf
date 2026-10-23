@@ -32,14 +32,14 @@ fn build_fvar() -> Vec<u8> {
     b.extend_from_slice(&20u16.to_be_bytes()); // axisSize
     b.extend_from_slice(&2u16.to_be_bytes()); // instanceCount
     b.extend_from_slice(&14u16.to_be_bytes()); // instanceSize = 2*4 + 4 + 2
-                                               // axis 0: wght
+    // axis 0: wght
     b.extend_from_slice(b"wght");
     b.extend_from_slice(&fixed(100.0));
     b.extend_from_slice(&fixed(400.0));
     b.extend_from_slice(&fixed(900.0));
     b.extend_from_slice(&0u16.to_be_bytes()); // flags
     b.extend_from_slice(&256u16.to_be_bytes()); // axisNameID
-                                                // axis 1: wdth
+    // axis 1: wdth
     b.extend_from_slice(b"wdth");
     b.extend_from_slice(&fixed(75.0));
     b.extend_from_slice(&fixed(100.0));
@@ -52,7 +52,7 @@ fn build_fvar() -> Vec<u8> {
     b.extend_from_slice(&fixed(400.0));
     b.extend_from_slice(&fixed(100.0));
     b.extend_from_slice(&300u16.to_be_bytes()); // postScriptNameID
-                                                // instance 1: Bold (700, 100), PS name = none (0xFFFF)
+    // instance 1: Bold (700, 100), PS name = none (0xFFFF)
     b.extend_from_slice(&258u16.to_be_bytes());
     b.extend_from_slice(&0u16.to_be_bytes());
     b.extend_from_slice(&fixed(700.0));
@@ -69,7 +69,7 @@ fn build_avar() -> Vec<u8> {
     b.extend_from_slice(&0u16.to_be_bytes()); // minorVersion
     b.extend_from_slice(&0u16.to_be_bytes()); // reserved
     b.extend_from_slice(&2u16.to_be_bytes()); // axisCount
-                                              // axis 0 segment map (the spec example).
+    // axis 0 segment map (the spec example).
     let maps: &[(f32, f32)] = &[
         (-1.0, -1.0),
         (-0.75, -0.5),
@@ -163,7 +163,7 @@ fn build_minimal_cff() -> Vec<u8> {
     v.push(2); // offSize = 2
     v.extend_from_slice(&1u16.to_be_bytes()); // offset[0] = 1
     v.extend_from_slice(&((top_dict_len + 1) as u16).to_be_bytes()); // offset[1]
-                                                                     // Top DICT body.
+    // Top DICT body.
     let int5 = |val: i32| {
         let mut o = vec![0x1Du8];
         o.extend_from_slice(&val.to_be_bytes());
@@ -221,7 +221,7 @@ fn build_font(with_avar: bool) -> Vec<u8> {
     cmap.extend_from_slice(&0u16.to_be_bytes()); // format
     cmap.extend_from_slice(&262u16.to_be_bytes()); // length
     cmap.extend_from_slice(&0u16.to_be_bytes()); // language
-    cmap.extend(std::iter::repeat(0u8).take(256));
+    cmap.extend(std::iter::repeat_n(0u8, 256));
 
     // name: empty.
     let mut name = vec![0u8; 6];
@@ -252,7 +252,7 @@ fn build_font(with_avar: bool) -> Vec<u8> {
     for (_t, payload) in &tables {
         data_offsets.push(cursor);
         cursor += payload.len();
-        while cursor % 4 != 0 {
+        while !cursor.is_multiple_of(4) {
             cursor += 1;
         }
     }

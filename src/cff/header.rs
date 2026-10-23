@@ -12,8 +12,8 @@
 //! The header may be larger than 4 bytes — `hdrSize` lets the writer
 //! pad it for alignment. Anything past byte 4 is ignored on parse.
 
-use crate::parser::read_u8;
 use crate::Error;
+use crate::parser::read_u8;
 
 /// Parsed CFF header. We don't keep `major`/`minor` because nothing
 /// downstream branches on them; the version-1 acceptance check is done

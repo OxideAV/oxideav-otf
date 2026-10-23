@@ -24,8 +24,8 @@
 //! application-defined text foreground color (see
 //! [`crate::tables::colr::COLR_FOREGROUND_PALETTE_INDEX`]).
 
-use crate::parser::{read_u16, read_u32, read_u8};
 use crate::Error;
+use crate::parser::{read_u8, read_u16, read_u32};
 
 /// `paletteTypes` bit 0: the palette is appropriate for display on a
 /// light background such as white.
@@ -371,7 +371,7 @@ mod tests {
         b.extend_from_slice(&u32b(records_at as u32));
         b.extend_from_slice(&u16b(0)); // palette 0 first record
         b.extend_from_slice(&u16b(1)); // palette 1 first record (overlap)
-                                       // Records are BGRA on disk.
+        // Records are BGRA on disk.
         b.extend_from_slice(&[0x01, 0x02, 0x03, 0xFF]); // record 0
         b.extend_from_slice(&[0x0A, 0x0B, 0x0C, 0x80]); // record 1
         b.extend_from_slice(&[0x10, 0x20, 0x30, 0x00]); // record 2

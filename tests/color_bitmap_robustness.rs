@@ -6,13 +6,13 @@
 //! `Option` outcomes only — never a panic, hang, or runaway
 //! allocation.
 
-use oxideav_otf::tables::ebdt::{unpack_pixels, BitmapContent, BitmapDataTable, GlyphMetrics};
+use oxideav_otf::tables::ebdt::{BitmapContent, BitmapDataTable, GlyphMetrics, unpack_pixels};
 use oxideav_otf::tables::eblc::BitmapLocationTable;
 use oxideav_otf::tables::ebsc::EbscTable;
 use oxideav_otf::tables::sbix::SbixTable;
 use oxideav_otf::tables::svg::SvgTable;
 use oxideav_otf::tables::{colr::ColrTable, cpal::CpalTable};
-use oxideav_otf::{resolve_paint_color, ColorRecord};
+use oxideav_otf::{ColorRecord, resolve_paint_color};
 
 fn u16b(v: u16) -> [u8; 2] {
     v.to_be_bytes()
@@ -178,7 +178,7 @@ fn eblc_ebdt_pair() -> (Vec<u8>, Vec<u8>) {
     b.extend_from_slice(&u16b(1)); // startGlyphIndex
     b.extend_from_slice(&u16b(6)); // endGlyphIndex
     b.extend_from_slice(&[16, 16, 1, 1]); // ppemX/Y, bitDepth, flags
-                                          // IndexSubTableArray.
+    // IndexSubTableArray.
     b.extend_from_slice(&u16b(1));
     b.extend_from_slice(&u16b(2));
     b.extend_from_slice(&u32b(ista_len as u32));

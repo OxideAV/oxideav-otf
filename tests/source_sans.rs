@@ -1794,11 +1794,12 @@ fn gpos_mark_to_base_subtables_decode() {
                     }
                     None => {
                         // The base must indeed lack an anchor for this class.
-                        assert!(mbp
-                            .base_anchor(bg, mrec.mark_class)
-                            .unwrap()
-                            .unwrap()
-                            .is_none());
+                        assert!(
+                            mbp.base_anchor(bg, mrec.mark_class)
+                                .unwrap()
+                                .unwrap()
+                                .is_none()
+                        );
                     }
                 }
             }

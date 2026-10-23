@@ -72,7 +72,7 @@ fn layout_table(tags: &[[u8; 4]], lookups: &[(u16, u16, Vec<u8>)]) -> Vec<u8> {
     b.extend_from_slice(&be16(1));
     b.extend_from_slice(b"DFLT");
     b.extend_from_slice(&be16(8)); // Script follows the 8-byte list
-                                   // Script: defaultLangSys at 4, no LangSysRecords.
+    // Script: defaultLangSys at 4, no LangSysRecords.
     b.extend_from_slice(&be16(4));
     b.extend_from_slice(&be16(0));
     // LangSys: lookupOrder 0, no required feature, features 0..n.
@@ -149,10 +149,10 @@ fn gpos_cursive_subtable() -> Vec<u8> {
     b.extend_from_slice(&be16(1)); // format
     b.extend_from_slice(&be16(0)); // coverageOffset (patch @2)
     b.extend_from_slice(&be16(2)); // entryExitCount
-                                   // EntryExit[0] = gid 2: entry, no exit.
+    // EntryExit[0] = gid 2: entry, no exit.
     b.extend_from_slice(&be16(0)); // entryAnchorOffset (patch @6)
     b.extend_from_slice(&be16(0)); // exitAnchorOffset = NULL
-                                   // EntryExit[1] = gid 5: exit, no entry.
+    // EntryExit[1] = gid 5: exit, no entry.
     b.extend_from_slice(&be16(0)); // entryAnchorOffset = NULL
     b.extend_from_slice(&be16(0)); // exitAnchorOffset (patch @12)
     let cov = b.len();
@@ -196,7 +196,7 @@ fn gpos_mark_lig_subtable() -> Vec<u8> {
     b[10..12].copy_from_slice(&be16(lig_array as u16));
     b.extend_from_slice(&be16(1)); // ligatureCount
     b.extend_from_slice(&be16(4)); // ligatureAttachOffset (rel to array)
-                                   // LigatureAttach: componentCount 2, anchors per class.
+    // LigatureAttach: componentCount 2, anchors per class.
     b.extend_from_slice(&be16(2)); // componentCount
     b.extend_from_slice(&be16(6)); // component[0] class-0 anchor (rel to attach)
     b.extend_from_slice(&be16(12)); // component[1] class-0 anchor
@@ -355,7 +355,7 @@ fn build_font(cursive_rtl: bool) -> Vec<u8> {
     for (_t, payload) in &tables {
         offsets.push(cursor);
         cursor += payload.len();
-        while cursor % 4 != 0 {
+        while !cursor.is_multiple_of(4) {
             cursor += 1;
         }
     }
@@ -617,13 +617,13 @@ fn gpos_mark_base_var_subtable() -> Vec<u8> {
     b[10..12].copy_from_slice(&be16(base_array as u16));
     b.extend_from_slice(&be16(1)); // baseCount
     b.extend_from_slice(&be16(4)); // BaseRecord anchor offset (rel to BaseArray)
-                                   // Anchor format 3: (10, 200), NULL xDevice, yDevice at +10.
+    // Anchor format 3: (10, 200), NULL xDevice, yDevice at +10.
     b.extend_from_slice(&be16(3));
     b.extend_from_slice(&10i16.to_be_bytes());
     b.extend_from_slice(&200i16.to_be_bytes());
     b.extend_from_slice(&be16(0)); // xDeviceOffset = NULL
     b.extend_from_slice(&be16(10)); // yDeviceOffset (rel to Anchor start)
-                                    // VariationIndex table: (0, 0), deltaFormat 0x8000.
+    // VariationIndex table: (0, 0), deltaFormat 0x8000.
     b.extend_from_slice(&be16(0));
     b.extend_from_slice(&be16(0));
     b.extend_from_slice(&be16(0x8000));
@@ -721,7 +721,7 @@ fn build_var_font() -> Vec<u8> {
     for (_t, payload) in &tables {
         offsets.push(cursor);
         cursor += payload.len();
-        while cursor % 4 != 0 {
+        while !cursor.is_multiple_of(4) {
             cursor += 1;
         }
     }
@@ -900,7 +900,7 @@ fn gsub_v11_rvrn() -> Vec<u8> {
     b.extend_from_slice(&be16(1)); // substitutionCount
     b.extend_from_slice(&be16(0)); // featureIndex = 0
     b.extend_from_slice(&12u32.to_be_bytes()); // alternateFeatureOffset (rel to FTS)
-                                               // Alternate feature: 1 lookup, index 0.
+    // Alternate feature: 1 lookup, index 0.
     b.extend_from_slice(&be16(0)); // featureParams
     b.extend_from_slice(&be16(1)); // lookupIndexCount
     b.extend_from_slice(&be16(0)); // lookupListIndices[0]
@@ -978,7 +978,7 @@ fn build_rvrn_font() -> Vec<u8> {
     for (_t, payload) in &tables {
         offsets.push(cursor);
         cursor += payload.len();
-        while cursor % 4 != 0 {
+        while !cursor.is_multiple_of(4) {
             cursor += 1;
         }
     }
@@ -1191,7 +1191,7 @@ fn build_kern_fallback_font() -> Vec<u8> {
     for (_t, payload) in &tables {
         offsets.push(cursor);
         cursor += payload.len();
-        while cursor % 4 != 0 {
+        while !cursor.is_multiple_of(4) {
             cursor += 1;
         }
     }

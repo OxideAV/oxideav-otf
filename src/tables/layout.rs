@@ -25,8 +25,8 @@
 //! lookups decode their two- or four-byte windows on every call. The
 //! types are `Copy` so they can be passed around freely.
 
-use crate::parser::{read_f2dot14, read_u16, read_u32};
 use crate::Error;
+use crate::parser::{read_f2dot14, read_u16, read_u32};
 
 // ---------------------------------------------------------------------------
 // Tag helper

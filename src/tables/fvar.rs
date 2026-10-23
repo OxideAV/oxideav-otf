@@ -39,8 +39,8 @@
 //! scale (default to 0, min to -1, max to 1, linear between) that every
 //! other variation table consumes. `avar`, if present, refines this.
 
-use crate::parser::{read_fixed, read_tag, read_u16};
 use crate::Error;
+use crate::parser::{read_fixed, read_tag, read_u16};
 
 /// `flags` bit 0: the axis should not be exposed directly in UIs.
 pub const FVAR_AXIS_HIDDEN: u16 = 0x0001;
@@ -182,11 +182,7 @@ impl FvarTable {
             }
             let postscript_name_id = if has_ps_name {
                 let v = read_u16(bytes, off + 4 + axis_count * 4)?;
-                if v == 0xFFFF {
-                    None
-                } else {
-                    Some(v)
-                }
+                if v == 0xFFFF { None } else { Some(v) }
             } else {
                 None
             };

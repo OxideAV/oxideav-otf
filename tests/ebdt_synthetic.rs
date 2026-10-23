@@ -6,7 +6,7 @@
 
 use oxideav_otf::tables::ebdt::BitmapDataTable;
 use oxideav_otf::tables::eblc::BitmapLocation;
-use oxideav_otf::{unpack_bgra32, unpack_pixels, BitmapContent, GlyphMetrics};
+use oxideav_otf::{BitmapContent, GlyphMetrics, unpack_bgra32, unpack_pixels};
 
 /// SmallGlyphMetrics: height 3, width 5, bearingX 1, bearingY 3,
 /// advance 6.
@@ -50,7 +50,9 @@ fn formats_with_inline_metrics_and_alignment() {
     let px = unpack_pixels(img, 5, 3, 1, true).unwrap();
     assert_eq!(
         px,
-        [1, 0, 1, 0, 1, /*row1*/ 0, 1, 0, 1, 0, /*row2*/ 1, 1, 1, 1, 1]
+        [
+            1, 0, 1, 0, 1, /*row1*/ 0, 1, 0, 1, 0, /*row2*/ 1, 1, 1, 1, 1
+        ]
     );
 
     // Format 6: big metrics + byte-aligned.
@@ -222,7 +224,7 @@ fn unsupported_formats_and_versions_are_rejected() {
     assert!(t.glyph_data(&loc).is_err()); // format 4 undefined in OFF
     loc.image_format = 20;
     assert!(t.glyph_data(&loc).is_err()); // unknown
-                                          // Out-of-bounds location.
+    // Out-of-bounds location.
     loc.image_format = 5;
     loc.length = 10_000;
     assert!(t.glyph_data(&loc).is_err());

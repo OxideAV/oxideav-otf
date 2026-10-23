@@ -21,8 +21,8 @@
 //! Unicode any, then Windows / Unicode UCS-4, then Mac Roman English,
 //! then Unicode-platform records, then anything else.
 
-use crate::parser::read_u16;
 use crate::Error;
+use crate::parser::read_u16;
 
 /// Length of the on-disk fixed-size header (`version` + `count` +
 /// `storageOffset`).
@@ -464,7 +464,7 @@ fn decode<'a>(platform: u16, encoding: u16, raw: &'a [u8]) -> Option<std::borrow
 }
 
 fn decode_utf16_be(raw: &[u8]) -> Option<std::borrow::Cow<'_, str>> {
-    if raw.len() % 2 != 0 {
+    if !raw.len().is_multiple_of(2) {
         return None;
     }
     let mut s = String::with_capacity(raw.len() / 2);

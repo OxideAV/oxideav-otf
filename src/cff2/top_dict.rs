@@ -21,8 +21,8 @@
 //! Operand encoding is reused verbatim from the CFF1 DICT parser
 //! (`crate::cff::dict`).
 
-use crate::cff::dict::{Dict, Operand};
 use crate::Error;
+use crate::cff::dict::{Dict, Operand};
 
 /// CFF2 Top DICT operator codes. Stored as their on-disk encoding:
 /// single-byte operators in the low byte, two-byte (escape `12 nn`)

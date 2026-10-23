@@ -11,9 +11,9 @@
 //! independent; glyph metrics scale by the same per-axis ppem factor,
 //! rounded to the nearest integer pixel.
 
+use crate::Error;
 use crate::parser::{read_u16, read_u32};
 use crate::tables::eblc::SbitLineMetrics;
-use crate::Error;
 
 /// One `BitmapScale` record (28 bytes on disk).
 #[derive(Debug, Clone, Copy)]

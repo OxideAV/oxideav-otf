@@ -212,8 +212,8 @@ fn v0_layer_lookup() {
     b.extend_from_slice(&u32b(14)); // baseGlyphRecordsOffset
     b.extend_from_slice(&u32b(26)); // layerRecordsOffset
     b.extend_from_slice(&u16b(3)); // numLayerRecords
-                                   // base glyph records (sorted by gid): gid 4 -> layers[0..2],
-                                   // gid 9 -> layers[2..3].
+    // base glyph records (sorted by gid): gid 4 -> layers[0..2],
+    // gid 9 -> layers[2..3].
     b.extend_from_slice(&u16b(4));
     b.extend_from_slice(&u16b(0));
     b.extend_from_slice(&u16b(2));

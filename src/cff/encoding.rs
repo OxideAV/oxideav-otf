@@ -33,10 +33,10 @@
 //! `Encoding::Expert::lookup` so fonts that select predefined Encoding
 //! operand `1` now resolve code → GID via the per-font charset.
 
-use crate::cff::charset::Charset;
-use crate::cff::strings::{glyph_name_to_codepoint, Strings};
-use crate::parser::{read_u16, read_u8};
 use crate::Error;
+use crate::cff::charset::Charset;
+use crate::cff::strings::{Strings, glyph_name_to_codepoint};
+use crate::parser::{read_u8, read_u16};
 
 /// CFF Standard Encoding table (Adobe TN5176 Appendix B §1).
 ///
@@ -342,7 +342,7 @@ mod tests {
         assert_eq!(STANDARD_ENCODING[225], 138); // AE
         assert_eq!(STANDARD_ENCODING[241], 144); // ae
         assert_eq!(STANDARD_ENCODING[251], 149); // germandbls
-                                                 // Boundary check: everything past the last assignment is 0.
+        // Boundary check: everything past the last assignment is 0.
         assert_eq!(STANDARD_ENCODING[252], 0);
         assert_eq!(STANDARD_ENCODING[255], 0);
     }

@@ -9,9 +9,9 @@
 //! format-14 Unicode Variation Sequences subtable is retained
 //! alongside the chosen base subtable (see [`crate::tables::cmap_uvs`]).
 
+use crate::Error;
 use crate::parser::{read_u16, read_u32};
 use crate::tables::cmap_uvs::CmapUvs;
-use crate::Error;
 
 #[derive(Debug, Clone)]
 pub struct CmapTable<'a> {
@@ -177,11 +177,7 @@ fn lookup_format0(bytes: &[u8], codepoint: u32) -> Option<u16> {
         return None;
     }
     let g = bytes[glyph_array_off + codepoint as usize];
-    if g == 0 {
-        None
-    } else {
-        Some(g as u16)
-    }
+    if g == 0 { None } else { Some(g as u16) }
 }
 
 /// cmap subtable format 2 (high-byte mapping through table) — the
@@ -309,11 +305,7 @@ fn lookup_format6(bytes: &[u8], codepoint: u32) -> Option<u16> {
         return None;
     }
     let g = read_u16(bytes, 10 + idx as usize * 2).ok()?;
-    if g == 0 {
-        None
-    } else {
-        Some(g)
-    }
+    if g == 0 { None } else { Some(g) }
 }
 
 fn lookup_format12(bytes: &[u8], codepoint: u32) -> Option<u16> {
@@ -492,7 +484,7 @@ mod tests {
         let mut sub = vec![0u8; length];
         sub[0..2].copy_from_slice(&2u16.to_be_bytes()); // format
         sub[2..4].copy_from_slice(&(length as u16).to_be_bytes()); // length
-                                                                   // subHeaderKeys[0x81] = 8 (→ SubHeader 1).
+        // subHeaderKeys[0x81] = 8 (→ SubHeader 1).
         let key_off = 6 + 0x81 * 2;
         sub[key_off..key_off + 2].copy_from_slice(&8u16.to_be_bytes());
 

@@ -40,8 +40,8 @@
 //! through raw offsets only (their detail is rarely consumed by a
 //! shaper and the structure is recursive).
 
-use crate::parser::{read_i16, read_tag, read_u16};
 use crate::Error;
+use crate::parser::{read_i16, read_tag, read_u16};
 
 /// Which layout axis a query targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -579,9 +579,10 @@ mod tests {
             Some(-120)
         );
         // unknown script / axis.
-        assert!(base
-            .baseline_coord(BaseAxis::Horizontal, b"grek", b"romn")
-            .is_none());
+        assert!(
+            base.baseline_coord(BaseAxis::Horizontal, b"grek", b"romn")
+                .is_none()
+        );
         assert!(base.vertical_axis().is_none());
     }
 
@@ -724,9 +725,10 @@ mod tests {
         assert!(base.ideographic_em_box(b"hani", 1000, None).is_none());
         // Unknown script: HorizAxis.ideo lookup fails; fallback still
         // applies for a CJK font.
-        assert!(base
-            .ideographic_em_box(b"grek", 1000, Some((-120, 880)))
-            .is_some());
+        assert!(
+            base.ideographic_em_box(b"grek", 1000, Some((-120, 880)))
+                .is_some()
+        );
     }
 
     /// The registry's Kozuka Mincho Extra Light ICF example: with the

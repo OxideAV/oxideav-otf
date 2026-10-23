@@ -32,12 +32,12 @@ fn build_minimal_cff2_font() -> Vec<u8> {
     head[12..16].copy_from_slice(&0x5F0F3CF5u32.to_be_bytes()); // magicNumber
     head[16..18].copy_from_slice(&0u16.to_be_bytes()); // flags
     head[18..20].copy_from_slice(&1000u16.to_be_bytes()); // unitsPerEm
-                                                          // 20..28 created, 28..36 modified — leave zero.
+    // 20..28 created, 28..36 modified — leave zero.
     head[36..38].copy_from_slice(&0i16.to_be_bytes()); // xMin
     head[38..40].copy_from_slice(&0i16.to_be_bytes()); // yMin
     head[40..42].copy_from_slice(&1000i16.to_be_bytes()); // xMax
     head[42..44].copy_from_slice(&1000i16.to_be_bytes()); // yMax
-                                                          // 44..46 macStyle, 46..48 lowestRecPPEM, 48..50 fontDirectionHint.
+    // 44..46 macStyle, 46..48 lowestRecPPEM, 48..50 fontDirectionHint.
     head[50..52].copy_from_slice(&0i16.to_be_bytes()); // indexToLocFormat
     head[52..54].copy_from_slice(&0i16.to_be_bytes()); // glyphDataFormat
 
@@ -48,7 +48,7 @@ fn build_minimal_cff2_font() -> Vec<u8> {
     hhea[6..8].copy_from_slice(&(-200i16).to_be_bytes()); // descender
     hhea[8..10].copy_from_slice(&100i16.to_be_bytes()); // lineGap
     hhea[10..12].copy_from_slice(&1000u16.to_be_bytes()); // advanceWidthMax
-                                                          // 12..32 zero
+    // 12..32 zero
     hhea[34..36].copy_from_slice(&1u16.to_be_bytes()); // numberOfHMetrics
 
     // maxp version 0.5 (the CFF flavour — 6 bytes).
@@ -97,7 +97,7 @@ fn build_minimal_cff2_font() -> Vec<u8> {
         cursor += payload.len();
         // sfnt table-record offsets must be 4-byte aligned per spec;
         // we pad with zeros.
-        while cursor % 4 != 0 {
+        while !cursor.is_multiple_of(4) {
             cursor += 1;
         }
     }
@@ -148,7 +148,7 @@ fn build_minimal_cmap() -> Vec<u8> {
     t.extend_from_slice(&0u16.to_be_bytes()); // format
     t.extend_from_slice(&262u16.to_be_bytes()); // length
     t.extend_from_slice(&0u16.to_be_bytes()); // language
-    t.extend(std::iter::repeat(0u8).take(256));
+    t.extend(std::iter::repeat_n(0u8, 256));
     t
 }
 

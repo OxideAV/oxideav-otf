@@ -20,8 +20,8 @@
 //!   `first` must be 0 and the sentinel equals the glyph count.
 //!   Suited to well-ordered FD indexes (the usual case).
 
-use crate::parser::{read_u16, read_u8};
 use crate::Error;
+use crate::parser::{read_u8, read_u16};
 
 /// A parsed FDSelect, retaining the raw payload for O(log n) / O(1)
 /// per-glyph lookups (no per-glyph allocation up front).

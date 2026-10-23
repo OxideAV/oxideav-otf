@@ -20,8 +20,8 @@
 //! When `count == 0` the structure is just `Card16(0)` — only 2 bytes
 //! total, no `offSize` / `offsets` / `data` sections at all.
 
-use crate::parser::{read_u16, read_u8};
 use crate::Error;
+use crate::parser::{read_u8, read_u16};
 
 /// A parsed CFF INDEX. Stores the original byte slice + lazily-parsed
 /// offset metadata; entries are returned by zero-copy `&[u8]` slices.

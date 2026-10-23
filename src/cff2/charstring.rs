@@ -37,11 +37,11 @@
 //!
 //! Spec: `docs/text/opentype/otspec-cff2.html`.
 
+use crate::Error;
 use crate::cff::subrs::bias_for;
 use crate::cff2::index::Cff2Index;
 use crate::cff2::varstore::ItemVariationStore;
 use crate::outline::{CubicContour, CubicOutline, CubicSegment, Point};
-use crate::Error;
 
 /// Maximum subroutine recursion depth. CFF2 keeps the Type 2 cap of
 /// 10; we allow 16 for headroom.
@@ -265,7 +265,7 @@ impl<'a> Cff2Interpreter<'a> {
                 30 /* vhcurveto */ => self.op_vhcurveto()?,
                 24 /* rcurveline */ => {
                     let n = self.stack.len();
-                    if n < 8 || (n - 2) % 6 != 0 {
+                    if n < 8 || !(n - 2).is_multiple_of(6) {
                         return Err(Error::CharstringStackUnderflow);
                     }
                     let groups = (n - 2) / 6;
@@ -280,7 +280,7 @@ impl<'a> Cff2Interpreter<'a> {
                 }
                 25 /* rlinecurve */ => {
                     let n = self.stack.len();
-                    if n < 8 || (n - 6) % 2 != 0 {
+                    if n < 8 || !(n - 6).is_multiple_of(2) {
                         return Err(Error::CharstringStackUnderflow);
                     }
                     let lines = (n - 6) / 2;
@@ -519,11 +519,11 @@ impl<'a> Cff2Interpreter<'a> {
         if s.len() % 4 == 1 {
             dy1 = s.remove(0);
         }
-        if s.len() % 4 != 0 {
+        if !s.len().is_multiple_of(4) {
             return Err(Error::CharstringStackUnderflow);
         }
         let mut first = true;
-        for chunk in s.chunks_exact(4) {
+        for chunk in s.as_chunks::<4>().0 {
             let dxa = chunk[0];
             let (dxb, dyb, dxc) = (chunk[1], chunk[2], chunk[3]);
             let dya = if first { dy1 } else { 0.0 };
@@ -540,11 +540,11 @@ impl<'a> Cff2Interpreter<'a> {
         if s.len() % 4 == 1 {
             dx1 = s.remove(0);
         }
-        if s.len() % 4 != 0 {
+        if !s.len().is_multiple_of(4) {
             return Err(Error::CharstringStackUnderflow);
         }
         let mut first = true;
-        for chunk in s.chunks_exact(4) {
+        for chunk in s.as_chunks::<4>().0 {
             let dya = chunk[0];
             let (dxb, dyb, dyc) = (chunk[1], chunk[2], chunk[3]);
             let dxa = if first { dx1 } else { 0.0 };
@@ -572,11 +572,11 @@ impl<'a> Cff2Interpreter<'a> {
         } else {
             None
         };
-        if s.len() % 4 != 0 {
+        if !s.len().is_multiple_of(4) {
             return Err(Error::CharstringStackUnderflow);
         }
         let mut horiz = h_first;
-        let mut chunks: Vec<&[f32]> = s.chunks_exact(4).collect();
+        let mut chunks: Vec<&[f32]> = s.as_chunks::<4>().0.iter().map(|c| c.as_slice()).collect();
         let last_idx = chunks.len().saturating_sub(1);
         for (idx, chunk) in chunks.iter_mut().enumerate() {
             let (dxa, dya, dxb, dyb, dxc, dyc);

@@ -3,8 +3,8 @@
 //! documents across ranges, gzip detection, glyph element ids, and
 //! the index-ordering / non-zero-field invariants.
 
-use oxideav_otf::tables::svg::SvgTable;
 use oxideav_otf::SvgDocument;
+use oxideav_otf::tables::svg::SvgTable;
 
 fn u16b(v: u16) -> [u8; 2] {
     v.to_be_bytes()

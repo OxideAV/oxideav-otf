@@ -26,9 +26,9 @@
 //! adjustment; the side-bearing / vertical-origin accessors do the same
 //! for their respective maps when present.
 
+use crate::Error;
 use crate::parser::{read_u16, read_u32};
 use crate::tables::ivs::{DeltaSetIndexMap, ItemVariationStore};
-use crate::Error;
 
 /// A parsed `HVAR` or `VVAR` table.
 #[derive(Debug, Clone)]

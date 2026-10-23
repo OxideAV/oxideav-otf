@@ -54,8 +54,8 @@ pub use self::varstore::{
     ItemVariationData, ItemVariationStore, RegionAxisCoordinates, VariationRegion,
 };
 
-use crate::outline::CubicOutline;
 use crate::Error;
+use crate::outline::CubicOutline;
 
 /// Parsed CFF2 table — exposes the header, Top DICT, the structural
 /// INDEXes (GlobalSubrINDEX, CharStringINDEX, FontDICTINDEX), the
@@ -439,14 +439,14 @@ mod tests {
         v.push(5);
         v.push(0);
         v.push(7); // topDICTSize = 7 (3 short-int operands + 4 operator bytes)
-                   // Top DICT:
+        // Top DICT:
         v.push((cs_off + 139) as u8); // operand cs_off
         v.push(17); // CharStringINDEXOffset
         v.push((fd_off + 139) as u8); // operand fd_off
         v.extend_from_slice(&[12, 36]); // FontDICTINDEXOffset
         v.push(50 + 139); // operand 50
         v.push(24); // VariationStoreOffset
-                    // GlobalSubrINDEX (4 bytes empty).
+        // GlobalSubrINDEX (4 bytes empty).
         v.extend_from_slice(&[0, 0, 0, 0]);
 
         assert_eq!(v.len(), cs_off as usize);

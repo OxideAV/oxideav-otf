@@ -36,10 +36,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::parser::{read_f2dot14, read_fixed, read_i16, read_u16, read_u24, read_u32, read_u8};
+use crate::Error;
+use crate::parser::{read_f2dot14, read_fixed, read_i16, read_u8, read_u16, read_u24, read_u32};
 use crate::tables::cpal::{ColorRecord, CpalTable};
 use crate::tables::ivs::{DeltaSetIndexMap, ItemVariationStore};
-use crate::Error;
 
 /// `paletteIndex` value that selects the application-determined text
 /// foreground color instead of a `CPAL` entry.

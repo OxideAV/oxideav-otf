@@ -53,8 +53,8 @@
 //! Spec: `docs/text/opentype/otspec-cff2.html` §12 + worked
 //! "Example CFF2 table".
 
-use crate::parser::{read_u16, read_u32};
 use crate::Error;
+use crate::parser::{read_u16, read_u32};
 
 /// The only ItemVariationStore format defined by the spec is `1`.
 const ITEM_VARIATION_STORE_FORMAT: u16 = 1;
@@ -384,7 +384,7 @@ mod tests {
         v.extend_from_slice(&[0x00, 0x00, 0x00, 0x0C]); // regionListOffset = 12
         v.extend_from_slice(&[0x00, 0x01]); // itemVariationDataCount = 1
         v.extend_from_slice(&[0x00, 0x00, 0x00, 0x1C]); // ivdOffsets[0] = 28
-                                                        // VariationRegionList @ IVS offset 12.
+        // VariationRegionList @ IVS offset 12.
         v.extend_from_slice(&[0x00, 0x01]); // axisCount = 1
         v.extend_from_slice(&[0x00, 0x02]); // regionCount = 2
         v.extend_from_slice(&[0xC0, 0x00]); // region0 start = -1.0
@@ -393,7 +393,7 @@ mod tests {
         v.extend_from_slice(&[0xC0, 0x00]); // region1 start = -1.0
         v.extend_from_slice(&[0xC0, 0x00]); // region1 peak  = -1.0
         v.extend_from_slice(&[0xE0, 0x00]); // region1 end   = -0.5
-                                            // ItemVariationData subtable 0 @ IVS offset 28.
+        // ItemVariationData subtable 0 @ IVS offset 28.
         v.extend_from_slice(&[0x00, 0x00]); // itemCount = 0
         v.extend_from_slice(&[0x00, 0x00]); // shortDeltaCount = 0
         v.extend_from_slice(&[0x00, 0x02]); // regionIndexCount = 2
@@ -510,7 +510,7 @@ mod tests {
         v.extend_from_slice(&[0x00, 0x02]); // ivdCount = 2
         v.extend_from_slice(&[0x00, 0x00, 0x00, 0x26]); // ivd[0] @ 38
         v.extend_from_slice(&[0x00, 0x00, 0x00, 0x2E]); // ivd[1] @ 46
-                                                        // RegionList @ 16: axisCount=1, regionCount=3.
+        // RegionList @ 16: axisCount=1, regionCount=3.
         assert_eq!(v.len(), 16);
         v.extend_from_slice(&[0x00, 0x01]); // axisCount
         v.extend_from_slice(&[0x00, 0x03]); // regionCount
@@ -574,7 +574,7 @@ mod tests {
         assert_eq!(r.scalar(&[1.0]), 1.0); // at peak
         assert_eq!(r.scalar(&[0.0]), 0.0); // at start
         assert!((r.scalar(&[0.5]) - 0.5).abs() < 1e-6); // mid-rise
-                                                        // out of range (below start) ⇒ 0.
+        // out of range (below start) ⇒ 0.
         assert_eq!(r.scalar(&[-0.5]), 0.0);
     }
 
@@ -599,7 +599,7 @@ mod tests {
         assert_eq!(v.len(), 12);
         v.extend_from_slice(&[0x00, 0x01]); // axisCount
         v.extend_from_slice(&[0x00, 0x02]); // regionCount
-                                            // region0 weight (0,1,1)
+        // region0 weight (0,1,1)
         v.extend_from_slice(&[0x00, 0x00, 0x40, 0x00, 0x40, 0x00]);
         // region1 weight (start -1, peak -1, end 0)
         v.extend_from_slice(&[0xC0, 0x00, 0xC0, 0x00, 0x00, 0x00]);

@@ -23,15 +23,15 @@
 //!   processes the run from end to start, substituting in place.
 
 use super::buffer::{
-    match_backtrack, match_input, match_lookahead, GlyphInfo, SkipFilter, LIG_COMPONENT_NONE,
+    GlyphInfo, LIG_COMPONENT_NONE, SkipFilter, match_backtrack, match_input, match_lookahead,
 };
-use super::{PlannedLookup, MAX_NESTING_DEPTH};
+use super::{MAX_NESTING_DEPTH, PlannedLookup};
 use crate::tables::context::{ChainedSequenceContext, SequenceContext, SequenceLookupRecord};
 use crate::tables::gdef::GdefTable;
 use crate::tables::gsub::{
-    GsubTable, GSUB_LOOKUP_TYPE_ALTERNATE, GSUB_LOOKUP_TYPE_CHAINED_CONTEXT,
-    GSUB_LOOKUP_TYPE_CONTEXT, GSUB_LOOKUP_TYPE_EXTENSION, GSUB_LOOKUP_TYPE_LIGATURE,
-    GSUB_LOOKUP_TYPE_MULTIPLE, GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE, GSUB_LOOKUP_TYPE_SINGLE,
+    GSUB_LOOKUP_TYPE_ALTERNATE, GSUB_LOOKUP_TYPE_CHAINED_CONTEXT, GSUB_LOOKUP_TYPE_CONTEXT,
+    GSUB_LOOKUP_TYPE_EXTENSION, GSUB_LOOKUP_TYPE_LIGATURE, GSUB_LOOKUP_TYPE_MULTIPLE,
+    GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE, GSUB_LOOKUP_TYPE_SINGLE, GsubTable,
 };
 
 /// Result of one successful subtable application at a position.

@@ -33,6 +33,7 @@
 //! mark-to-ligature will too); the cursive path reuses the Anchor
 //! primitive for its EntryExit records.
 
+use crate::Error;
 use crate::parser::{read_i16, read_u16, read_u32};
 use crate::tables::context::{ChainedSequenceContext, SequenceContext};
 use crate::tables::device::DeviceOrVariationIndex;
@@ -40,7 +41,6 @@ use crate::tables::gdef::{ClassDef, Coverage};
 use crate::tables::layout::{
     FeatureList, FeatureVariations, LayoutHeader, Lookup, LookupList, Script, ScriptList,
 };
-use crate::Error;
 
 /// GPOS Lookup Type 1 — single adjustment positioning.
 pub const GPOS_LOOKUP_TYPE_SINGLE: u16 = 1;
@@ -177,7 +177,7 @@ impl ValueRecord {
         let mut rec = ValueRecord::default();
 
         macro_rules! take_i16 {
-            ($cond:expr, $field:ident) => {
+            ($cond:expr_2021, $field:ident) => {
                 if $cond {
                     rec.$field = read_i16(data, cur)?;
                     cur += 2;
@@ -185,7 +185,7 @@ impl ValueRecord {
             };
         }
         macro_rules! take_off {
-            ($cond:expr, $field:ident) => {
+            ($cond:expr_2021, $field:ident) => {
                 if $cond {
                     rec.$field = read_u16(data, cur)?;
                     cur += 2;
@@ -2772,7 +2772,7 @@ mod tests {
         b[2..4].copy_from_slice(&be(8)); // coverageOffset
         b[4..6].copy_from_slice(&be(0x0004)); // valueFormat = X_ADVANCE
         b[6..8].copy_from_slice(&(-50i16).to_be_bytes()); // xAdvance
-                                                          // Coverage format 1
+        // Coverage format 1
         b.extend_from_slice(&be(1)); // coverage format
         b.extend_from_slice(&be(3)); // glyphCount
         b.extend_from_slice(&be(10));
@@ -2920,9 +2920,9 @@ mod tests {
         bytes[48..50].copy_from_slice(&be(1)); // lookupType = 1
         bytes[50..52].copy_from_slice(&be(0)); // lookupFlag
         bytes[52..54].copy_from_slice(&be(1)); // subTableCount
-                                               // subtableOffset is from the start of the Lookup (at 48). The
-                                               // subtableOffsets array occupies 54..56, so the subtable bytes
-                                               // begin at absolute 56 → relative offset 56 - 48 = 8.
+        // subtableOffset is from the start of the Lookup (at 48). The
+        // subtableOffsets array occupies 54..56, so the subtable bytes
+        // begin at absolute 56 → relative offset 56 - 48 = 8.
         bytes.extend_from_slice(&be(8)); // subtableOffset
         bytes.extend_from_slice(&sub); // SinglePos at 56
 
@@ -2958,7 +2958,7 @@ mod tests {
         pairset_a.extend_from_slice(&be(1)); // pairValueCount
         pairset_a.extend_from_slice(&be(40)); // secondGlyph
         pairset_a.extend_from_slice(&(-40i16).to_be_bytes()); // vr1 xAdvance
-                                                              // PairSet B: count=2, sorted by secondGlyph (30, 40)
+        // PairSet B: count=2, sorted by secondGlyph (30, 40)
         let mut pairset_b = Vec::new();
         pairset_b.extend_from_slice(&be(2)); // pairValueCount
         pairset_b.extend_from_slice(&be(30));
@@ -3497,16 +3497,16 @@ mod tests {
         // two Anchor tables (format 1, 6 bytes each) appended after.
         let mark_array_off = b.len();
         b.extend_from_slice(&be(2)); // markCount
-                                     // markRecords start at mark_array_off+2.
-                                     // anchors will sit right after the 2 records:
-                                     //   records: 2 + 2*4 = 10 bytes from array start
-                                     //   anchor0 at array-relative offset 10
-                                     //   anchor1 at array-relative offset 16
+        // markRecords start at mark_array_off+2.
+        // anchors will sit right after the 2 records:
+        //   records: 2 + 2*4 = 10 bytes from array start
+        //   anchor0 at array-relative offset 10
+        //   anchor1 at array-relative offset 16
         b.extend_from_slice(&be(0)); // markRecord0.markClass = 0
         b.extend_from_slice(&be(10)); // markRecord0.markAnchorOffset (rel array)
         b.extend_from_slice(&be(1)); // markRecord1.markClass = 1
         b.extend_from_slice(&be(16)); // markRecord1.markAnchorOffset (rel array)
-                                      // anchor0 (format1, 10,200)
+        // anchor0 (format1, 10,200)
         b.extend_from_slice(&be(1));
         b.extend_from_slice(&(10i16).to_be_bytes());
         b.extend_from_slice(&(200i16).to_be_bytes());
@@ -3519,14 +3519,14 @@ mod tests {
         // Offset16s = 4 bytes each), then anchors.
         let base_array_off = b.len();
         b.extend_from_slice(&be(2)); // baseCount
-                                     // BaseRecords start at base_array_off+2.
-                                     //   2 + 2*4 = 10 bytes of records
-                                     //   anchors after: base0c0 @10, base0c1 @16, base1c0 @22
+        // BaseRecords start at base_array_off+2.
+        //   2 + 2*4 = 10 bytes of records
+        //   anchors after: base0c0 @10, base0c1 @16, base1c0 @22
         b.extend_from_slice(&be(10)); // base0, class0 anchorOffset (rel array)
         b.extend_from_slice(&be(16)); // base0, class1 anchorOffset
         b.extend_from_slice(&be(22)); // base1, class0 anchorOffset
         b.extend_from_slice(&be(0)); // base1, class1 anchorOffset = NULL
-                                     // base0 class0 anchor (30,210)
+        // base0 class0 anchor (30,210)
         b.extend_from_slice(&be(1));
         b.extend_from_slice(&(30i16).to_be_bytes());
         b.extend_from_slice(&(210i16).to_be_bytes());
@@ -3698,12 +3698,12 @@ mod tests {
         // two Anchor tables (format 1, 6 bytes each).
         let mark1_array_off = b.len();
         b.extend_from_slice(&be(2)); // markCount
-                                     // records 2 + 2*4 = 10 bytes; anchor0 @10, anchor1 @16
+        // records 2 + 2*4 = 10 bytes; anchor0 @10, anchor1 @16
         b.extend_from_slice(&be(0)); // record0.markClass = 0
         b.extend_from_slice(&be(10)); // record0.markAnchorOffset (rel array)
         b.extend_from_slice(&be(1)); // record1.markClass = 1
         b.extend_from_slice(&be(16)); // record1.markAnchorOffset (rel array)
-                                      // anchor0 (10,200)
+        // anchor0 (10,200)
         b.extend_from_slice(&be(1));
         b.extend_from_slice(&(10i16).to_be_bytes());
         b.extend_from_slice(&(200i16).to_be_bytes());
@@ -3716,13 +3716,13 @@ mod tests {
         // Offset16s = 4 bytes each), then anchors.
         let mark2_array_off = b.len();
         b.extend_from_slice(&be(2)); // mark2Count
-                                     // records 2 + 2*4 = 10 bytes
-                                     // anchors: m20c0 @10, m20c1 @16, m21c0 @22
+        // records 2 + 2*4 = 10 bytes
+        // anchors: m20c0 @10, m20c1 @16, m21c0 @22
         b.extend_from_slice(&be(10)); // mark2[20], class0 anchorOffset (rel array)
         b.extend_from_slice(&be(16)); // mark2[20], class1 anchorOffset
         b.extend_from_slice(&be(22)); // mark2[21], class0 anchorOffset
         b.extend_from_slice(&be(0)); // mark2[21], class1 anchorOffset = NULL
-                                     // mark2[20] class0 anchor (30,210)
+        // mark2[20] class0 anchor (30,210)
         b.extend_from_slice(&be(1));
         b.extend_from_slice(&(30i16).to_be_bytes());
         b.extend_from_slice(&(210i16).to_be_bytes());
@@ -4004,7 +4004,7 @@ mod tests {
         b.extend_from_slice(&be(1)); // format
         b.extend_from_slice(&be(0)); // coverageOffset (patch)
         b.extend_from_slice(&be(3)); // entryExitCount = 3 → needs 12 array bytes
-                                     // Only 4 bytes of array space before Coverage starts.
+        // Only 4 bytes of array space before Coverage starts.
         b.extend_from_slice(&be(0));
         b.extend_from_slice(&be(0));
         let cov_off = b.len();
@@ -4099,12 +4099,12 @@ mod tests {
         // Anchor tables (format 1, 6 bytes each).
         let mark_array_off = b.len();
         b.extend_from_slice(&be(2)); // markCount
-                                     // records 2 + 2*4 = 10 bytes; anchor0 @10, anchor1 @16
+        // records 2 + 2*4 = 10 bytes; anchor0 @10, anchor1 @16
         b.extend_from_slice(&be(0)); // record0.markClass = 0
         b.extend_from_slice(&be(10)); // record0.markAnchorOffset (rel array)
         b.extend_from_slice(&be(1)); // record1.markClass = 1
         b.extend_from_slice(&be(16)); // record1.markAnchorOffset (rel array)
-                                      // anchor0 (10,200)
+        // anchor0 (10,200)
         b.extend_from_slice(&be(1));
         b.extend_from_slice(&(10i16).to_be_bytes());
         b.extend_from_slice(&(200i16).to_be_bytes());
@@ -4129,7 +4129,7 @@ mod tests {
         b.extend_from_slice(&be(16)); // comp0, class1 anchorOffset
         b.extend_from_slice(&be(22)); // comp1, class0 anchorOffset
         b.extend_from_slice(&be(0)); // comp1, class1 anchorOffset = NULL
-                                     // comp0 class0 anchor (30,210)
+        // comp0 class0 anchor (30,210)
         b.extend_from_slice(&be(1));
         b.extend_from_slice(&(30i16).to_be_bytes());
         b.extend_from_slice(&(210i16).to_be_bytes());

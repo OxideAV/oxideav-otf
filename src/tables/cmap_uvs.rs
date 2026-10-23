@@ -39,8 +39,8 @@
 //! Spec: `docs/text/opentype/otspec-cmap.html` (Format 14: Unicode
 //! variation sequences).
 
-use crate::parser::{read_u16, read_u32, read_u8};
 use crate::Error;
+use crate::parser::{read_u8, read_u16, read_u32};
 
 /// The outcome of a UVS lookup for a `(base, variation_selector)` pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,10 +119,10 @@ impl<'a> CmapUvs<'a> {
         let non_default_off = read_u32(self.bytes, rec_off + 7).unwrap_or(0) as usize;
 
         // Non-default UVS table wins (it names an explicit glyph).
-        if non_default_off != 0 {
-            if let Some(g) = self.lookup_non_default(non_default_off, base) {
-                return UvsMapping::Glyph(g);
-            }
+        if non_default_off != 0
+            && let Some(g) = self.lookup_non_default(non_default_off, base)
+        {
+            return UvsMapping::Glyph(g);
         }
         if default_off != 0 && self.is_default_uvs(default_off, base) {
             return UvsMapping::UseDefault;
@@ -231,7 +231,7 @@ mod tests {
         v.extend_from_slice(&14u16.to_be_bytes()); // format
         v.extend_from_slice(&0u32.to_be_bytes()); // length (patched)
         v.extend_from_slice(&1u32.to_be_bytes()); // numVarSelectorRecords
-                                                  // VariationSelector record:
+        // VariationSelector record:
         push_u24(0xE0100, &mut v); // varSelector
         let def_off_at = v.len();
         v.extend_from_slice(&0u32.to_be_bytes()); // defaultUVSOffset (patched)

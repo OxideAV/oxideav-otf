@@ -223,7 +223,10 @@ pub const REGISTERED_SCRIPT_TAGS: &[(&str, [u8; 4])] = &[
     ("Warang Citi", *b"wara"),
     ("Yezidi", *b"yezi"),
     ("Yi", *b"yi  "),
-    ("Zanabazar Square (Zanabazarin Dörböljin Useg, Xewtee Dörböljin Bicig, Horizontal Square Script)", *b"zanb"),
+    (
+        "Zanabazar Square (Zanabazarin Dörböljin Useg, Xewtee Dörböljin Bicig, Horizontal Square Script)",
+        *b"zanb",
+    ),
 ];
 
 /// The special default script tag.

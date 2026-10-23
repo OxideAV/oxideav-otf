@@ -29,9 +29,9 @@
 //! input sequence (the backtrack is stored in reverse logical order, per
 //! spec).
 
+use crate::Error;
 use crate::parser::read_u16;
 use crate::tables::gdef::{ClassDef, Coverage};
-use crate::Error;
 
 /// A `SequenceLookup` record — a nested-lookup action attached to a
 /// contextual match.

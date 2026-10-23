@@ -20,8 +20,8 @@
 //!
 //! A glyph absent from the metrics array uses `defaultVertOriginY`.
 
-use crate::parser::{read_i16, read_u16};
 use crate::Error;
+use crate::parser::{read_i16, read_u16};
 
 /// A parsed `VORG` table.
 #[derive(Debug, Clone)]

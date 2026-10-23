@@ -30,9 +30,9 @@
 //! ItemVariationStore lookup that yields the per-instance adjustment to
 //! add to the base value.
 
+use crate::Error;
 use crate::parser::{read_tag, read_u16};
 use crate::tables::ivs::ItemVariationStore;
-use crate::Error;
 
 /// One MVAR value record: a tag and its delta-set index.
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -28,8 +28,8 @@
 //! Spec: `docs/text/opentype/otspec-cff2.html`
 //! (FontDICTINDEX, FontDICTSelect and FontDICT).
 
-use crate::parser::{read_u16, read_u32, read_u8};
 use crate::Error;
+use crate::parser::{read_u8, read_u16, read_u32};
 
 /// A parsed CFF2 FontDICTSelect, retaining the raw payload for
 /// per-glyph lookups without an up-front per-glyph allocation.

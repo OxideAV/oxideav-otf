@@ -26,8 +26,8 @@
 //! of them resolves glyph names through the same standard-strings
 //! table the rest of the charset code uses.
 
-use crate::parser::{read_u16, read_u8};
 use crate::Error;
+use crate::parser::{read_u8, read_u16};
 
 /// Expert predefined charset — TN5176 Appendix C, in GID order
 /// beginning with GID 1 (`.notdef` is the implicit GID 0 and is not

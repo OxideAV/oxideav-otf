@@ -23,8 +23,8 @@
 //! expose the coverage flags so a shaper can decide whether to apply a
 //! given subtable.
 
-use crate::parser::{read_i16, read_u16};
 use crate::Error;
+use crate::parser::{read_i16, read_u16};
 
 /// `coverage` bit 0: 1 = horizontal data, 0 = vertical.
 pub const KERN_COVERAGE_HORIZONTAL: u16 = 0x0001;
@@ -322,7 +322,7 @@ mod tests {
         let length = 6 + 8 + pairs.len() * 6;
         sub.extend_from_slice(&(length as u16).to_be_bytes());
         sub.extend_from_slice(&KERN_COVERAGE_HORIZONTAL.to_be_bytes()); // format 0, horizontal
-                                                                        // format-0 body header
+        // format-0 body header
         sub.extend_from_slice(&n.to_be_bytes());
         sub.extend_from_slice(&0u16.to_be_bytes()); // searchRange
         sub.extend_from_slice(&0u16.to_be_bytes()); // entrySelector
@@ -439,7 +439,7 @@ mod tests {
         s[0..2].copy_from_slice(&0u16.to_be_bytes()); // version
         s[2..4].copy_from_slice(&(length as u16).to_be_bytes());
         s[4..6].copy_from_slice(&0x0201u16.to_be_bytes()); // format 2, horizontal
-                                                           // format-2 header
+        // format-2 header
         s[6..8].copy_from_slice(&row_width.to_be_bytes());
         s[8..10].copy_from_slice(&(left_tab_off as u16).to_be_bytes());
         s[10..12].copy_from_slice(&(right_tab_off as u16).to_be_bytes());
@@ -450,14 +450,14 @@ mod tests {
         s[left_tab_off + 2..left_tab_off + 4].copy_from_slice(&2u16.to_be_bytes());
         s[left_tab_off + 4..left_tab_off + 6].copy_from_slice(&6u16.to_be_bytes()); // row 1
         s[left_tab_off + 6..left_tab_off + 8].copy_from_slice(&12u16.to_be_bytes()); // row 2
-                                                                                     // right class table: firstGlyph=20 nGlyphs=2; glyph20→class1
-                                                                                     // (premultiplied col offset = 1*2 = 2), glyph21→class2 (4)
+        // right class table: firstGlyph=20 nGlyphs=2; glyph20→class1
+        // (premultiplied col offset = 1*2 = 2), glyph21→class2 (4)
         s[right_tab_off..right_tab_off + 2].copy_from_slice(&20u16.to_be_bytes());
         s[right_tab_off + 2..right_tab_off + 4].copy_from_slice(&2u16.to_be_bytes());
         s[right_tab_off + 4..right_tab_off + 6].copy_from_slice(&2u16.to_be_bytes()); // col 1
         s[right_tab_off + 6..right_tab_off + 8].copy_from_slice(&4u16.to_be_bytes()); // col 2
-                                                                                      // array: 3 rows * 3 cols, set cell [row1][col1] = -55,
-                                                                                      // [row2][col2] = 30.
+        // array: 3 rows * 3 cols, set cell [row1][col1] = -55,
+        // [row2][col2] = 30.
         let put = |s: &mut [u8], r: usize, c: usize, v: i16| {
             let off = array_off + r * row_width as usize + c * 2;
             s[off..off + 2].copy_from_slice(&v.to_be_bytes());

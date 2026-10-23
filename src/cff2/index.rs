@@ -20,8 +20,8 @@
 //! object's length. An object may have a zero size (e.g. a CharString
 //! for a non-printing glyph: §8 "Non-printing glyphs").
 
-use crate::parser::read_u8;
 use crate::Error;
+use crate::parser::read_u8;
 
 /// A parsed CFF2 INDEX. Entries are returned as zero-copy `&[u8]` slices
 /// into the underlying CFF2 table bytes.

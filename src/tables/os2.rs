@@ -94,8 +94,8 @@
 //!   112.5 / 125 / 150 / 200), so callers can drive variable-font
 //!   `wdth`-axis math without a separate lookup.
 
-use crate::parser::{read_i16, read_u16, read_u32};
 use crate::Error;
+use crate::parser::{read_i16, read_u16, read_u32};
 
 /// Parsed `OS/2` table.
 #[derive(Debug, Clone, Copy)]

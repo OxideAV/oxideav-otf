@@ -91,13 +91,13 @@
 //! [`super::layout::Lookup::subtable_bytes`]; decoding their interiors
 //! is deferred to a future round.
 
+use crate::Error;
 use crate::parser::{read_i16, read_u16, read_u32};
 use crate::tables::context::{ChainedSequenceContext, SequenceContext};
 use crate::tables::gdef::Coverage;
 use crate::tables::layout::{
     FeatureList, FeatureVariations, LayoutHeader, Lookup, LookupList, Script, ScriptList,
 };
-use crate::Error;
 
 // ---------------------------------------------------------------------------
 // GsubLookupType enumeration (otspec-gsub.html §"GsubLookupType enumeration")
@@ -2999,30 +2999,30 @@ mod tests {
         out[4..6].copy_from_slice(&be(2)); // ligatureSetCount
         out[6..8].copy_from_slice(&be(10)); // ligatureSetOffsets[0]
         out[8..10].copy_from_slice(&be(22)); // ligatureSetOffsets[1]
-                                             // e-set @ 10 (1 ligature, "etc")
+        // e-set @ 10 (1 ligature, "etc")
         out[10..12].copy_from_slice(&be(1)); // ligatureCount
         out[12..14].copy_from_slice(&be(4)); // ligatureOffsets[0]
-                                             // etc Ligature @ 14
+        // etc Ligature @ 14
         out[14..16].copy_from_slice(&be(100)); // ligatureGlyph
         out[16..18].copy_from_slice(&be(3)); // componentCount
         out[18..20].copy_from_slice(&be(20)); // t
         out[20..22].copy_from_slice(&be(21)); // c
-                                              // f-set @ 22 (2 ligatures, ffi then fi)
+        // f-set @ 22 (2 ligatures, ffi then fi)
         out[22..24].copy_from_slice(&be(2)); // ligatureCount
         out[24..26].copy_from_slice(&be(8)); // ligatureOffsets[0] -> ffi
         out[26..28].copy_from_slice(&be(16)); // ligatureOffsets[1] -> fi
-                                              // ffi Ligature @ 30
+        // ffi Ligature @ 30
         out[28..30].copy_from_slice(&[0, 0]); // padding (set table only goes
-                                              // through offset 28; bytes 28..30 unused, set to 0)
+        // through offset 28; bytes 28..30 unused, set to 0)
         out[30..32].copy_from_slice(&be(101)); // ligatureGlyph
         out[32..34].copy_from_slice(&be(3)); // componentCount
         out[34..36].copy_from_slice(&be(6)); // f
         out[36..38].copy_from_slice(&be(9)); // i
-                                             // fi Ligature @ 38
+        // fi Ligature @ 38
         out[38..40].copy_from_slice(&be(102)); // ligatureGlyph
         out[40..42].copy_from_slice(&be(2)); // componentCount
         out[42..44].copy_from_slice(&be(9)); // i
-                                             // Coverage Format 1 @ 44
+        // Coverage Format 1 @ 44
         out[44..46].copy_from_slice(&be(1)); // coverage format
         out[46..48].copy_from_slice(&be(2)); // glyphCount
         out[48..50].copy_from_slice(&be(5)); // e

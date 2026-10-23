@@ -13,8 +13,8 @@
 //! parser handles both. We expose the v1.1 names as the canonical
 //! accessors (`vert_typo_ascender`, etc.) with v1.0 aliases.
 
-use crate::parser::{read_i16, read_u16, read_u32};
 use crate::Error;
+use crate::parser::{read_i16, read_u16, read_u32};
 
 #[derive(Debug, Clone, Copy)]
 pub struct VheaTable {

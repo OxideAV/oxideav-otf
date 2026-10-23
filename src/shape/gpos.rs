@@ -17,20 +17,21 @@
 //! corrections; shaping here stays in design units, so they are not
 //! applied.
 
-use super::buffer::{match_backtrack, match_input, match_lookahead, LIG_COMPONENT_NONE};
-use super::buffer::{GlyphInfo, SkipFilter};
 use super::MAX_NESTING_DEPTH;
+use super::buffer::{GlyphInfo, SkipFilter};
+use super::buffer::{LIG_COMPONENT_NONE, match_backtrack, match_input, match_lookahead};
 use super::{PlannedLookup, ShapeOptions};
+use crate::Font;
 use crate::tables::context::{ChainedSequenceContext, SequenceContext, SequenceLookupRecord};
 use crate::tables::gdef::GdefTable;
 use crate::tables::gdef::GlyphClass;
 use crate::tables::gpos::{
-    CursivePos, GposTable, MarkBasePos, MarkLigPos, MarkMarkPos, PairPos, SinglePos, ValueRecord,
-    GPOS_LOOKUP_TYPE_CHAINED_CONTEXT, GPOS_LOOKUP_TYPE_CONTEXT, GPOS_LOOKUP_TYPE_CURSIVE,
-    GPOS_LOOKUP_TYPE_EXTENSION, GPOS_LOOKUP_TYPE_MARK_TO_BASE, GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE,
-    GPOS_LOOKUP_TYPE_MARK_TO_MARK, GPOS_LOOKUP_TYPE_PAIR, GPOS_LOOKUP_TYPE_SINGLE,
+    CursivePos, GPOS_LOOKUP_TYPE_CHAINED_CONTEXT, GPOS_LOOKUP_TYPE_CONTEXT,
+    GPOS_LOOKUP_TYPE_CURSIVE, GPOS_LOOKUP_TYPE_EXTENSION, GPOS_LOOKUP_TYPE_MARK_TO_BASE,
+    GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE, GPOS_LOOKUP_TYPE_MARK_TO_MARK, GPOS_LOOKUP_TYPE_PAIR,
+    GPOS_LOOKUP_TYPE_SINGLE, GposTable, MarkBasePos, MarkLigPos, MarkMarkPos, PairPos, SinglePos,
+    ValueRecord,
 };
-use crate::Font;
 
 /// Mutable position slot, parallel to the glyph buffer.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -53,10 +54,10 @@ pub(crate) fn init_positions(
         .iter()
         .map(|g| {
             let mut adv = font.glyph_advance(g.glyph) as i32;
-            if !normalized.is_empty() {
-                if let Some(hvar) = font.hvar() {
-                    adv += hvar.advance(g.glyph, normalized).round() as i32;
-                }
+            if !normalized.is_empty()
+                && let Some(hvar) = font.hvar()
+            {
+                adv += hvar.advance(g.glyph, normalized).round() as i32;
             }
             Pos {
                 x_advance: adv,
@@ -93,10 +94,10 @@ pub(crate) fn apply_value_record(
         (rec.y_advance_device(subtable), &mut pos.y_advance),
     ];
     for (dev, target) in deltas {
-        if let Some(Ok(dev)) = dev {
-            if let Some(vi) = dev.as_variation_index() {
-                *target += variation_delta(gdef, vi.outer_index, vi.inner_index, normalized);
-            }
+        if let Some(Ok(dev)) = dev
+            && let Some(vi) = dev.as_variation_index()
+        {
+            *target += variation_delta(gdef, vi.outer_index, vi.inner_index, normalized);
         }
     }
 }
@@ -131,15 +132,15 @@ fn anchor_coords(
     let mut y = anchor.y as i32;
     if !normalized.is_empty() && anchor.format == 3 && anchor.table_offset < subtable.len() {
         let at = &subtable[anchor.table_offset..];
-        if let Some(Ok(dev)) = anchor.x_device(at) {
-            if let Some(vi) = dev.as_variation_index() {
-                x += variation_delta(gdef, vi.outer_index, vi.inner_index, normalized);
-            }
+        if let Some(Ok(dev)) = anchor.x_device(at)
+            && let Some(vi) = dev.as_variation_index()
+        {
+            x += variation_delta(gdef, vi.outer_index, vi.inner_index, normalized);
         }
-        if let Some(Ok(dev)) = anchor.y_device(at) {
-            if let Some(vi) = dev.as_variation_index() {
-                y += variation_delta(gdef, vi.outer_index, vi.inner_index, normalized);
-            }
+        if let Some(Ok(dev)) = anchor.y_device(at)
+            && let Some(vi) = dev.as_variation_index()
+        {
+            y += variation_delta(gdef, vi.outer_index, vi.inner_index, normalized);
         }
     }
     (x, y)
@@ -400,10 +401,10 @@ fn try_mark_base(
         if filter.skips(g) {
             continue;
         }
-        if let Some(gdef) = gdef {
-            if gdef.glyph_class(g) == Some(GlyphClass::Mark) {
-                continue;
-            }
+        if let Some(gdef) = gdef
+            && gdef.glyph_class(g) == Some(GlyphClass::Mark)
+        {
+            continue;
         }
         base_pos = Some(p);
         break;
@@ -531,10 +532,10 @@ fn try_mark_lig(
         if filter.skips(g) {
             continue;
         }
-        if let Some(gdef) = gdef {
-            if gdef.glyph_class(g) == Some(GlyphClass::Mark) {
-                continue;
-            }
+        if let Some(gdef) = gdef
+            && gdef.glyph_class(g) == Some(GlyphClass::Mark)
+        {
+            continue;
         }
         lig_pos = Some(p);
         break;

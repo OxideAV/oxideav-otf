@@ -36,8 +36,8 @@
 //!
 //! Spec: `docs/text/opentype/otspec-chapter2-common-layout-tables.html`.
 
-use crate::parser::read_u16;
 use crate::Error;
+use crate::parser::read_u16;
 
 /// `deltaFormat` discriminant: 2-bit signed deltas (8 per `uint16`).
 const DELTA_FORMAT_LOCAL_2_BIT: u16 = 0x0001;
@@ -319,15 +319,19 @@ mod tests {
     #[test]
     fn dispatch_picks_device_vs_variation() {
         let dev = [0x00, 0x0C, 0x00, 0x0C, 0x00, 0x03, 0x05, 0x00];
-        assert!(DeviceOrVariationIndex::parse(&dev)
-            .unwrap()
-            .as_device()
-            .is_some());
+        assert!(
+            DeviceOrVariationIndex::parse(&dev)
+                .unwrap()
+                .as_device()
+                .is_some()
+        );
         let vi = [0x00, 0x01, 0x00, 0x02, 0x80, 0x00];
-        assert!(DeviceOrVariationIndex::parse(&vi)
-            .unwrap()
-            .as_variation_index()
-            .is_some());
+        assert!(
+            DeviceOrVariationIndex::parse(&vi)
+                .unwrap()
+                .as_variation_index()
+                .is_some()
+        );
     }
 
     #[test]

@@ -48,9 +48,9 @@
 //! This module is **read-only** — every accessor walks the borrowed
 //! `&[u8]` once and returns owned primitives or sub-slices.
 
+use crate::Error;
 use crate::parser::{read_i16, read_u16, read_u32};
 use crate::tables::device::DeviceOrVariationIndex;
-use crate::Error;
 
 // -- Coverage table (shared with GSUB / GPOS) -----------------------------
 
@@ -137,7 +137,7 @@ impl<'a> Coverage<'a> {
             CoverageInner::Format1 { glyphs } => glyphs.len() / 2,
             CoverageInner::Format2 { ranges } => {
                 let mut total = 0usize;
-                for chunk in ranges.chunks_exact(6) {
+                for chunk in ranges.as_chunks::<6>().0 {
                     let start = u16::from_be_bytes([chunk[0], chunk[1]]) as i32;
                     let end = u16::from_be_bytes([chunk[2], chunk[3]]) as i32;
                     if end >= start {
@@ -788,7 +788,9 @@ impl<'a> AttachPoint<'a> {
     /// Iterate every contour-point index in spec-sorted order.
     pub fn iter(&self) -> impl Iterator<Item = u16> + '_ {
         self.indices
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| u16::from_be_bytes([c[0], c[1]]))
     }
 }

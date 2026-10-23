@@ -57,12 +57,12 @@ pub mod unicode_script;
 
 pub use cff::{PrivateHints, RegistryOrdering, TopMetadata};
 pub use cff2::{
-    Cff2, Cff2Header, Cff2Op, Cff2TopDict, ItemVariationData, ItemVariationStore,
-    RegionAxisCoordinates, VariationRegion, DEFAULT_FONT_MATRIX,
+    Cff2, Cff2Header, Cff2Op, Cff2TopDict, DEFAULT_FONT_MATRIX, ItemVariationData,
+    ItemVariationStore, RegionAxisCoordinates, VariationRegion,
 };
 pub use feature_tags::{
-    feature_tag, is_registered_feature_tag, registered_feature_tags, FeatureTag, FeatureTagRecord,
-    FEATURE_TAG_REGISTRY, REGISTERED_FEATURE_TAG_COUNT,
+    FEATURE_TAG_REGISTRY, FeatureTag, FeatureTagRecord, REGISTERED_FEATURE_TAG_COUNT, feature_tag,
+    is_registered_feature_tag, registered_feature_tags,
 };
 pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
 pub use shape::{FeatureSetting, ShapeOptions, ShapedGlyph, ShapedRun};
@@ -84,31 +84,30 @@ pub use crate::tables::base::{
 };
 pub use crate::tables::cmap_uvs::{CmapUvs, UvsMapping};
 pub use crate::tables::colr::{
-    resolve_paint_color, Affine2x3, BaseGlyphRecord, ClipBox, ColorLine, ColorStop,
+    Affine2x3, BaseGlyphRecord, COLR_FOREGROUND_PALETTE_INDEX, ClipBox, ColorLine, ColorStop,
     ColrTable as ColrView, CompositeMode, Extend, LayerRecord, Paint, PaintRef, ResolvedColor,
-    COLR_FOREGROUND_PALETTE_INDEX,
+    resolve_paint_color,
 };
 pub use crate::tables::context::{
     ChainedSequenceContext, ChainedSequenceRule, SequenceContext, SequenceLookupRecord,
     SequenceRule,
 };
 pub use crate::tables::cpal::{
-    ColorRecord, CpalTable as CpalView, PaletteType, CPAL_USABLE_WITH_DARK_BACKGROUND,
-    CPAL_USABLE_WITH_LIGHT_BACKGROUND,
+    CPAL_USABLE_WITH_DARK_BACKGROUND, CPAL_USABLE_WITH_LIGHT_BACKGROUND, ColorRecord,
+    CpalTable as CpalView, PaletteType,
 };
 pub use crate::tables::device::{DeviceOrVariationIndex, DeviceTable, VariationIndexTable};
 pub use crate::tables::ebdt::{
-    unpack_bgra32, unpack_pixels, BitmapContent, BitmapDataTable as BitmapDataView, EbdtComponent,
-    GlyphBitmapData, GlyphMetrics,
+    BitmapContent, BitmapDataTable as BitmapDataView, EbdtComponent, GlyphBitmapData, GlyphMetrics,
+    unpack_bgra32, unpack_pixels,
 };
 pub use crate::tables::eblc::{
-    BigGlyphMetrics, BitmapLocation, BitmapLocationTable as BitmapLocationView, BitmapSize,
-    SbitLineMetrics, SmallGlyphMetrics, BITMAP_FLAG_HORIZONTAL_METRICS,
-    BITMAP_FLAG_VERTICAL_METRICS,
+    BITMAP_FLAG_HORIZONTAL_METRICS, BITMAP_FLAG_VERTICAL_METRICS, BigGlyphMetrics, BitmapLocation,
+    BitmapLocationTable as BitmapLocationView, BitmapSize, SbitLineMetrics, SmallGlyphMetrics,
 };
 pub use crate::tables::ebsc::{BitmapScale, EbscTable as EbscView};
 pub use crate::tables::fvar::{
-    FvarTable as FvarView, NamedInstance, VariationAxis, FVAR_AXIS_HIDDEN,
+    FVAR_AXIS_HIDDEN, FvarTable as FvarView, NamedInstance, VariationAxis,
 };
 pub use crate::tables::gdef::{
     AttachList, AttachPoint, CaretValue, ClassDef, Coverage, CoverageIter, GlyphClass,
@@ -116,34 +115,36 @@ pub use crate::tables::gdef::{
 };
 pub use crate::tables::gpos::GposTable as GposView;
 pub use crate::tables::gpos::{
-    Anchor, CursiveAttachment, CursivePos, EntryExit, ExtensionPos, LigatureAttachment,
-    MarkAttachment, MarkBasePos, MarkLigPos, MarkMarkAttachment, MarkMarkPos, MarkRecord, PairPos,
-    PairPosIter, PairValue, SinglePos, SinglePosIter, ValueFormat, ValueRecord,
+    Anchor, CursiveAttachment, CursivePos, EntryExit, ExtensionPos,
     GPOS_LOOKUP_TYPE_CHAINED_CONTEXT, GPOS_LOOKUP_TYPE_CONTEXT, GPOS_LOOKUP_TYPE_CURSIVE,
     GPOS_LOOKUP_TYPE_EXTENSION, GPOS_LOOKUP_TYPE_MARK_TO_BASE, GPOS_LOOKUP_TYPE_MARK_TO_LIGATURE,
     GPOS_LOOKUP_TYPE_MARK_TO_MARK, GPOS_LOOKUP_TYPE_PAIR, GPOS_LOOKUP_TYPE_SINGLE,
+    LigatureAttachment, MarkAttachment, MarkBasePos, MarkLigPos, MarkMarkAttachment, MarkMarkPos,
+    MarkRecord, PairPos, PairPosIter, PairValue, SinglePos, SinglePosIter, ValueFormat,
+    ValueRecord,
 };
 pub use crate::tables::gsub::GsubTable as GsubView;
 pub use crate::tables::gsub::{
-    AlternateGlyphIter, AlternateSet, AlternateSubst, AlternateSubstIter, ExtensionSubst, Ligature,
+    AlternateGlyphIter, AlternateSet, AlternateSubst, AlternateSubstIter, ExtensionSubst,
+    GSUB_LOOKUP_TYPE_ALTERNATE, GSUB_LOOKUP_TYPE_CHAINED_CONTEXT, GSUB_LOOKUP_TYPE_CONTEXT,
+    GSUB_LOOKUP_TYPE_EXTENSION, GSUB_LOOKUP_TYPE_LIGATURE, GSUB_LOOKUP_TYPE_MULTIPLE,
+    GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE, GSUB_LOOKUP_TYPE_SINGLE, Ligature,
     LigatureComponentIter, LigatureSet, LigatureSubst, LigatureSubstIter, MultipleSubst,
     MultipleSubstIter, ReverseChainSingleSubst, Sequence, SequenceGlyphIter, SingleSubst,
-    SingleSubstIter, GSUB_LOOKUP_TYPE_ALTERNATE, GSUB_LOOKUP_TYPE_CHAINED_CONTEXT,
-    GSUB_LOOKUP_TYPE_CONTEXT, GSUB_LOOKUP_TYPE_EXTENSION, GSUB_LOOKUP_TYPE_LIGATURE,
-    GSUB_LOOKUP_TYPE_MULTIPLE, GSUB_LOOKUP_TYPE_REVERSE_CHAINED_SINGLE, GSUB_LOOKUP_TYPE_SINGLE,
+    SingleSubstIter,
 };
 pub use crate::tables::ivs::{
     DeltaSetIndexMap, ItemVariationData as DeltaSetItemVariationData,
     ItemVariationStore as DeltaSetItemVariationStore,
 };
 pub use crate::tables::kern::{
-    KernSubtable, KernTable as KernView, KERN_COVERAGE_CROSS_STREAM, KERN_COVERAGE_HORIZONTAL,
-    KERN_COVERAGE_MINIMUM, KERN_COVERAGE_OVERRIDE,
+    KERN_COVERAGE_CROSS_STREAM, KERN_COVERAGE_HORIZONTAL, KERN_COVERAGE_MINIMUM,
+    KERN_COVERAGE_OVERRIDE, KernSubtable, KernTable as KernView,
 };
 pub use crate::tables::layout::{
     Feature, FeatureList, FeatureListIter, FeatureTableSubstitution, FeatureVariations, LangSys,
-    Lookup, LookupFlag, LookupList, LookupListIter, Script, ScriptList, ScriptListIter,
-    NO_REQUIRED_FEATURE,
+    Lookup, LookupFlag, LookupList, LookupListIter, NO_REQUIRED_FEATURE, Script, ScriptList,
+    ScriptListIter,
 };
 pub use crate::tables::mvar::{MvarTable as MvarView, ValueRecord as MvarValueRecord};
 pub use crate::tables::name::{NameId, NameRecord};
@@ -155,15 +156,15 @@ pub use crate::tables::os2::{
     FS_TYPE_PREVIEW_AND_PRINT, FS_TYPE_RESTRICTED_LICENSE, FS_TYPE_USAGE_MASK,
 };
 pub use crate::tables::post::{
-    standard_mac_glyph_name, PostFormat, PostGlyphName, PostTable, STANDARD_MAC_GLYPH_NAMES,
+    PostFormat, PostGlyphName, PostTable, STANDARD_MAC_GLYPH_NAMES, standard_mac_glyph_name,
 };
 pub use crate::tables::sbix::{
-    GlyphGraphic, GraphicType, SbixStrike, SbixTable as SbixView, SBIX_FLAG_ALWAYS_SET,
-    SBIX_FLAG_DRAW_OUTLINES,
+    GlyphGraphic, GraphicType, SBIX_FLAG_ALWAYS_SET, SBIX_FLAG_DRAW_OUTLINES, SbixStrike,
+    SbixTable as SbixView,
 };
 pub use crate::tables::stat::{
-    AxisValue, StatAxisRecord, StatTable as StatView, STAT_ELIDABLE_AXIS_VALUE_NAME,
-    STAT_OLDER_SIBLING_FONT_ATTRIBUTE,
+    AxisValue, STAT_ELIDABLE_AXIS_VALUE_NAME, STAT_OLDER_SIBLING_FONT_ATTRIBUTE, StatAxisRecord,
+    StatTable as StatView,
 };
 pub use crate::tables::svg::{SvgDocument, SvgTable as SvgView};
 pub use crate::tables::vhea::VheaTable as VheaView;
@@ -2209,10 +2210,10 @@ impl<'a> Font<'a> {
             return Some(name);
         }
         // 2. post-format-2.0 Pascal-string tail (UTF-8-clean only).
-        if let Some(bytes) = self.post_glyph_name(glyph_id) {
-            if let Ok(s) = std::str::from_utf8(bytes) {
-                return Some(s);
-            }
+        if let Some(bytes) = self.post_glyph_name(glyph_id)
+            && let Ok(s) = std::str::from_utf8(bytes)
+        {
+            return Some(s);
         }
         // 3. AGL reverse lookup keyed on the glyph's `cmap`
         //    codepoint. The CmapTable doesn't expose a reverse
@@ -2220,16 +2221,15 @@ impl<'a> Font<'a> {
         //    BMP-only (no astral entries), so any astral glyph would
         //    never match anyway.
         for cp in 0u32..0x1_0000 {
-            if let Some(c) = char::from_u32(cp) {
-                if self.cmap.lookup(cp) == Some(glyph_id) {
-                    if let Some(name) = agl::codepoint_to_name(c) {
-                        return Some(name);
-                    }
-                    // Found the codepoint but it's not in AGL; keep
-                    // scanning in case another encoded codepoint maps
-                    // to the same glyph and *is* in AGL.
-                }
+            if let Some(c) = char::from_u32(cp)
+                && self.cmap.lookup(cp) == Some(glyph_id)
+                && let Some(name) = agl::codepoint_to_name(c)
+            {
+                return Some(name);
             }
+            // Found the codepoint but it's not in AGL; keep
+            // scanning in case another encoded codepoint maps
+            // to the same glyph and *is* in AGL.
         }
         None
     }
