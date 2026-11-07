@@ -42,6 +42,7 @@ const LANG_TAG_RECORD_LEN: usize = 4;
 /// exists so a caller iterating `NameId::from_raw` doesn't lose
 /// information about a font that emits a record with ID 15.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum NameId {
     /// 0 — Copyright notice.
     Copyright,

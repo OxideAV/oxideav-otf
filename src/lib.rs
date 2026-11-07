@@ -174,6 +174,7 @@ pub use crate::tables::xvar::MetricsVariations as MetricsVariationsView;
 
 /// Errors emitted during font parsing or glyph lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
     /// The input slice was too short for the requested header / structure.
     UnexpectedEof,

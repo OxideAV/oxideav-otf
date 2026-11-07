@@ -9,6 +9,7 @@ use crate::Error;
 use crate::parser::{read_i16, read_u16};
 
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct HeadTable {
     pub units_per_em: u16,
     pub x_min: i16,

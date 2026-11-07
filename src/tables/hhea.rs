@@ -4,6 +4,7 @@ use crate::Error;
 use crate::parser::{read_i16, read_u16};
 
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct HheaTable {
     pub ascent: i16,
     pub descent: i16,

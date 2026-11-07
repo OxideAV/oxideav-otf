@@ -415,10 +415,8 @@ fn cursive_rtl_flag_adjusts_leading_glyph() {
 fn cursive_disabled_leaves_positions() {
     let bytes = build_font(false);
     let font = Font::from_bytes(&bytes).unwrap();
-    let opts = ShapeOptions {
-        features: vec![oxideav_otf::FeatureSetting::new(*b"curs", 0)],
-        ..ShapeOptions::default()
-    };
+    let opts =
+        ShapeOptions::default().with_features(vec![oxideav_otf::FeatureSetting::new(*b"curs", 0)]);
     let run = font.shape("db", &opts).unwrap();
     assert_eq!(run[0].x_advance, 550);
     assert_eq!(run[1].y_offset, 0);
@@ -764,10 +762,7 @@ fn variable_shape_max_weight_applies_hvar_and_gpos_deltas() {
     // (+80) on top of hmtx (+500) and the static xAdvance (+25).
     let bytes = build_var_font();
     let font = Font::from_bytes(&bytes).unwrap();
-    let opts = ShapeOptions {
-        coords: vec![900.0],
-        ..ShapeOptions::default()
-    };
+    let opts = ShapeOptions::default().with_coords(vec![900.0]);
     let run = font.shape("a", &opts).unwrap();
     assert_eq!(run[0].x_advance, 500 + 40 + 25 + 80);
     // A glyph with only an HVAR row: 550 + 100.
@@ -781,10 +776,7 @@ fn variable_shape_default_coords_matches_no_coords() {
     // to zero, identical to the no-coords result.
     let bytes = build_var_font();
     let font = Font::from_bytes(&bytes).unwrap();
-    let opts = ShapeOptions {
-        coords: vec![400.0],
-        ..ShapeOptions::default()
-    };
+    let opts = ShapeOptions::default().with_coords(vec![400.0]);
     let run = font.shape("a", &opts).unwrap();
     assert_eq!(run[0].x_advance, 500 + 25);
 }
@@ -801,10 +793,7 @@ fn anchor_format3_variation_index_moves_with_instance() {
     let run = font.shape("bc", &ShapeOptions::default()).unwrap();
     assert_eq!(run[1].glyph, 3);
     assert_eq!((run[1].x_offset, run[1].y_offset), (-595, 170));
-    let heavy = ShapeOptions {
-        coords: vec![900.0],
-        ..ShapeOptions::default()
-    };
+    let heavy = ShapeOptions::default().with_coords(vec![900.0]);
     let run = font.shape("bc", &heavy).unwrap();
     assert_eq!((run[1].x_offset, run[1].y_offset), (-595, 250));
 }
@@ -1013,26 +1002,17 @@ fn feature_variations_substitute_rvrn_at_heavy_weights() {
 
     // wght=900 → normalized 1.0, inside [0.5, 1.0]: the alternate
     // feature table (lookup 0) substitutes gid 1 → gid 2.
-    let heavy = ShapeOptions {
-        coords: vec![900.0],
-        ..ShapeOptions::default()
-    };
+    let heavy = ShapeOptions::default().with_coords(vec![900.0]);
     let run = font.shape("a", &heavy).unwrap();
     assert_eq!(run[0].glyph, 2);
 
     // The condition range is inclusive: wght=650 → normalized 0.5.
-    let mid = ShapeOptions {
-        coords: vec![650.0],
-        ..ShapeOptions::default()
-    };
+    let mid = ShapeOptions::default().with_coords(vec![650.0]);
     let run = font.shape("a", &mid).unwrap();
     assert_eq!(run[0].glyph, 2);
 
     // Below the range: wght=500 → normalized 0.2 → default feature.
-    let light = ShapeOptions {
-        coords: vec![500.0],
-        ..ShapeOptions::default()
-    };
+    let light = ShapeOptions::default().with_coords(vec![500.0]);
     let run = font.shape("a", &light).unwrap();
     assert_eq!(run[0].glyph, 1);
 }
@@ -1250,10 +1230,8 @@ fn reverse_chain_rewrites_with_backtrack() {
     // chain sees b preceded by a and substitutes gid 5.
     let bytes = build_kern_fallback_font();
     let font = Font::from_bytes(&bytes).unwrap();
-    let opts = ShapeOptions {
-        features: vec![oxideav_otf::FeatureSetting::new(*b"ccmp", 0)],
-        ..ShapeOptions::default()
-    };
+    let opts =
+        ShapeOptions::default().with_features(vec![oxideav_otf::FeatureSetting::new(*b"ccmp", 0)]);
     let run = font.shape("ab", &opts).unwrap();
     assert_eq!(run.iter().map(|g| g.glyph).collect::<Vec<_>>(), vec![1, 5]);
     // Without the backtrack context the coverage alone must not fire.
@@ -1266,22 +1244,17 @@ fn legacy_kern_fallback_without_gpos() {
     // No GPOS in this font: the kern table supplies (b, d) → -60.
     let bytes = build_kern_fallback_font();
     let font = Font::from_bytes(&bytes).unwrap();
-    let opts = ShapeOptions {
-        features: vec![oxideav_otf::FeatureSetting::new(*b"ccmp", 0)],
-        ..ShapeOptions::default()
-    };
+    let opts =
+        ShapeOptions::default().with_features(vec![oxideav_otf::FeatureSetting::new(*b"ccmp", 0)]);
     let run = font.shape("bd", &opts).unwrap();
     assert_eq!(run[0].x_advance, 600 - 60);
     assert_eq!(run[1].x_advance, 550);
 
     // kern=0 disables the fallback.
-    let nokern = ShapeOptions {
-        features: vec![
-            oxideav_otf::FeatureSetting::new(*b"ccmp", 0),
-            oxideav_otf::FeatureSetting::new(*b"kern", 0),
-        ],
-        ..ShapeOptions::default()
-    };
+    let nokern = ShapeOptions::default().with_features(vec![
+        oxideav_otf::FeatureSetting::new(*b"ccmp", 0),
+        oxideav_otf::FeatureSetting::new(*b"kern", 0),
+    ]);
     let run = font.shape("bd", &nokern).unwrap();
     assert_eq!(run[0].x_advance, 600);
 }

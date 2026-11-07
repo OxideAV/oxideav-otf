@@ -35,13 +35,11 @@ fn advances(run: &[ShapedGlyph]) -> Vec<i32> {
 }
 
 fn features(list: &[([u8; 4], u32)]) -> ShapeOptions {
-    ShapeOptions {
-        features: list
-            .iter()
+    ShapeOptions::default().with_features(
+        list.iter()
             .map(|&(tag, value)| FeatureSetting::new(tag, value))
             .collect(),
-        ..ShapeOptions::default()
-    }
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -245,11 +243,9 @@ fn explicit_script_language_selection() {
     // default language system: identical to the default result.
     let explicit = shape(
         "office",
-        &ShapeOptions {
-            script: Some(*b"latn"),
-            language: Some(*b"XXX "),
-            ..ShapeOptions::default()
-        },
+        &ShapeOptions::default()
+            .with_script(Some(*b"latn"))
+            .with_language(Some(*b"XXX ")),
     );
     let default = shape("office", &ShapeOptions::default());
     assert_eq!(explicit, default);
@@ -438,10 +434,7 @@ fn shape_runs_single_latin_run_matches_shape() {
     let direct = font
         .shape(
             "office",
-            &ShapeOptions {
-                script: Some(*b"latn"),
-                ..ShapeOptions::default()
-            },
+            &ShapeOptions::default().with_script(Some(*b"latn")),
         )
         .unwrap();
     assert_eq!(run.glyphs, direct);
@@ -470,10 +463,7 @@ fn shape_runs_splits_scripts_and_offsets_clusters() {
         let direct = font
             .shape(
                 &text[run.start..run.end],
-                &ShapeOptions {
-                    script: Some(tag),
-                    ..ShapeOptions::default()
-                },
+                &ShapeOptions::default().with_script(Some(tag)),
             )
             .unwrap();
         assert_eq!(run.glyphs.len(), direct.len());
@@ -507,10 +497,7 @@ fn shape_runs_common_and_override_behavior() {
     assert_eq!(runs[0].script_tag, None);
     assert_eq!(runs[0].glyphs.iter().filter(|g| g.glyph == 0).count(), 2);
     // A caller-set script overrides detection in every run.
-    let opts = ShapeOptions {
-        script: Some(*b"grek"),
-        ..ShapeOptions::default()
-    };
+    let opts = ShapeOptions::default().with_script(Some(*b"grek"));
     let runs = font.shape_runs("abcΑΒΓ", &opts).unwrap();
     assert_eq!(runs.len(), 2);
     assert!(runs.iter().all(|r| r.script_tag == Some(*b"grek")));

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- API hygiene: `Error`, `ShapeOptions`, `ShapedGlyph`, `ShapedRun`, `HeadTable`, `HheaTable`, `VheaTable`, `MaxpTable`, `NameId`, `Paint`, `AxisValue` and `BitmapContent` are now `#[non_exhaustive]`. Build `ShapeOptions` with `ShapeOptions::default()` + `with_*`. The fixed binary record mirrors (`ValueRecord`, `Anchor`, `BaseGlyphRecord`, `SbitLineMetrics`, ...), the plain value types (`Point`, `BBox`, `ColorRecord`, `FeatureSetting`) and the enums whose spec fixes the value set or that already carry an `Other` catch-all (`CubicSegment`, `BaseAxis`, `CompositeMode`, `Extend`, `GlyphClass`, `CaretValue`, `GlyphMetrics`, `UvsMapping`, `PostFormat`, `GraphicType`, `EmbeddingPermission`, ...) stay exhaustive.
+
+### Added
+
+- `ShapeOptions::with_script` / `with_language` / `with_features` / `with_coords`.
+
+### Changed
+
 - edition 2024, MSRV 1.95
 
 ## [0.1.5](https://github.com/OxideAV/oxideav-otf/compare/v0.1.4...v0.1.5) - 2026-10-04

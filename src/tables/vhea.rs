@@ -17,6 +17,7 @@ use crate::Error;
 use crate::parser::{read_i16, read_u16, read_u32};
 
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct VheaTable {
     /// Raw `version` Fixed: `0x00010000` or `0x00011000`.
     pub version: u32,

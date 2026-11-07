@@ -8,6 +8,7 @@ use crate::Error;
 use crate::parser::{read_u16, read_u32};
 
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct MaxpTable {
     pub num_glyphs: u16,
 }

@@ -56,6 +56,7 @@ pub struct StatAxisRecord {
 
 /// A decoded axis-value table (§7.3.7.3), one of the four formats.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum AxisValue {
     /// Format 1: a single axis value with a name.
     Format1 {

@@ -59,6 +59,7 @@ pub(crate) const MAX_NESTING_DEPTH: usize = 8;
 /// pen; `x_advance` / `y_advance` move the pen to the next glyph
 /// (GPOS chapter, §"Basic glyph positioning").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ShapedGlyph {
     /// Final glyph ID after all substitutions.
     pub glyph: u16,
@@ -80,6 +81,7 @@ pub struct ShapedGlyph {
 /// One script-itemized, shaped run: the output of
 /// [`Font::shape_runs`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ShapedRun {
     /// Byte offset of the run's first character in the input text.
     pub start: usize,
@@ -131,6 +133,7 @@ impl FeatureSetting {
 
 /// Options for [`Font::shape`].
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ShapeOptions {
     /// OpenType script tag to shape with (e.g. `*b"latn"`). `None`
     /// selects `DFLT`, falling back to `latn` when the font has no
@@ -147,6 +150,36 @@ pub struct ShapeOptions {
     /// `fvar` axes). Empty = the default instance. When non-empty,
     /// HVAR advance deltas and GPOS VariationIndex deltas are applied.
     pub coords: Vec<f32>,
+}
+
+impl ShapeOptions {
+    /// Set [`Self::script`].
+    #[must_use]
+    pub fn with_script(mut self, v: Option<[u8; 4]>) -> Self {
+        self.script = v;
+        self
+    }
+
+    /// Set [`Self::language`].
+    #[must_use]
+    pub fn with_language(mut self, v: Option<[u8; 4]>) -> Self {
+        self.language = v;
+        self
+    }
+
+    /// Set [`Self::features`].
+    #[must_use]
+    pub fn with_features(mut self, v: Vec<FeatureSetting>) -> Self {
+        self.features = v;
+        self
+    }
+
+    /// Set [`Self::coords`].
+    #[must_use]
+    pub fn with_coords(mut self, v: Vec<f32>) -> Self {
+        self.coords = v;
+        self
+    }
 }
 
 /// The default-enabled GSUB features (crate policy; see module docs).

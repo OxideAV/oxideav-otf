@@ -487,6 +487,7 @@ impl CompositeMode {
 /// set to the table's `varIndexBase` (and, when the paint was decoded
 /// with instance coordinates, the geometry already delta-adjusted).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Paint {
     /// Format 1 — a slice of the `LayerList`, composited bottom-up
     /// with source-over. Resolve the child paints with

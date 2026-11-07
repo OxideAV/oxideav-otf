@@ -73,6 +73,7 @@ impl GlyphMetrics {
 
 /// The image payload of one glyph.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BitmapContent<'a> {
     /// Byte-aligned packed rows (formats 1 / 6): each row is padded
     /// to a byte boundary.
