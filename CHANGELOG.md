@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/OxideAV/oxideav-otf/compare/v0.1.5...v0.2.0) - 2026-11-07
+
+### Other
+
+- API hygiene: non_exhaustive Error, shaping records, header tables and growable format enums
+- edition 2024, MSRV 1.95
+
 ### Changed
 
 - API hygiene: `Error`, `ShapeOptions`, `ShapedGlyph`, `ShapedRun`, `HeadTable`, `HheaTable`, `VheaTable`, `MaxpTable`, `NameId`, `Paint`, `AxisValue` and `BitmapContent` are now `#[non_exhaustive]`. Build `ShapeOptions` with `ShapeOptions::default()` + `with_*`. The fixed binary record mirrors (`ValueRecord`, `Anchor`, `BaseGlyphRecord`, `SbitLineMetrics`, ...), the plain value types (`Point`, `BBox`, `ColorRecord`, `FeatureSetting`) and the enums whose spec fixes the value set or that already carry an `Other` catch-all (`CubicSegment`, `BaseAxis`, `CompositeMode`, `Extend`, `GlyphClass`, `CaretValue`, `GlyphMetrics`, `UvsMapping`, `PostFormat`, `GraphicType`, `EmbeddingPermission`, ...) stay exhaustive.
