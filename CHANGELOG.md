@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The name accessors on `Font` (`family_name`, `full_name`, `ps_name`,
+  `name_string`, `designer`, palette labels, ...) no longer leak one
+  allocation per call for UTF-16 names: they go through the new cached
+  `NameTable::resolve` / `resolve_id`. `NameTable::find_decoded` returns
+  the string as a `Cow` without caching. `NameTable::find` / `get` keep
+  their `&'a str` signature and their per-call leak, now documented.
 - `name` lookups (`family_name`, `full_name`, `ps_name`, ...) returned
   `None` when any record for the requested name ID used a platform /
   encoding pair that is not decoded (for example a Macintosh record in a

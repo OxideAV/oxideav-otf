@@ -700,12 +700,12 @@ impl<'a> Font<'a> {
 
     /// Family name from the `name` table.
     pub fn family_name(&self) -> Option<&str> {
-        self.name.find(1)
+        self.name.resolve(1)
     }
 
     /// Full name (typically family + style) from the `name` table.
     pub fn full_name(&self) -> Option<&str> {
-        self.name.find(4)
+        self.name.resolve(4)
     }
 
     /// `head.unitsPerEm`. Almost always 1000 (CFF default) or 2048;
@@ -1011,7 +1011,7 @@ impl<'a> Font<'a> {
     /// `None` when there is no label or no matching `name` record.
     pub fn palette_label(&self, palette_index: u16) -> Option<&str> {
         let name_id = self.cpal.as_ref()?.palette_label(palette_index)?;
-        self.name.find(name_id)
+        self.name.resolve(name_id)
     }
 
     /// The user-interface label for a palette **entry** (shared by all
@@ -1019,7 +1019,7 @@ impl<'a> Font<'a> {
     /// table from the `CPAL` version-1 Palette Entry Label Array.
     pub fn palette_entry_label(&self, entry_index: u16) -> Option<&str> {
         let name_id = self.cpal.as_ref()?.palette_entry_label(entry_index)?;
-        self.name.find(name_id)
+        self.name.resolve(name_id)
     }
 
     /// Palette indices flagged as appropriate for a light (`true`) or
@@ -2105,52 +2105,52 @@ impl<'a> Font<'a> {
     /// want any of the 26 spec-defined name IDs without a separate
     /// helper.
     pub fn name_string(&self, name_id: NameId) -> Option<&str> {
-        self.name.get(name_id)
+        self.name.resolve_id(name_id)
     }
 
     /// Designer name (name ID 9).
     pub fn designer(&self) -> Option<&str> {
-        self.name.get(NameId::Designer)
+        self.name.resolve_id(NameId::Designer)
     }
 
     /// Manufacturer name (name ID 8).
     pub fn manufacturer(&self) -> Option<&str> {
-        self.name.get(NameId::Manufacturer)
+        self.name.resolve_id(NameId::Manufacturer)
     }
 
     /// Typeface description (name ID 10).
     pub fn description(&self) -> Option<&str> {
-        self.name.get(NameId::Description)
+        self.name.resolve_id(NameId::Description)
     }
 
     /// Vendor URL (name ID 11).
     pub fn vendor_url(&self) -> Option<&str> {
-        self.name.get(NameId::VendorUrl)
+        self.name.resolve_id(NameId::VendorUrl)
     }
 
     /// Designer URL (name ID 12).
     pub fn designer_url(&self) -> Option<&str> {
-        self.name.get(NameId::DesignerUrl)
+        self.name.resolve_id(NameId::DesignerUrl)
     }
 
     /// License description (name ID 13).
     pub fn license(&self) -> Option<&str> {
-        self.name.get(NameId::License)
+        self.name.resolve_id(NameId::License)
     }
 
     /// License-info URL (name ID 14).
     pub fn license_url(&self) -> Option<&str> {
-        self.name.get(NameId::LicenseUrl)
+        self.name.resolve_id(NameId::LicenseUrl)
     }
 
     /// Trademark string (name ID 7).
     pub fn trademark(&self) -> Option<&str> {
-        self.name.get(NameId::Trademark)
+        self.name.resolve_id(NameId::Trademark)
     }
 
     /// Sample text (name ID 19).
     pub fn sample_text(&self) -> Option<&str> {
-        self.name.get(NameId::SampleText)
+        self.name.resolve_id(NameId::SampleText)
     }
 
     /// Typographic Family name (name ID 16; "Preferred Family" in
@@ -2158,37 +2158,37 @@ impl<'a> Font<'a> {
     /// used by applications that look past the 4-style style-linking
     /// `font_family` cap.
     pub fn typographic_family(&self) -> Option<&str> {
-        self.name.get(NameId::TypographicFamily)
+        self.name.resolve_id(NameId::TypographicFamily)
     }
 
     /// Typographic Subfamily name (name ID 17; "Preferred Subfamily"
     /// in earlier spec text).
     pub fn typographic_subfamily(&self) -> Option<&str> {
-        self.name.get(NameId::TypographicSubfamily)
+        self.name.resolve_id(NameId::TypographicSubfamily)
     }
 
     /// WWS Family name (name ID 21). Provides a WWS-conformant family
     /// name when name IDs 16 / 17 carry extra non-WWS attributes; see
     /// `OS/2.fsSelection` bit 8.
     pub fn wws_family(&self) -> Option<&str> {
-        self.name.get(NameId::WwsFamily)
+        self.name.resolve_id(NameId::WwsFamily)
     }
 
     /// WWS Subfamily name (name ID 22).
     pub fn wws_subfamily(&self) -> Option<&str> {
-        self.name.get(NameId::WwsSubfamily)
+        self.name.resolve_id(NameId::WwsSubfamily)
     }
 
     /// Variations PostScript Name Prefix (name ID 25; variable fonts).
     pub fn variations_ps_name_prefix(&self) -> Option<&str> {
-        self.name.get(NameId::VariationsPsNamePrefix)
+        self.name.resolve_id(NameId::VariationsPsNamePrefix)
     }
 
     /// Unique font identifier from the `name` table (name ID 3).
     /// Distinct from [`Font::unique_id`] (which is the CFF Top DICT's
     /// legacy PostScript `UniqueID` integer).
     pub fn unique_font_id(&self) -> Option<&str> {
-        self.name.get(NameId::UniqueId)
+        self.name.resolve_id(NameId::UniqueId)
     }
 
     // ---- Adobe Glyph List (AGL) integration ------------------------------

@@ -21,6 +21,8 @@
 //! Unicode any, then Windows / Unicode UCS-4, then Mac Roman English,
 //! then Unicode-platform records, then anything else.
 
+use std::borrow::Cow;
+
 use crate::Error;
 use crate::parser::read_u16;
 
@@ -235,6 +237,8 @@ pub struct NameTable<'a> {
     /// Byte offset of the start of the `langTagRecord` array from the
     /// start of the table, or 0 when there are no records.
     lang_tag_array_offset: usize,
+    /// Best string per name ID, filled by the first [`NameTable::resolve`].
+    resolved: std::sync::OnceLock<Vec<(u16, Box<str>)>>,
     _phantom: core::marker::PhantomData<&'a ()>,
 }
 
@@ -301,6 +305,7 @@ impl<'a> NameTable<'a> {
             string_offset,
             lang_tag_count,
             lang_tag_array_offset,
+            resolved: std::sync::OnceLock::new(),
             _phantom: core::marker::PhantomData,
         })
     }
@@ -394,46 +399,108 @@ impl<'a> NameTable<'a> {
     /// Find the value of a name record by its standard `name_id`.
     /// Selects the best-ranked encoding (Windows / Unicode BMP English
     /// first, then Mac Roman English, then anything else).
+    ///
+    /// A string stored as UTF-16 has to be transcoded, and to hand it
+    /// out for the full `'a` lifetime this method **leaks one
+    /// allocation per call**. Prefer [`NameTable::resolve`] (cached,
+    /// borrowed from the table) or [`NameTable::find_decoded`]
+    /// (owned); this method is kept for its signature.
     pub fn find(&self, name_id: u16) -> Option<&'a str> {
-        let mut best: Option<(i32, std::borrow::Cow<'a, str>)> = None;
-
-        for i in 0..self.count as usize {
-            let off = NAME_HEADER_LEN + i * NAME_RECORD_LEN;
-            let platform = read_u16(self.bytes, off).ok()?;
-            let encoding = read_u16(self.bytes, off + 2).ok()?;
-            let language = read_u16(self.bytes, off + 4).ok()?;
-            let nid = read_u16(self.bytes, off + 6).ok()?;
-            if nid != name_id {
-                continue;
-            }
-            let length = read_u16(self.bytes, off + 8).ok()? as usize;
-            let str_off = read_u16(self.bytes, off + 10).ok()? as usize;
-            let start = self.string_offset as usize + str_off;
-            // A record whose string lies outside the table, or whose
-            // platform / encoding pair we do not decode (e.g. a
-            // Macintosh record in a non-Roman script), is skipped: it
-            // must not hide the usable records for the same name ID.
-            let Some(raw) = self.bytes.get(start..start.saturating_add(length)) else {
-                continue;
-            };
-            let rank = rank_record(platform, encoding, language);
-            let Some(decoded) = decode(platform, encoding, raw) else {
-                continue;
-            };
-            match &best {
-                Some((br, _)) if *br >= rank => {}
-                _ => best = Some((rank, decoded)),
-            }
-        }
-        let (_, c) = best?;
-        Some(match c {
-            std::borrow::Cow::Borrowed(s) => s,
-            std::borrow::Cow::Owned(s) => Box::leak(s.into_boxed_str()),
+        Some(match self.find_decoded(name_id)? {
+            Cow::Borrowed(s) => s,
+            Cow::Owned(s) => Box::leak(s.into_boxed_str()),
         })
     }
 
+    /// Like [`NameTable::find`] but returns the transcoded string
+    /// itself: borrowed when the stored bytes are usable as they are,
+    /// owned otherwise. Nothing is cached and nothing is leaked.
+    pub fn find_decoded(&self, name_id: u16) -> Option<Cow<'a, str>> {
+        let mut best: Option<(i32, Cow<'a, str>)> = None;
+        for i in 0..self.count as usize {
+            let Some((nid, rank, decoded)) = self.ranked_record(i, |nid, rank| {
+                nid == name_id && best.as_ref().is_none_or(|(held, _)| rank > *held)
+            }) else {
+                continue;
+            };
+            debug_assert_eq!(nid, name_id);
+            best = Some((rank, decoded));
+        }
+        best.map(|(_, text)| text)
+    }
+
+    /// The best-ranked string for `name_id`, borrowed from the table.
+    ///
+    /// The first call decodes the winning record of every name ID in
+    /// one pass over the record array and keeps the result; later
+    /// calls are a binary search. Same selection as
+    /// [`NameTable::find`].
+    pub fn resolve(&self, name_id: u16) -> Option<&str> {
+        let all = self.resolved.get_or_init(|| self.resolve_all());
+        all.binary_search_by_key(&name_id, |(id, _)| *id)
+            .ok()
+            .map(|i| &*all[i].1)
+    }
+
+    /// [`NameTable::resolve`] for a typed [`NameId`].
+    pub fn resolve_id(&self, name_id: NameId) -> Option<&str> {
+        self.resolve(name_id.to_raw())
+    }
+
+    /// One pass over the records: per name ID, the decoded string of
+    /// the highest-ranked usable record (the earliest among equals),
+    /// sorted by name ID.
+    fn resolve_all(&self) -> Vec<(u16, Box<str>)> {
+        let mut held: Vec<(u16, i32, Cow<'a, str>)> = Vec::new();
+        for i in 0..self.count as usize {
+            let mut slot = None;
+            let Some((nid, rank, decoded)) = self.ranked_record(i, |nid, rank| {
+                slot = held.iter().position(|(id, _, _)| *id == nid);
+                slot.is_none_or(|at| rank > held[at].1)
+            }) else {
+                continue;
+            };
+            match slot {
+                Some(at) => held[at] = (nid, rank, decoded),
+                None => held.push((nid, rank, decoded)),
+            }
+        }
+        held.sort_by_key(|(id, _, _)| *id);
+        held.into_iter()
+            .map(|(id, _, text)| (id, text.into_owned().into_boxed_str()))
+            .collect()
+    }
+
+    /// Record `i` as `(nameID, rank, decoded string)`, provided
+    /// `wanted(nameID, rank)` says it is worth decoding. `None` for a
+    /// record that is not wanted, whose string lies outside the table,
+    /// or whose platform / encoding pair we do not decode (e.g. a
+    /// Macintosh record in a non-Roman script) — such a record must
+    /// not hide the usable records for the same name ID.
+    fn ranked_record(
+        &self,
+        i: usize,
+        wanted: impl FnOnce(u16, i32) -> bool,
+    ) -> Option<(u16, i32, Cow<'a, str>)> {
+        let off = NAME_HEADER_LEN + i * NAME_RECORD_LEN;
+        let platform = read_u16(self.bytes, off).ok()?;
+        let encoding = read_u16(self.bytes, off + 2).ok()?;
+        let language = read_u16(self.bytes, off + 4).ok()?;
+        let nid = read_u16(self.bytes, off + 6).ok()?;
+        let rank = rank_record(platform, encoding, language);
+        if !wanted(nid, rank) {
+            return None;
+        }
+        let length = read_u16(self.bytes, off + 8).ok()? as usize;
+        let str_off = read_u16(self.bytes, off + 10).ok()? as usize;
+        let start = self.string_offset as usize + str_off;
+        let raw = self.bytes.get(start..start.saturating_add(length))?;
+        Some((nid, rank, decode(platform, encoding, raw)?))
+    }
+
     /// Convenience: same as [`NameTable::find`] but takes a typed
-    /// [`NameId`].
+    /// [`NameId`] (and, like it, leaks transcoded strings; prefer
+    /// [`NameTable::resolve_id`]).
     pub fn get(&self, name_id: NameId) -> Option<&'a str> {
         self.find(name_id.to_raw())
     }
@@ -554,6 +621,65 @@ mod tests {
             assert_eq!(table.find(1), Some("Ok"), "order {order:?}");
             assert_eq!(table.find(2), None);
         }
+    }
+
+    /// `resolve`, `find_decoded` and `find` select the same string for
+    /// every name ID, including IDs with several competing records.
+    #[test]
+    fn resolve_agrees_with_find() {
+        // (platform, encoding, language, nameID, text)
+        let records: [(u16, u16, u16, u16, &str); 7] = [
+            (1, 0, 0, 1, "Mac One"),
+            (1, 0, 0, 4, "Mac Four"),
+            (3, 1, 0x0407, 1, "Deutsch"),
+            (3, 1, 0x0409, 1, "English"),
+            (3, 1, 0x0809, 1, "British"),
+            (3, 1, 0x0407, 300, "Dreihundert"),
+            (3, 1, 0x0411, 300, "\u{4E09}\u{767E}"),
+        ];
+        let mut storage = Vec::new();
+        let mut t = Vec::new();
+        t.extend_from_slice(&0u16.to_be_bytes());
+        t.extend_from_slice(&(records.len() as u16).to_be_bytes());
+        let storage_at = NAME_HEADER_LEN + records.len() * NAME_RECORD_LEN;
+        t.extend_from_slice(&(storage_at as u16).to_be_bytes());
+        for (platform, encoding, language, name_id, text) in records {
+            let raw: Vec<u8> = if platform == 1 {
+                text.as_bytes().to_vec()
+            } else {
+                text.encode_utf16().flat_map(u16::to_be_bytes).collect()
+            };
+            for v in [
+                platform,
+                encoding,
+                language,
+                name_id,
+                raw.len() as u16,
+                storage.len() as u16,
+            ] {
+                t.extend_from_slice(&v.to_be_bytes());
+            }
+            storage.extend_from_slice(&raw);
+        }
+        t.extend_from_slice(&storage);
+        let table = NameTable::parse(&t).unwrap();
+        assert_eq!(table.resolve(1), Some("English"));
+        assert_eq!(table.resolve(4), Some("Mac Four"));
+        assert_eq!(table.resolve(300), Some("Dreihundert"));
+        assert_eq!(table.resolve_id(NameId::FontFamily), Some("English"));
+        for id in 0..400u16 {
+            let cached = table.resolve(id);
+            assert_eq!(cached, table.find_decoded(id).as_deref(), "name ID {id}");
+            assert_eq!(cached, table.find(id), "name ID {id}");
+            // A second call returns the very same cached string.
+            assert_eq!(
+                cached.map(str::as_ptr),
+                table.resolve(id).map(str::as_ptr),
+                "name ID {id}"
+            );
+        }
+        // A clone carries its own cache and answers the same.
+        assert_eq!(table.clone().resolve(1), Some("English"));
     }
 
     /// Build a version-1 `name` table with two name records (one
