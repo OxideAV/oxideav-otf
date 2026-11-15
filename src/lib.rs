@@ -40,6 +40,7 @@ pub mod cff;
 // `VariationRegion`, … — is re-exported at the crate root below).
 #[doc(hidden)]
 pub mod cff2;
+pub mod collection;
 pub mod feature_tags;
 pub mod outline;
 // internal — exposed for tests/fuzz; not part of the stable API
@@ -68,6 +69,7 @@ pub use outline::{BBox, CubicContour, CubicOutline, CubicSegment, Point};
 pub use shape::{FeatureSetting, ShapeOptions, ShapedGlyph, ShapedRun};
 
 use crate::cff::Cff;
+pub use crate::collection::{CollectionHeader, is_collection};
 use crate::parser::TableDirectory;
 use crate::tables::{
     avar::AvarTable, base::BaseTable, cmap::CmapTable, colr::ColrTable, cpal::CpalTable,
@@ -238,6 +240,10 @@ pub enum Error {
     /// array at 32 elements). The contained value is the offending
     /// index.
     CharstringTransientIndex(i32),
+    /// [`Font::from_collection_bytes`] was asked for a member index at
+    /// or past the collection's `numFonts`. The contained value is the
+    /// requested index.
+    SubfontOutOfRange(u32),
 }
 
 impl core::fmt::Display for Error {
@@ -290,6 +296,9 @@ impl core::fmt::Display for Error {
                 f,
                 "Type 2 charstring: transient-array index {i} out of range (0..32)"
             ),
+            Self::SubfontOutOfRange(i) => {
+                write!(f, "font collection has no member with index {i}")
+            }
         }
     }
 }
@@ -439,7 +448,35 @@ fn default_private_hints() -> &'static PrivateHints {
 impl<'a> Font<'a> {
     /// Parse a font from a borrowed byte slice.
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, Error> {
-        let dir = TableDirectory::parse(bytes)?;
+        Self::from_directory(bytes, TableDirectory::parse(bytes)?)
+    }
+
+    /// Parse member `index` of a font collection (`ttcf` header, the
+    /// `.otc` / `.ttc` container of OpenType "Font Collections").
+    ///
+    /// `bytes` must be the whole collection file: every member's table
+    /// directory holds offsets measured from the start of the file,
+    /// and members commonly share tables (one `CFF ` table referenced
+    /// by several directories, each with its own `cmap` / `name`).
+    /// [`Font::bytes`] of the result returns the whole file.
+    ///
+    /// Errors: [`Error::BadMagic`] when `bytes` is not a collection,
+    /// [`Error::SubfontOutOfRange`] when `index` is not below
+    /// [`collection::font_count`], [`Error::MissingCff`] when the
+    /// member has no `CFF ` / `CFF2` table (a `glyf`-outline member),
+    /// and the usual truncation / offset errors for a damaged header
+    /// or directory.
+    pub fn from_collection_bytes(bytes: &'a [u8], index: u32) -> Result<Self, Error> {
+        let header = CollectionHeader::parse(bytes)?;
+        let base = header
+            .font_offset(index)
+            .ok_or(Error::SubfontOutOfRange(index))?;
+        Self::from_directory(bytes, TableDirectory::parse_at(bytes, base as usize)?)
+    }
+
+    /// Shared tail of the two constructors: `dir`'s records are
+    /// file-relative offsets into `bytes`.
+    fn from_directory(bytes: &'a [u8], dir: TableDirectory) -> Result<Self, Error> {
         let cff_tag = dir.cff_tag.ok_or(Error::MissingCff)?;
 
         let head = HeadTable::parse(dir.required(b"head", bytes)?)?;

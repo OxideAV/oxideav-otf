@@ -40,10 +40,23 @@ struct TableRecord {
 
 impl TableDirectory {
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.len() < 12 {
+        Self::parse_at(bytes, 0)
+    }
+
+    /// Parse the table directory that starts `base` bytes into `bytes`.
+    ///
+    /// A font-collection member's directory sits somewhere inside the
+    /// file, but its table records still hold offsets "measured from
+    /// the beginning of the TTC file" (OpenType "The Font Collection
+    /// File Structure"), so the records are validated against, and
+    /// later sliced out of, the whole buffer rather than the tail
+    /// starting at `base`.
+    pub(crate) fn parse_at(bytes: &[u8], base: usize) -> Result<Self, Error> {
+        let header_end = base.checked_add(12).ok_or(Error::BadOffset)?;
+        if bytes.len() < header_end {
             return Err(Error::UnexpectedEof);
         }
-        let version = read_u32(bytes, 0)?;
+        let version = read_u32(bytes, base)?;
         // 'OTTO' (CFF flavour) is the canonical OpenType-with-CFF magic.
         // We also accept TrueType-flavoured sfnt magics (`0x00010000`,
         // 'true') because some "OpenType" fonts (e.g. Apple TrueType
@@ -54,13 +67,13 @@ impl TableDirectory {
             0x4F54544F /* OTTO */ | 0x00010000 | 0x74727565 /* true */ => {}
             _ => return Err(Error::BadMagic),
         }
-        let num_tables = read_u16(bytes, 4)?;
+        let num_tables = read_u16(bytes, base + 4)?;
         if num_tables == 0 || num_tables > MAX_TABLES {
             return Err(Error::BadHeader);
         }
         // searchRange / entrySelector / rangeShift skipped.
 
-        let dir_end = 12usize
+        let dir_end = header_end
             .checked_add(num_tables as usize * 16)
             .ok_or(Error::BadHeader)?;
         if bytes.len() < dir_end {
@@ -70,7 +83,7 @@ impl TableDirectory {
         let mut entries = Vec::with_capacity(num_tables as usize);
         let mut cff_tag = None;
         for i in 0..num_tables as usize {
-            let off = 12 + i * 16;
+            let off = header_end + i * 16;
             let tag = [bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]];
             // checksum at off+4, skipped.
             let offset = read_u32(bytes, off + 8)?;

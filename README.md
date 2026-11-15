@@ -390,6 +390,38 @@ for contour in &outline.contours {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+## Font collections
+
+A collection file (`ttcf` header — `.otc`, or `.ttc` when it carries
+CFF members) holds several fonts whose table directories point into
+one shared pool of tables. `Font::from_collection_bytes(bytes, index)`
+opens member `index` with `CFF ` or `CFF2` outlines; pass the whole
+file, since every table offset is measured from its start.
+
+```rust,no_run
+use oxideav_otf::{Font, collection, is_collection};
+
+let bytes = std::fs::read("fonts.otc")?;
+if is_collection(&bytes) {
+    for index in 0..collection::font_count(&bytes)? {
+        match Font::from_collection_bytes(&bytes, index) {
+            Ok(font) => println!("{index}: {:?}", font.family_name()),
+            // A member with `glyf` outlines is not this crate's to read.
+            Err(oxideav_otf::Error::MissingCff) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+```
+
+`collection::CollectionHeader::parse` exposes the header version and
+the per-member directory offsets. Both header versions (1.0 and 2.0)
+are read; the version-2.0 signature fields are not interpreted. An
+index past the member count is `Error::SubfontOutOfRange`, a damaged
+header or a directory / table offset outside the file is
+`UnexpectedEof` / `BadHeader` / `BadOffset`. `Font::from_bytes` is
+unchanged and still takes a single font only.
+
 ## Text shaping
 
 `Font::shape(text, &ShapeOptions)` maps characters through `cmap`,

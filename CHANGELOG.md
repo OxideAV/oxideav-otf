@@ -13,6 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Font collections: `Font::from_collection_bytes(bytes, index)` opens a
+  `CFF ` / `CFF2` member of a `ttcf` collection, resolving table offsets
+  from the start of the file so members can share tables. New
+  `collection` module (`is_collection`, `font_count`,
+  `CollectionHeader`), new `Error::SubfontOutOfRange`.
+
+### Fixed
+
+- `name` lookups (`family_name`, `full_name`, `ps_name`, ...) returned
+  `None` when any record for the requested name ID used a platform /
+  encoding pair that is not decoded (for example a Macintosh record in a
+  non-Roman script) or pointed outside the table; such records are now
+  skipped and the usable ones win.
+
+### Added
+
 - `ShapeOptions::with_script` / `with_language` / `with_features` / `with_coords`.
 
 ### Changed
