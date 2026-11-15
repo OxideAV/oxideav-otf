@@ -409,10 +409,17 @@ impl<'a> NameTable<'a> {
             let length = read_u16(self.bytes, off + 8).ok()? as usize;
             let str_off = read_u16(self.bytes, off + 10).ok()? as usize;
             let start = self.string_offset as usize + str_off;
-            let end = start.checked_add(length)?;
-            let raw = self.bytes.get(start..end)?;
+            // A record whose string lies outside the table, or whose
+            // platform / encoding pair we do not decode (e.g. a
+            // Macintosh record in a non-Roman script), is skipped: it
+            // must not hide the usable records for the same name ID.
+            let Some(raw) = self.bytes.get(start..start.saturating_add(length)) else {
+                continue;
+            };
             let rank = rank_record(platform, encoding, language);
-            let decoded = decode(platform, encoding, raw)?;
+            let Some(decoded) = decode(platform, encoding, raw) else {
+                continue;
+            };
             match &best {
                 Some((br, _)) if *br >= rank => {}
                 _ => best = Some((rank, decoded)),
@@ -516,6 +523,37 @@ mod tests {
         out[16..18].copy_from_slice(&0u16.to_be_bytes());
         out.extend_from_slice(&utf16);
         out
+    }
+
+    /// A name ID carried by a record we cannot decode (Macintosh
+    /// platform, non-Roman script), by a record whose string lies
+    /// outside the table, and by a usable Windows record: the usable
+    /// one is found whatever the order.
+    #[test]
+    fn find_skips_unusable_records() {
+        let good: Vec<u8> = "Ok".encode_utf16().flat_map(u16::to_be_bytes).collect();
+        // (platform, encoding, language, length, offset)
+        let unusable = [(1u16, 3u16, 23u16, 2u16, 0u16), (3, 1, 0x0412, 400, 60000)];
+        let usable = (3u16, 1u16, 0x0412u16, good.len() as u16, 2u16);
+        for order in [[0usize, 1, 2], [2, 0, 1], [1, 2, 0]] {
+            let all = [unusable[0], unusable[1], usable];
+            let storage_at = (NAME_HEADER_LEN + 3 * NAME_RECORD_LEN) as u16;
+            let mut t = Vec::new();
+            t.extend_from_slice(&0u16.to_be_bytes());
+            t.extend_from_slice(&3u16.to_be_bytes());
+            t.extend_from_slice(&storage_at.to_be_bytes());
+            for i in order {
+                let (platform, encoding, language, length, offset) = all[i];
+                for v in [platform, encoding, language, 1, length, offset] {
+                    t.extend_from_slice(&v.to_be_bytes());
+                }
+            }
+            t.extend_from_slice(&[0xC7, 0xD1]); // two bytes of a non-Roman script
+            t.extend_from_slice(&good);
+            let table = NameTable::parse(&t).unwrap();
+            assert_eq!(table.find(1), Some("Ok"), "order {order:?}");
+            assert_eq!(table.find(2), None);
+        }
     }
 
     /// Build a version-1 `name` table with two name records (one
